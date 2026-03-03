@@ -5,7 +5,7 @@ use std::thread::sleep;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::adapters::apps::wezterm::WeztermBackend;
-use crate::engine::contracts::{
+use crate::engine::contract::{
     AdapterCapabilities, AppKind, DeepApp, MoveDecision, TearResult, TopologyHandler,
 };
 use crate::engine::runtime::{self, CommandContext};
@@ -353,7 +353,7 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     use super::Nvim;
-    use crate::engine::contracts::{DeepApp, MoveDecision, TopologyHandler};
+    use crate::engine::contract::{DeepApp, MoveDecision, TopologyHandler};
     use crate::engine::topology::Direction;
 
     static NEXT_ID: AtomicU64 = AtomicU64::new(1);

@@ -1,6 +1,6 @@
 use anyhow::Result;
 
-use crate::engine::contracts::{
+use crate::engine::contract::{
     unsupported_operation, AdapterCapabilities, AppKind, DeepApp, MoveDecision, TearResult,
     TopologyHandler,
 };
@@ -56,7 +56,7 @@ impl TopologyHandler for Vscode {
 #[cfg(test)]
 mod tests {
     use super::Vscode;
-    use crate::engine::contracts::DeepApp;
+    use crate::engine::contract::DeepApp;
 
     #[test]
     fn declares_explicit_capability_contract() {

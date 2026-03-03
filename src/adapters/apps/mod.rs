@@ -16,7 +16,7 @@ use tmux::Tmux;
 use vscode::Vscode;
 use wezterm::WeztermBackend;
 
-pub use crate::engine::contracts::{
+pub use crate::engine::contract::{
     unsupported_operation, AdapterCapabilities, AppAdapter, AppCapabilities, AppKind, DeepApp,
     MergeExecutionMode, MergePreparation, MoveDecision, TearResult, TopologyHandler,
     TopologySnapshot,

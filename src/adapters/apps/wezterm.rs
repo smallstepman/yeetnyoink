@@ -155,7 +155,7 @@ use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 
 use crate::config::TerminalMuxBackend;
-use crate::engine::contracts::{
+use crate::engine::contract::{
     AdapterCapabilities, AppKind, DeepApp, MergeExecutionMode, MergePreparation, MoveDecision,
     TearResult, TopologyHandler,
 };
@@ -1018,7 +1018,7 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     use super::WeztermBackend;
-    use crate::engine::contracts::{DeepApp, MoveDecision, TopologyHandler};
+    use crate::engine::contract::{DeepApp, MoveDecision, TopologyHandler};
     use crate::engine::topology::Direction;
 
     static NEXT_ID: AtomicU64 = AtomicU64::new(1);

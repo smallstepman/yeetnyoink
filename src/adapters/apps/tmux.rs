@@ -1,7 +1,7 @@
 use anyhow::{bail, Context, Result};
 
 use crate::adapters::apps::wezterm::WeztermBackend;
-use crate::engine::contracts::{
+use crate::engine::contract::{
     AdapterCapabilities, AppKind, DeepApp, MoveDecision, TearResult, TopologyHandler,
 };
 use crate::engine::runtime::{self, CommandContext};
@@ -204,7 +204,7 @@ impl TopologyHandler for Tmux {
 #[cfg(test)]
 mod tests {
     use super::Tmux;
-    use crate::engine::contracts::DeepApp;
+    use crate::engine::contract::DeepApp;
 
     #[test]
     fn declares_explicit_capability_contract() {

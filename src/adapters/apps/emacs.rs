@@ -1,6 +1,6 @@
 use anyhow::{bail, Context, Result};
 
-use crate::engine::contracts::{
+use crate::engine::contract::{
     AdapterCapabilities, AppKind, DeepApp, MergeExecutionMode, MergePreparation, MoveDecision,
     TearResult, TopologyHandler,
 };
@@ -343,7 +343,7 @@ impl TopologyHandler for EmacsBackend {
 #[cfg(test)]
 mod tests {
     use super::EmacsBackend;
-    use crate::engine::contracts::DeepApp;
+    use crate::engine::contract::DeepApp;
 
     #[test]
     fn declares_explicit_capability_contract() {

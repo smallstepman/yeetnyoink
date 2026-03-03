@@ -323,7 +323,7 @@ use anyhow::{anyhow, Context, Result};
 use crate::adapters::apps::{self};
 use crate::adapters::window_managers::niri::NiriDomainPlugin;
 use crate::adapters::window_managers::{FocusedWindowView, WindowManagerAdapter};
-use crate::engine::contracts::{
+use crate::engine::contract::{
     AppAdapter, AppKind, MergePreparation, TopologyHandler as AppTopologyHandler,
 };
 use crate::engine::runtime::ProcessId;
