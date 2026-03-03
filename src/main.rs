@@ -3,7 +3,7 @@ use niri_deep::commands;
 use niri_deep::commands::focus_or_cycle::FocusOrCycleArgs;
 use niri_deep::commands::resize::ResizeMode;
 use niri_deep::config;
-use niri_deep::engine::direction::Direction;
+use niri_deep::engine::topology::Direction;
 use niri_deep::logging;
 
 #[derive(Parser)]

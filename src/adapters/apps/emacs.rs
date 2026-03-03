@@ -3,7 +3,7 @@ use anyhow::{bail, Context, Result};
 use crate::adapters::apps::{
     unsupported_operation, AdapterCapabilities, AppKind, DeepApp, MoveDecision, TearResult,
 };
-use crate::engine::direction::Direction;
+use crate::engine::topology::Direction;
 use crate::engine::runtime::{self, CommandContext};
 
 pub struct EditorBackend;
@@ -298,7 +298,7 @@ mod tests {
     use crate::adapters::apps::DeepApp;
 
     fn env_guard() -> std::sync::MutexGuard<'static, ()> {
-        crate::engine::test_support::env_guard()
+        crate::utils::env_guard()
     }
 
     #[test]

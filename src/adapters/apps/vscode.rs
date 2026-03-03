@@ -3,7 +3,7 @@ use anyhow::Result;
 use crate::adapters::apps::{
     unsupported_operation, AdapterCapabilities, AppKind, DeepApp, MoveDecision, TearResult,
 };
-use crate::engine::direction::Direction;
+use crate::engine::topology::Direction;
 
 /// VS Code / Code OSS — stub until extension IPC is available.
 pub struct Vscode;

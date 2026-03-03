@@ -6,8 +6,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::adapters::apps::terminal_backend::TerminalBackend;
 use crate::adapters::apps::{AdapterCapabilities, AppKind, DeepApp, MoveDecision, TearResult};
-use crate::engine::direction::Direction;
 use crate::engine::runtime::{self, CommandContext};
+use crate::engine::topology::Direction;
 use crate::logging;
 
 pub struct Nvim {
@@ -357,7 +357,7 @@ mod tests {
 
     use super::Nvim;
     use crate::adapters::apps::{DeepApp, MoveDecision};
-    use crate::engine::direction::Direction;
+    use crate::engine::topology::Direction;
 
     static NEXT_ID: AtomicU64 = AtomicU64::new(1);
     const TERMINAL_CLI_BIN: &str = "wezterm";
@@ -366,7 +366,7 @@ mod tests {
     const TERMINAL_TEST_LOG_ENV: &str = "WEZTERM_TEST_LOG";
 
     fn env_guard() -> std::sync::MutexGuard<'static, ()> {
-        crate::engine::test_support::env_guard()
+        crate::utils::env_guard()
     }
 
     #[test]

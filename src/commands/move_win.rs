@@ -1,6 +1,6 @@
 use anyhow::Result;
 
-use crate::engine::direction::Direction;
+use crate::engine::topology::Direction;
 use crate::engine::orchestrator::ActionKind;
 use crate::logging;
 

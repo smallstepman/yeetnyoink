@@ -19,8 +19,8 @@ use vscode::Vscode;
 
 use anyhow::{anyhow, Result};
 
-use crate::engine::direction::Direction;
 use crate::engine::runtime::ProcessId;
+use crate::engine::topology::Direction;
 
 /// Developer note for adding a new adapter:
 /// 1. Implement `DeepApp` and declare all booleans in `capabilities`.
@@ -429,7 +429,7 @@ mod resolve_chain_tests {
     static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
     fn env_guard() -> std::sync::MutexGuard<'static, ()> {
-        crate::engine::test_support::env_guard()
+        crate::utils::env_guard()
     }
 
     fn unique_temp_dir(prefix: &str) -> PathBuf {

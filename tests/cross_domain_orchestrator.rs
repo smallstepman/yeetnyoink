@@ -8,11 +8,11 @@ use niri_deep::adapters::window_managers::{
     FocusedWindowView, ResizeIntent, WindowManagerCapabilities, WindowManagerExecution,
     WindowManagerIntrospection, WindowManagerMetadata, WindowRecord,
 };
-use niri_deep::engine::direction::Direction;
+use niri_deep::engine::topology::Direction;
 use niri_deep::engine::domain::{DomainLeafSnapshot, DomainSnapshot, ErasedDomain};
-use niri_deep::engine::domain_plugins::{EDITOR_DOMAIN_ID, TERMINAL_DOMAIN_ID, WM_DOMAIN_ID};
+use niri_deep::engine::domain::{EDITOR_DOMAIN_ID, TERMINAL_DOMAIN_ID, WM_DOMAIN_ID};
 use niri_deep::engine::orchestrator::{ActionKind, ActionRequest, Orchestrator};
-use niri_deep::engine::pane_state::PaneState;
+use niri_deep::engine::transfer::PaneState;
 use niri_deep::engine::runtime::ProcessId;
 use niri_deep::engine::topology::Rect;
 

@@ -5,7 +5,7 @@ use anyhow::{anyhow, Context, Result};
 
 use crate::adapters::window_managers::i3::{I3Adapter, I3FocusedWindow};
 use crate::adapters::window_managers::niri::Niri;
-use crate::engine::direction::Direction;
+use crate::engine::topology::Direction;
 use crate::engine::runtime::ProcessId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -677,7 +677,7 @@ mod tests {
         DirectionalCapability, NiriAdapter, PrimitiveWindowManagerCapabilities,
         WindowManagerCapabilities, WindowManagerCapabilityDescriptor,
     };
-    use crate::engine::direction::Direction;
+    use crate::engine::topology::Direction;
 
     struct InvalidComposedCapabilities;
 

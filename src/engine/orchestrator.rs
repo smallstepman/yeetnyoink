@@ -8,12 +8,12 @@ use crate::adapters::window_managers::{
     plan_tear_out, CapabilitySupport, FocusedWindowView, ResizeIntent, ResizeKind,
     WindowManagerAdapter, WindowRecord,
 };
-use crate::engine::direction::Direction;
+use crate::engine::topology::Direction;
 use crate::engine::domain::ErasedDomain;
-use crate::engine::domain_plugins::{
+use crate::engine::domain::{
     decode_native_window_ref, domain_id_for_window, domain_name_for_id, encode_native_window_ref,
 };
-use crate::engine::pane_state::PayloadRegistry;
+use crate::engine::transfer::PayloadRegistry;
 use crate::engine::runtime::ProcessId;
 use crate::engine::topology::{
     find_neighbor, DomainId, DomainNode, GlobalDomainTree, GlobalLeaf, GlobalTopology,
@@ -709,10 +709,10 @@ mod tests {
         FocusedWindowView, WindowManagerCapabilities, WindowManagerExecution,
         WindowManagerIntrospection, WindowManagerMetadata, WindowRecord,
     };
-    use crate::engine::direction::Direction;
+    use crate::engine::topology::Direction;
     use crate::engine::domain::{DomainLeafSnapshot, DomainSnapshot, ErasedDomain};
-    use crate::engine::domain_plugins::{EDITOR_DOMAIN_ID, TERMINAL_DOMAIN_ID};
-    use crate::engine::pane_state::PaneState;
+    use crate::engine::domain::{EDITOR_DOMAIN_ID, TERMINAL_DOMAIN_ID};
+    use crate::engine::transfer::PaneState;
     use crate::engine::runtime::ProcessId;
     use crate::engine::topology::{GlobalLeaf, Rect};
 
@@ -847,7 +847,7 @@ mod tests {
         fn merge_in(
             &mut self,
             _target_native_id: &[u8],
-            _dir: crate::engine::direction::Direction,
+            _dir: crate::engine::topology::Direction,
             _payload: Box<dyn PaneState>,
         ) -> Result<Vec<u8>> {
             self.counters.merge_calls.fetch_add(1, Ordering::Relaxed);
@@ -1017,7 +1017,7 @@ mod tests {
                 &mut wm,
                 ActionRequest {
                     kind: ActionKind::Move,
-                    direction: crate::engine::direction::Direction::East,
+                    direction: crate::engine::topology::Direction::East,
                 },
             )
             .expect("move should succeed");
@@ -1090,7 +1090,7 @@ mod tests {
                 &mut wm,
                 ActionRequest {
                     kind: ActionKind::Move,
-                    direction: crate::engine::direction::Direction::East,
+                    direction: crate::engine::topology::Direction::East,
                 },
             )
             .expect("move should still succeed via fallback");
@@ -1147,7 +1147,7 @@ mod tests {
                 &mut wm,
                 ActionRequest {
                     kind: ActionKind::Move,
-                    direction: crate::engine::direction::Direction::East,
+                    direction: crate::engine::topology::Direction::East,
                 },
             )
             .expect("move should merge within same domain");

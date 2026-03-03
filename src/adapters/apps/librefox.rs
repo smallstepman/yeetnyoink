@@ -5,7 +5,7 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 
 use crate::adapters::apps::{AdapterCapabilities, AppKind, DeepApp, MoveDecision, TearResult};
-use crate::engine::direction::Direction;
+use crate::engine::topology::Direction;
 use crate::logging;
 
 /// LibreWolf / Firefox integration via an external Native Messaging bridge.
@@ -284,12 +284,12 @@ mod tests {
 
     use super::{FirefoxRequest, Librefox};
     use crate::adapters::apps::{DeepApp, MoveDecision};
-    use crate::engine::direction::Direction;
+    use crate::engine::topology::Direction;
 
     static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
     fn env_guard() -> std::sync::MutexGuard<'static, ()> {
-        crate::engine::test_support::env_guard()
+        crate::utils::env_guard()
     }
 
     #[test]

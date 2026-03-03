@@ -27,7 +27,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{OnceLock, RwLock};
 
-use crate::engine::direction::Direction;
+use crate::engine::topology::Direction;
 
 // ---------------------------------------------------------------------------
 // Top-level config

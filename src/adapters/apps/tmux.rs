@@ -2,8 +2,8 @@ use anyhow::{bail, Context, Result};
 
 use crate::adapters::apps::terminal_backend::TerminalBackend;
 use crate::adapters::apps::{AdapterCapabilities, AppKind, DeepApp, MoveDecision, TearResult};
-use crate::engine::direction::Direction;
 use crate::engine::runtime::{self, CommandContext};
+use crate::engine::topology::Direction;
 
 pub struct Tmux {
     /// Tmux session name, used as `-t` target for all commands.
