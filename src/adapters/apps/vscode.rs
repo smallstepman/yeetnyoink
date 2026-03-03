@@ -2,6 +2,7 @@ use anyhow::Result;
 
 use crate::engine::contracts::{
     unsupported_operation, AdapterCapabilities, AppKind, DeepApp, MoveDecision, TearResult,
+    TopologyModifier, TopologyProvider,
 };
 use crate::engine::topology::Direction;
 
@@ -49,6 +50,9 @@ impl DeepApp for Vscode {
         Err(unsupported_operation(self.adapter_name(), "move_out"))
     }
 }
+
+impl TopologyProvider for Vscode {}
+impl TopologyModifier for Vscode {}
 
 #[cfg(test)]
 mod tests {

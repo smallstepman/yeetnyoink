@@ -7,8 +7,8 @@ use crate::adapters::window_managers::{
     WindowManagerCapabilityDescriptor, WindowManagerExecution, WindowManagerIntrospection,
     WindowRecord,
 };
-use crate::engine::topology::Direction;
 use crate::engine::runtime::{self, CommandContext, ProcessId};
+use crate::engine::topology::Direction;
 
 pub struct I3Adapter;
 

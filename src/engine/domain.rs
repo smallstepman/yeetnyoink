@@ -323,7 +323,7 @@ use anyhow::{anyhow, Context, Result};
 use crate::adapters::apps::{self};
 use crate::adapters::window_managers::niri::NiriDomainPlugin;
 use crate::adapters::window_managers::{FocusedWindowView, WindowManagerAdapter};
-use crate::engine::contracts::{AppKind, DeepApp, MergePreparation};
+use crate::engine::contracts::{AppAdapter, AppKind, DeepApp, MergePreparation};
 use crate::engine::runtime::ProcessId;
 
 pub const WM_DOMAIN_ID: DomainId = 1;
@@ -445,11 +445,11 @@ impl ErasedDomain for UnsupportedDomainPlugin {
 
 pub struct AppDomainPlugin {
     domain_id: DomainId,
-    adapter: Box<dyn DeepApp>,
+    adapter: Box<dyn AppAdapter>,
 }
 
 impl AppDomainPlugin {
-    pub fn new(domain_id: DomainId, adapter: Box<dyn DeepApp>) -> Self {
+    pub fn new(domain_id: DomainId, adapter: Box<dyn AppAdapter>) -> Self {
         Self { domain_id, adapter }
     }
 
@@ -505,8 +505,7 @@ impl TopologyModifierImpl for AppDomainPlugin {
         let pid = Self::pid_from_native(native_id)
             .map(ProcessId::get)
             .context("move requires source pid in native id")?;
-        self.adapter
-            .move_internal(dir, pid)
+        DeepApp::move_internal(self.adapter.as_ref(), dir, pid)
             .with_context(|| format!("{} move_internal failed", self.adapter.adapter_name()))
     }
 
@@ -515,9 +514,7 @@ impl TopologyModifierImpl for AppDomainPlugin {
         native_id: &Self::NativeId,
     ) -> Result<Box<dyn PaneState>, Self::Error> {
         let source_pid = Self::pid_from_native(native_id);
-        let preparation = self
-            .adapter
-            .prepare_merge(source_pid)
+        let preparation = DeepApp::prepare_merge(self.adapter.as_ref(), source_pid)
             .with_context(|| format!("{} prepare_merge failed", self.adapter.adapter_name()))?;
         Ok(Box::new(AppMergePayload {
             source_pid,
@@ -538,12 +535,19 @@ impl TopologyModifierImpl for AppDomainPlugin {
         let merge_payload = payload_any
             .downcast::<AppMergePayload>()
             .map_err(|_| anyhow!("unsupported payload for '{}'", self.adapter.adapter_name()))?;
-        let preparation = self
-            .adapter
-            .augment_merge_preparation_for_target(merge_payload.preparation, target_window_id);
-        self.adapter
-            .merge_into_target(dir, merge_payload.source_pid, target_pid, preparation)
-            .with_context(|| format!("{} merge_into_target failed", self.adapter.adapter_name()))?;
+        let preparation = DeepApp::augment_merge_preparation_for_target(
+            self.adapter.as_ref(),
+            merge_payload.preparation,
+            target_window_id,
+        );
+        DeepApp::merge_into_target(
+            self.adapter.as_ref(),
+            dir,
+            merge_payload.source_pid,
+            target_pid,
+            preparation,
+        )
+        .with_context(|| format!("{} merge_into_target failed", self.adapter.adapter_name()))?;
         Ok(target_native_id.clone())
     }
 }

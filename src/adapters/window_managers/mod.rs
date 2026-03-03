@@ -5,8 +5,8 @@ use anyhow::{anyhow, Context, Result};
 
 use crate::adapters::window_managers::i3::{I3Adapter, I3FocusedWindow};
 use crate::adapters::window_managers::niri::Niri;
-use crate::engine::topology::Direction;
 use crate::engine::runtime::ProcessId;
+use crate::engine::topology::Direction;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CapabilitySupport {

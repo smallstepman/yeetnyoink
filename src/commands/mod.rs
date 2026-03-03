@@ -6,9 +6,9 @@ pub mod resize;
 use anyhow::Result;
 
 use crate::adapters::window_managers::connect_selected;
-use crate::engine::topology::Direction;
 use crate::engine::domain::runtime_domains_for_window_manager;
 use crate::engine::orchestrator::{ActionKind, ActionRequest, Orchestrator};
+use crate::engine::topology::Direction;
 
 /// Shared runner for simple action commands (focus, move).
 pub(crate) fn run_action(kind: ActionKind, dir: Direction) -> Result<()> {

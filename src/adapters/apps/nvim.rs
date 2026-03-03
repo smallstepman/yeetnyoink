@@ -5,7 +5,10 @@ use std::thread::sleep;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::adapters::apps::wezterm::WeztermBackend;
-use crate::engine::contracts::{AdapterCapabilities, AppKind, DeepApp, MoveDecision, TearResult};
+use crate::engine::contracts::{
+    AdapterCapabilities, AppKind, DeepApp, MoveDecision, TearResult, TopologyModifier,
+    TopologyProvider,
+};
 use crate::engine::runtime::{self, CommandContext};
 use crate::engine::topology::Direction;
 use crate::logging;
@@ -346,6 +349,9 @@ impl DeepApp for Nvim {
         bail!("nvim move_out is unreachable; tear-out is handled in move_internal")
     }
 }
+
+impl TopologyProvider for Nvim {}
+impl TopologyModifier for Nvim {}
 
 #[cfg(test)]
 mod tests {

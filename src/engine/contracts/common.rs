@@ -115,69 +115,90 @@ impl AppCapabilities {
 
 pub type AdapterCapabilities = AppCapabilities;
 
-/// Trait for apps that support deep focus/move integration with the current WM domain.
+/// Metadata/capabilities contract for app adapters.
 pub trait DeepApp: Send {
     /// Human-readable adapter name used in diagnostics.
     fn adapter_name(&self) -> &'static str;
+
+    /// Optional config aliases used to bind policy for this adapter.
+    fn config_aliases(&self) -> Option<&'static [&'static str]> {
+        None
+    }
 
     /// High-level app category used by domain resolution policy.
     fn kind(&self) -> AppKind;
 
     /// Explicit capability declaration used by orchestrator routing.
     fn capabilities(&self) -> AdapterCapabilities;
+}
 
-    /// Whether the app can navigate internally in this direction.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TopologySnapshot {
+    /// Directions where the focused pane has in-app neighbors.
+    pub internal_neighbors: Vec<Direction>,
+    /// Directions where leaving the app domain is possible/expected.
+    pub cross_domain_neighbors: Vec<Direction>,
+}
+
+/// Read/query contract for app topology.
+pub trait TopologyProvider: DeepApp {
+    /// Snapshot of the current in-app and cross-domain neighbor surface.
+    fn topology_snapshot(&self, pid: u32) -> Result<TopologySnapshot> {
+        let mut snapshot = TopologySnapshot::default();
+        for direction in [
+            Direction::West,
+            Direction::East,
+            Direction::North,
+            Direction::South,
+        ] {
+            if self.can_focus(direction, pid)? {
+                snapshot.internal_neighbors.push(direction);
+                continue;
+            }
+            match self.move_decision(direction, pid)? {
+                MoveDecision::Passthrough | MoveDecision::TearOut => {
+                    snapshot.cross_domain_neighbors.push(direction);
+                }
+                MoveDecision::Internal | MoveDecision::Rearrange => {}
+            }
+        }
+        Ok(snapshot)
+    }
+
     fn can_focus(&self, dir: Direction, pid: u32) -> Result<bool>;
-
-    /// Navigate internally in the given direction.
-    fn focus(&self, dir: Direction, pid: u32) -> Result<()>;
-
-    /// Decide what to do for a move operation in this direction.
     fn move_decision(&self, dir: Direction, pid: u32) -> Result<MoveDecision>;
-
-    /// Swap/move the current buffer internally.
-    fn move_internal(&self, dir: Direction, pid: u32) -> Result<()>;
-
-    /// Whether the app can resize internally in this direction.
     fn can_resize(&self, _dir: Direction, _grow: bool, _pid: u32) -> Result<bool> {
         Ok(false)
     }
+}
 
-    /// Resize internally in the given direction.
+/// Mutation contract for app topology.
+pub trait TopologyModifier: DeepApp {
+    fn focus(&self, dir: Direction, pid: u32) -> Result<()>;
+    fn move_internal(&self, dir: Direction, pid: u32) -> Result<()>;
+
     fn resize_internal(&self, _dir: Direction, _grow: bool, _step: i32, _pid: u32) -> Result<()> {
-        Err(unsupported_operation(
-            self.adapter_name(),
-            "resize_internal",
-        ))
+        Err(unsupported_operation(self.adapter_name(), "resize_internal"))
     }
 
-    /// Rearrange panes: move the current pane to `dir` by reorganizing the layout.
-    /// e.g. [A|B*] move north → [B*-A] (horizontal to vertical).
     fn rearrange(&self, _dir: Direction, _pid: u32) -> Result<()> {
         Err(unsupported_operation(self.adapter_name(), "rearrange"))
     }
 
-    /// Tear the current buffer/pane out, returning spawn info for a new window.
     fn move_out(&self, dir: Direction, pid: u32) -> Result<TearResult>;
 
-    /// Merge the current window's content into the adjacent same-app window,
-    /// and close the source. Called while the source window is still focused.
-    /// `dir` is the direction toward the merge target.
     fn merge_into(&self, _dir: Direction, _source_pid: u32) -> Result<()> {
         Err(unsupported_operation(self.adapter_name(), "merge_into"))
     }
 
-    /// Whether merge should execute while source or target window is focused.
     fn merge_execution_mode(&self) -> MergeExecutionMode {
         MergeExecutionMode::SourceFocused
     }
 
-    /// Capture source-side merge state before focus moves to target window.
     fn prepare_merge(&self, _source_pid: Option<ProcessId>) -> Result<MergePreparation> {
         Ok(MergePreparation::none())
     }
 
-    /// Allow adapters to enrich source merge preparation once a concrete target is known.
     fn augment_merge_preparation_for_target(
         &self,
         preparation: MergePreparation,
@@ -186,7 +207,6 @@ pub trait DeepApp: Send {
         preparation
     }
 
-    /// Merge source content into target window context.
     fn merge_into_target(
         &self,
         dir: Direction,
@@ -197,6 +217,10 @@ pub trait DeepApp: Send {
         self.merge_into(dir, legacy_pid(source_pid))
     }
 }
+
+pub trait AppAdapter: DeepApp + TopologyProvider + TopologyModifier {}
+
+impl<T> AppAdapter for T where T: DeepApp + TopologyProvider + TopologyModifier {}
 
 pub fn unsupported_operation(adapter: &str, operation: &str) -> anyhow::Error {
     anyhow!(

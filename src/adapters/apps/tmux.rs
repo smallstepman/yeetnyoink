@@ -1,7 +1,10 @@
 use anyhow::{bail, Context, Result};
 
 use crate::adapters::apps::wezterm::WeztermBackend;
-use crate::engine::contracts::{AdapterCapabilities, AppKind, DeepApp, MoveDecision, TearResult};
+use crate::engine::contracts::{
+    AdapterCapabilities, AppKind, DeepApp, MoveDecision, TearResult, TopologyModifier,
+    TopologyProvider,
+};
 use crate::engine::runtime::{self, CommandContext};
 use crate::engine::topology::Direction;
 
@@ -200,6 +203,9 @@ impl DeepApp for Tmux {
         })
     }
 }
+
+impl TopologyProvider for Tmux {}
+impl TopologyModifier for Tmux {}
 
 #[cfg(test)]
 mod tests {

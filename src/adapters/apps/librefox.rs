@@ -4,7 +4,10 @@ use serde_json::Value;
 use std::io::Write;
 use std::process::{Command, Stdio};
 
-use crate::engine::contracts::{AdapterCapabilities, AppKind, DeepApp, MoveDecision, TearResult};
+use crate::engine::contracts::{
+    AdapterCapabilities, AppKind, DeepApp, MoveDecision, TearResult, TopologyModifier,
+    TopologyProvider,
+};
 use crate::engine::topology::Direction;
 use crate::logging;
 
@@ -273,6 +276,9 @@ impl DeepApp for Librefox {
         })
     }
 }
+
+impl TopologyProvider for Librefox {}
+impl TopologyModifier for Librefox {}
 
 #[cfg(test)]
 mod tests {

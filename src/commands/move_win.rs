@@ -1,7 +1,7 @@
 use anyhow::Result;
 
-use crate::engine::topology::Direction;
 use crate::engine::orchestrator::ActionKind;
+use crate::engine::topology::Direction;
 use crate::logging;
 
 pub fn run(dir: Direction) -> Result<()> {

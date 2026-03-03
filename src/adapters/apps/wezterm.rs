@@ -154,10 +154,10 @@ use std::time::Duration;
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 
-use crate::config::{AppSection, TerminalMuxBackend};
+use crate::config::TerminalMuxBackend;
 use crate::engine::contracts::{
-    unsupported_operation, AdapterCapabilities, AppKind, DeepApp, MergeExecutionMode,
-    MergePreparation, MoveDecision, TearResult,
+    AdapterCapabilities, AppKind, DeepApp, MergeExecutionMode, MergePreparation, MoveDecision,
+    TearResult, TopologyModifier, TopologyProvider,
 };
 use crate::engine::runtime::ProcessId;
 use crate::engine::topology::Direction;
@@ -217,10 +217,6 @@ impl WeztermBackend {
     const NON_SOURCE_PANE_POLL_DELAY: Duration = Duration::from_millis(10);
     const MUX_BRIDGE_READY_MAX_AGE: Duration = Duration::from_secs(2);
     const MUX_BRIDGE_READY_FILE: &'static str = "ready";
-
-    fn pane_policy() -> crate::config::PanePolicy {
-        crate::config::pane_policy_for(AppSection::Terminal, ADAPTER_ALIASES)
-    }
 
     fn mux_policy() -> crate::config::MuxPolicy {
         crate::config::mux_policy_for(ADAPTER_ALIASES)
@@ -795,38 +791,32 @@ impl DeepApp for WeztermBackend {
         ADAPTER_NAME
     }
 
+    fn config_aliases(&self) -> Option<&'static [&'static str]> {
+        Some(ADAPTER_ALIASES)
+    }
+
     fn kind(&self) -> AppKind {
         AppKind::Terminal
     }
 
     fn capabilities(&self) -> AdapterCapabilities {
-        let policy = Self::pane_policy();
-        let focus_enabled = policy.focus_capability();
-        let move_enabled = policy.move_capability();
-        let resize_enabled = policy.resize_capability();
         AdapterCapabilities {
             probe: true,
-            focus: focus_enabled,
-            move_internal: move_enabled,
-            resize_internal: resize_enabled,
-            rearrange: move_enabled,
-            tear_out: policy.tear_out_capability(),
+            focus: true,
+            move_internal: true,
+            resize_internal: true,
+            rearrange: true,
+            tear_out: true,
             merge: true,
         }
     }
 
     fn can_focus(&self, dir: Direction, pid: u32) -> Result<bool> {
-        if !Self::pane_policy().focus_allowed(dir) {
-            return Ok(false);
-        }
         let pane_id = Self::focused_pane_id(pid)?;
         Self::has_neighbor(pid, pane_id, dir)
     }
 
     fn focus(&self, dir: Direction, pid: u32) -> Result<()> {
-        if !Self::pane_policy().focus_allowed(dir) {
-            return Err(unsupported_operation(self.adapter_name(), "focus"));
-        }
         let pane_id = Self::focused_pane_id(pid)?;
         let pane_id_str = pane_id.to_string();
         Self::cli_stdout(
@@ -842,13 +832,6 @@ impl DeepApp for WeztermBackend {
     }
 
     fn move_decision(&self, dir: Direction, pid: u32) -> Result<MoveDecision> {
-        let policy = Self::pane_policy();
-        if !policy.move_allowed(dir) {
-            logging::debug(format!(
-                "wezterm: move_decision dir={dir} => Passthrough (config)"
-            ));
-            return Ok(MoveDecision::Passthrough);
-        }
         let pane_id = Self::focused_pane_id(pid)?;
         let pane_count = Self::pane_count_in_active_tab(pid, pane_id)?;
         if pane_count <= 1 {
@@ -879,21 +862,11 @@ impl DeepApp for WeztermBackend {
             return Ok(MoveDecision::Rearrange);
         }
 
-        if !policy.tear_out_capability() {
-            logging::debug(format!(
-                "wezterm: move_decision dir={dir} => Passthrough (tearout disabled)"
-            ));
-            return Ok(MoveDecision::Passthrough);
-        }
-
         logging::debug(format!("wezterm: move_decision dir={dir} => TearOut"));
         Ok(MoveDecision::TearOut)
     }
 
     fn move_internal(&self, dir: Direction, pid: u32) -> Result<()> {
-        if !Self::pane_policy().move_allowed(dir) {
-            return Err(unsupported_operation(self.adapter_name(), "move_internal"));
-        }
         let pane_id = Self::focused_pane_id(pid)?;
         let neighbor = Self::pane_in_direction(pid, pane_id, dir)?
             .context("no wezterm pane exists in the requested move direction")?;
@@ -913,17 +886,11 @@ impl DeepApp for WeztermBackend {
         Ok(())
     }
 
-    fn can_resize(&self, dir: Direction, _grow: bool, _pid: u32) -> Result<bool> {
-        Ok(Self::pane_policy().resize_allowed(dir))
+    fn can_resize(&self, _dir: Direction, _grow: bool, _pid: u32) -> Result<bool> {
+        Ok(true)
     }
 
     fn resize_internal(&self, dir: Direction, grow: bool, step: i32, pid: u32) -> Result<()> {
-        if !Self::pane_policy().resize_allowed(dir) {
-            return Err(unsupported_operation(
-                self.adapter_name(),
-                "resize_internal",
-            ));
-        }
         let pane_id = Self::focused_pane_id(pid)?;
         let pane_id_str = pane_id.to_string();
         let amount = step.max(1).to_string();
@@ -974,11 +941,7 @@ impl DeepApp for WeztermBackend {
         Ok(())
     }
 
-    fn move_out(&self, dir: Direction, pid: u32) -> Result<TearResult> {
-        let policy = Self::pane_policy();
-        if !policy.move_allowed(dir) || !policy.tear_out_capability() {
-            return Err(unsupported_operation(self.adapter_name(), "move_out"));
-        }
+    fn move_out(&self, _dir: Direction, pid: u32) -> Result<TearResult> {
         let pane_id = Self::focused_pane_id(pid)?;
         let pane_id_str = pane_id.to_string();
         Self::cli_stdout(
@@ -1042,6 +1005,9 @@ impl DeepApp for WeztermBackend {
     }
 }
 
+impl TopologyProvider for WeztermBackend {}
+impl TopologyModifier for WeztermBackend {}
+
 #[cfg(test)]
 mod tests {
     use std::ffi::OsString;
@@ -1074,73 +1040,9 @@ mod tests {
     }
 
     #[test]
-    fn config_can_disable_internal_focus_capability() {
-        let _env_guard = env_guard();
-        let pid = 7070;
-        let harness = WeztermHarness::new(pid);
-        let old_config_override = std::env::var_os("NIRI_DEEP_CONFIG");
-        let config_root = harness.base.join("config-root");
-        let config_dir = config_root.join("niri-deep");
-        fs::create_dir_all(&config_dir).expect("config dir should be creatable");
-        fs::write(
-            config_dir.join("config.toml"),
-            r#"
-[app.terminal.wezterm]
-enabled = true
-
-[app.terminal.wezterm.focus.internal_panes]
-enabled = false
-"#,
-        )
-        .expect("config file should be writable");
-        std::env::set_var("NIRI_DEEP_CONFIG", config_dir.join("config.toml"));
-        crate::config::prepare().expect("config should load");
-
+    fn advertises_config_aliases_for_policy_binding() {
         let app = WeztermBackend;
-        let caps = DeepApp::capabilities(&app);
-        assert!(!caps.focus);
-
-        if let Some(value) = old_config_override {
-            std::env::set_var("NIRI_DEEP_CONFIG", value);
-        } else {
-            std::env::remove_var("NIRI_DEEP_CONFIG");
-        }
-        crate::config::prepare().expect("config should reload");
-    }
-
-    #[test]
-    fn config_can_disable_internal_resize_capability() {
-        let _env_guard = env_guard();
-        let pid = 7171;
-        let harness = WeztermHarness::new(pid);
-        let old_config_override = std::env::var_os("NIRI_DEEP_CONFIG");
-        let config_root = harness.base.join("config-root");
-        let config_dir = config_root.join("niri-deep");
-        fs::create_dir_all(&config_dir).expect("config dir should be creatable");
-        fs::write(
-            config_dir.join("config.toml"),
-            r#"
-[app.terminal.wezterm]
-enabled = true
-
-[app.terminal.wezterm.resize.internal_panes]
-enabled = false
-"#,
-        )
-        .expect("config file should be writable");
-        std::env::set_var("NIRI_DEEP_CONFIG", config_dir.join("config.toml"));
-        crate::config::prepare().expect("config should load");
-
-        let app = WeztermBackend;
-        let caps = DeepApp::capabilities(&app);
-        assert!(!caps.resize_internal);
-
-        if let Some(value) = old_config_override {
-            std::env::set_var("NIRI_DEEP_CONFIG", value);
-        } else {
-            std::env::remove_var("NIRI_DEEP_CONFIG");
-        }
-        crate::config::prepare().expect("config should reload");
+        assert_eq!(app.config_aliases(), Some(super::ADAPTER_ALIASES));
     }
 
     struct WeztermHarness {

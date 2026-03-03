@@ -8,7 +8,9 @@ use crate::adapters::window_managers::{
     plan_tear_out, CapabilitySupport, FocusedWindowView, ResizeIntent, ResizeKind,
     WindowManagerAdapter, WindowRecord,
 };
-use crate::engine::contracts::{DeepApp, MergeExecutionMode, MoveDecision};
+use crate::engine::contracts::{
+    AppAdapter, MergeExecutionMode, MoveDecision, TopologyModifier, TopologyProvider,
+};
 use crate::engine::domain::ErasedDomain;
 use crate::engine::domain::{domain_id_for_window, encode_native_window_ref};
 use crate::engine::domain::{PayloadRegistry, TransferOutcome, TransferPipeline};
@@ -114,11 +116,10 @@ impl Orchestrator {
                 continue;
             }
             let adapter_name = app.adapter_name();
-            if app
-                .can_focus(dir, owner_pid)
+            if TopologyProvider::can_focus(app.as_ref(), dir, owner_pid)
                 .with_context(|| format!("{adapter_name} can_focus failed"))?
             {
-                app.focus(dir, owner_pid)
+                TopologyModifier::focus(app.as_ref(), dir, owner_pid)
                     .with_context(|| format!("{adapter_name} focus failed"))?;
                 logging::debug(format!("orchestrator: app focus handled by {adapter_name}"));
                 return Ok(true);
@@ -200,8 +201,7 @@ impl Orchestrator {
 
         for app in apps::resolve_chain(&app_id, owner_pid, &title) {
             let adapter_name = app.adapter_name();
-            let decision = app
-                .move_decision(dir, owner_pid)
+            let decision = TopologyProvider::move_decision(app.as_ref(), dir, owner_pid)
                 .with_context(|| format!("{adapter_name} move_decision failed"))?;
             match decision {
                 MoveDecision::Passthrough => {
@@ -216,7 +216,7 @@ impl Orchestrator {
                     }
                 }
                 MoveDecision::Internal => {
-                    app.move_internal(dir, owner_pid)
+                    TopologyModifier::move_internal(app.as_ref(), dir, owner_pid)
                         .with_context(|| format!("{adapter_name} move_internal failed"))?;
                     logging::debug(format!(
                         "orchestrator: app move handled by {adapter_name} decision=Internal"
@@ -224,7 +224,7 @@ impl Orchestrator {
                     return Ok(true);
                 }
                 MoveDecision::Rearrange => {
-                    app.rearrange(dir, owner_pid)
+                    TopologyModifier::rearrange(app.as_ref(), dir, owner_pid)
                         .with_context(|| format!("{adapter_name} rearrange failed"))?;
                     logging::debug(format!(
                         "orchestrator: app move handled by {adapter_name} decision=Rearrange"
@@ -242,8 +242,7 @@ impl Orchestrator {
                             BTreeSet::new()
                         }
                     };
-                    let tear = app
-                        .move_out(dir, owner_pid)
+                    let tear = TopologyModifier::move_out(app.as_ref(), dir, owner_pid)
                         .with_context(|| format!("{adapter_name} move_out failed"))?;
                     let has_spawn_command = tear.spawn_command.is_some();
                     if let Some(command) = tear.spawn_command {
@@ -516,7 +515,7 @@ impl Orchestrator {
     fn attempt_passthrough_merge<W>(
         &mut self,
         wm: &mut W,
-        app: &dyn DeepApp,
+        app: &dyn AppAdapter,
         dir: Direction,
         source_window_id: u64,
         source_pid: Option<ProcessId>,
@@ -528,7 +527,7 @@ impl Orchestrator {
             return Ok(false);
         }
         let adapter_name = app.adapter_name();
-        let preparation = match app.prepare_merge(source_pid) {
+        let preparation = match TopologyModifier::prepare_merge(app, source_pid) {
             Ok(value) => value,
             Err(err) => {
                 logging::debug(format!(
@@ -539,7 +538,7 @@ impl Orchestrator {
             }
         };
 
-        match app.merge_execution_mode() {
+        match TopologyModifier::merge_execution_mode(app) {
             MergeExecutionMode::SourceFocused => {
                 let Some(target_window) = self.probe_directional_target_for_adapter(
                     wm,
@@ -552,7 +551,13 @@ impl Orchestrator {
                     return Ok(false);
                 };
 
-                match app.merge_into_target(dir, source_pid, target_window.pid, preparation) {
+                match TopologyModifier::merge_into_target(
+                    app,
+                    dir,
+                    source_pid,
+                    target_window.pid,
+                    preparation,
+                ) {
                     Ok(()) => {
                         logging::debug(format!(
                             "orchestrator: app move handled by {adapter_name} decision=MergeSourceFocused"
@@ -580,7 +585,13 @@ impl Orchestrator {
                     return Ok(false);
                 };
 
-                match app.merge_into_target(dir, source_pid, target_window.pid, preparation) {
+                match TopologyModifier::merge_into_target(
+                    app,
+                    dir,
+                    source_pid,
+                    target_window.pid,
+                    preparation,
+                ) {
                     Ok(()) => {
                         logging::debug(format!(
                             "orchestrator: app move handled by {adapter_name} decision=MergeTargetFocused"
@@ -610,6 +621,9 @@ impl Orchestrator {
     where
         W: WindowManagerAdapter,
     {
+        if self.attempt_focused_app_resize(wm, dir, grow, step.max(1))? {
+            return Ok(());
+        }
         let intent = ResizeIntent::new(
             dir.into(),
             if grow {
@@ -620,6 +634,48 @@ impl Orchestrator {
             step.max(1),
         );
         wm.resize_with_intent(intent)
+    }
+
+    fn attempt_focused_app_resize<W>(
+        &mut self,
+        wm: &mut W,
+        dir: Direction,
+        grow: bool,
+        step: i32,
+    ) -> Result<bool>
+    where
+        W: WindowManagerAdapter,
+    {
+        let (app_id, title, source_pid) = wm.with_focused_window(|window| {
+            Ok((
+                window.app_id().unwrap_or("").to_string(),
+                window.title().unwrap_or("").to_string(),
+                window.pid(),
+            ))
+        })?;
+        let owner_pid = source_pid.map(ProcessId::get);
+        let Some(owner_pid) = owner_pid else {
+            return Ok(false);
+        };
+
+        for app in apps::resolve_chain(&app_id, owner_pid, &title) {
+            if !app.capabilities().resize_internal {
+                continue;
+            }
+            let adapter_name = app.adapter_name();
+            if TopologyProvider::can_resize(app.as_ref(), dir, grow, owner_pid)
+                .with_context(|| format!("{adapter_name} can_resize failed"))?
+            {
+                TopologyModifier::resize_internal(app.as_ref(), dir, grow, step, owner_pid)
+                    .with_context(|| format!("{adapter_name} resize_internal failed"))?;
+                logging::debug(format!(
+                    "orchestrator: app resize handled by {adapter_name}"
+                ));
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
     }
 
     pub fn route(&self, source: &GlobalLeaf, target: &GlobalLeaf) -> RoutingDecision {

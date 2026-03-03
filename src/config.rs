@@ -443,7 +443,7 @@ impl Default for EditorTearOffScope {
 }
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Runtime state and loading
 // ---------------------------------------------------------------------------
 
 fn default_true() -> bool {
@@ -476,7 +476,10 @@ fn resolve_config_path() -> Result<(PathBuf, bool)> {
     }
 
     let strategy = choose_base_strategy().context("failed to resolve config directory")?;
-    Ok((strategy.config_dir().join("niri-deep").join("config.toml"), false))
+    Ok((
+        strategy.config_dir().join("niri-deep").join("config.toml"),
+        false,
+    ))
 }
 
 fn load_config_from(path: &Path) -> Result<Config> {
@@ -636,11 +639,15 @@ fn section_enabled_from<T>(
 
 fn app_enabled_from(cfg: &Config, section: AppSection, aliases: &[&str]) -> bool {
     match section {
-        AppSection::Browser => section_enabled_from(&cfg.app.browser, aliases, |profile| profile.enabled),
+        AppSection::Browser => {
+            section_enabled_from(&cfg.app.browser, aliases, |profile| profile.enabled)
+        }
         AppSection::Terminal => {
             section_enabled_from(&cfg.app.terminal, aliases, |profile| profile.enabled)
         }
-        AppSection::Editor => section_enabled_from(&cfg.app.editor, aliases, |profile| profile.enabled),
+        AppSection::Editor => {
+            section_enabled_from(&cfg.app.editor, aliases, |profile| profile.enabled)
+        }
     }
 }
 
@@ -797,7 +804,8 @@ enabled = false
 "#;
         let parsed: Config = toml::from_str(sample).expect("sample config should parse");
 
-        let wezterm_policy = pane_policy_from(&parsed, AppSection::Terminal, &["terminal", "wezterm"]);
+        let wezterm_policy =
+            pane_policy_from(&parsed, AppSection::Terminal, &["terminal", "wezterm"]);
         assert!(wezterm_policy.integration_enabled());
         assert!(!wezterm_policy.focus_capability());
 
@@ -814,6 +822,10 @@ enabled = true
         let parsed: Config = toml::from_str(sample).expect("sample config should parse");
 
         assert!(app_enabled_from(&parsed, AppSection::Editor, &["vscode"]));
-        assert!(!app_enabled_from(&parsed, AppSection::Editor, &["editor", "emacs"]));
+        assert!(!app_enabled_from(
+            &parsed,
+            AppSection::Editor,
+            &["editor", "emacs"]
+        ));
     }
 }

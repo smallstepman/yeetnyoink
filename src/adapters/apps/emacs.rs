@@ -1,9 +1,8 @@
 use anyhow::{bail, Context, Result};
 
-use crate::config::AppSection;
 use crate::engine::contracts::{
-    unsupported_operation, AdapterCapabilities, AppKind, DeepApp, MergeExecutionMode,
-    MergePreparation, MoveDecision, TearResult,
+    AdapterCapabilities, AppKind, DeepApp, MergeExecutionMode, MergePreparation, MoveDecision,
+    TearResult, TopologyModifier, TopologyProvider,
 };
 use crate::engine::runtime::{self, CommandContext, ProcessId};
 use crate::engine::topology::Direction;
@@ -41,10 +40,6 @@ fn in_focused_window_mut(body: &str) -> String {
 }
 
 impl EmacsBackend {
-    fn pane_policy() -> crate::config::PanePolicy {
-        crate::config::pane_policy_for(AppSection::Editor, ADAPTER_ALIASES)
-    }
-
     fn eval(expr: &str) -> Result<String> {
         let output = runtime::run_command_output(
             "emacsclient",
@@ -138,48 +133,37 @@ impl DeepApp for EmacsBackend {
         ADAPTER_NAME
     }
 
+    fn config_aliases(&self) -> Option<&'static [&'static str]> {
+        Some(ADAPTER_ALIASES)
+    }
+
     fn kind(&self) -> AppKind {
         AppKind::Editor
     }
 
     fn capabilities(&self) -> AdapterCapabilities {
-        let policy = Self::pane_policy();
-        let focus_enabled = policy.focus_capability();
-        let move_enabled = policy.move_capability();
-        let tear_out_enabled = policy.tear_out_capability();
-        let resize_enabled = policy.resize_capability();
         AdapterCapabilities {
             probe: true,
-            focus: focus_enabled,
-            move_internal: move_enabled,
-            resize_internal: resize_enabled,
-            rearrange: move_enabled,
-            tear_out: tear_out_enabled,
+            focus: true,
+            move_internal: true,
+            resize_internal: true,
+            rearrange: true,
+            tear_out: true,
             merge: true,
         }
     }
 
     fn can_focus(&self, dir: Direction, _pid: u32) -> Result<bool> {
-        if !Self::pane_policy().focus_allowed(dir) {
-            return Ok(false);
-        }
         Ok(!self.at_side(dir)?)
     }
 
     fn focus(&self, dir: Direction, _pid: u32) -> Result<()> {
-        if !Self::pane_policy().focus_allowed(dir) {
-            return Err(unsupported_operation(self.adapter_name(), "focus"));
-        }
         let func = Self::windmove_fn(dir);
         Self::eval_in_frame_mut(&format!("({func})"))?;
         Ok(())
     }
 
     fn move_decision(&self, dir: Direction, _pid: u32) -> Result<MoveDecision> {
-        let policy = Self::pane_policy();
-        if !policy.move_allowed(dir) {
-            return Ok(MoveDecision::Passthrough);
-        }
         let win_count = self.window_count()?;
         if win_count <= 1 {
             return Ok(MoveDecision::Passthrough);
@@ -205,8 +189,6 @@ impl DeepApp for EmacsBackend {
 
         if has_perpendicular_neighbor {
             Ok(MoveDecision::Rearrange)
-        } else if !policy.tear_out_capability() {
-            Ok(MoveDecision::Passthrough)
         } else {
             // At edge and neighbors only along this axis — tear out.
             Ok(MoveDecision::TearOut)
@@ -214,25 +196,16 @@ impl DeepApp for EmacsBackend {
     }
 
     fn move_internal(&self, dir: Direction, _pid: u32) -> Result<()> {
-        if !Self::pane_policy().move_allowed(dir) {
-            return Err(unsupported_operation(self.adapter_name(), "move_internal"));
-        }
         let func = Self::windmove_swap_fn(dir);
         Self::eval_in_frame_mut(&format!("({func})"))?;
         Ok(())
     }
 
-    fn can_resize(&self, dir: Direction, _grow: bool, _pid: u32) -> Result<bool> {
-        Ok(Self::pane_policy().resize_allowed(dir))
+    fn can_resize(&self, _dir: Direction, _grow: bool, _pid: u32) -> Result<bool> {
+        Ok(true)
     }
 
     fn resize_internal(&self, dir: Direction, grow: bool, step: i32, _pid: u32) -> Result<()> {
-        if !Self::pane_policy().resize_allowed(dir) {
-            return Err(unsupported_operation(
-                self.adapter_name(),
-                "resize_internal",
-            ));
-        }
         let (delta, horizontal) = Self::resize_delta(dir, grow, step.max(1));
         let horizontal_arg = if horizontal { "t" } else { "nil" };
         let expr = format!("(window-resize nil {delta} {horizontal_arg})");
@@ -257,9 +230,6 @@ impl DeepApp for EmacsBackend {
     }
 
     fn move_out(&self, _dir: Direction, _pid: u32) -> Result<TearResult> {
-        if !Self::pane_policy().tear_out_capability() {
-            return Err(unsupported_operation(self.adapter_name(), "move_out"));
-        }
         // All in one eval in the focused frame's context:
         // 1. Grab the buffer and current Doom workspace name
         // 2. Delete the emacs window (split)
@@ -390,7 +360,7 @@ impl DeepApp for EmacsBackend {
             "(equal (frame-parameter nil 'niri-deep-frame-id) \"{frame_id_lit}\")"
         ))? == "t";
         if focused_is_source {
-            return self.merge_into(dir, source_pid.map(ProcessId::get).unwrap_or(0));
+            return DeepApp::merge_into(self, dir, source_pid.map(ProcessId::get).unwrap_or(0));
         }
 
         let side = Self::split_side(dir.opposite());
@@ -414,14 +384,13 @@ impl DeepApp for EmacsBackend {
     }
 }
 
+impl TopologyProvider for EmacsBackend {}
+impl TopologyModifier for EmacsBackend {}
+
 #[cfg(test)]
 mod tests {
     use super::EmacsBackend;
     use crate::engine::contracts::DeepApp;
-
-    fn env_guard() -> std::sync::MutexGuard<'static, ()> {
-        crate::utils::env_guard()
-    }
 
     #[test]
     fn declares_explicit_capability_contract() {
@@ -437,40 +406,8 @@ mod tests {
     }
 
     #[test]
-    fn config_can_disable_resize_capability() {
-        let _guard = env_guard();
-        let base = std::env::temp_dir().join(format!(
-            "niri-deep-emacs-resize-config-{}",
-            std::process::id()
-        ));
-        let config_dir = base.join("niri-deep");
-        std::fs::create_dir_all(&config_dir).expect("config dir should be creatable");
-        std::fs::write(
-            config_dir.join("config.toml"),
-            r#"
-[app.editor.emacs]
-enabled = true
-
-[app.editor.emacs.resize.internal_panes]
-enabled = false
-"#,
-        )
-        .expect("config file should be writable");
-
-        let old_config_override = std::env::var_os("NIRI_DEEP_CONFIG");
-        std::env::set_var("NIRI_DEEP_CONFIG", config_dir.join("config.toml"));
-        crate::config::prepare().expect("config should load");
-
+    fn advertises_config_aliases_for_policy_binding() {
         let app = EmacsBackend;
-        let caps = DeepApp::capabilities(&app);
-        assert!(!caps.resize_internal);
-
-        if let Some(value) = old_config_override {
-            std::env::set_var("NIRI_DEEP_CONFIG", value);
-        } else {
-            std::env::remove_var("NIRI_DEEP_CONFIG");
-        }
-        crate::config::prepare().expect("config should reload");
-        let _ = std::fs::remove_dir_all(base);
+        assert_eq!(app.config_aliases(), Some(super::ADAPTER_ALIASES));
     }
 }
