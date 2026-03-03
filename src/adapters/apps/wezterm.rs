@@ -1001,16 +1001,9 @@ impl DeepApp for TerminalBackend {
         preparation: MergePreparation,
     ) -> Result<()> {
         let source_pid = source_pid.context("source wezterm merge missing pid")?;
-        let (source_pane_id, target_window_id) = match preparation {
-            MergePreparation::TerminalMuxSourcePane {
-                pane_id,
-                target_window_id,
-            } => (pane_id, target_window_id),
-            MergePreparation::EditorFrameSource { .. } => {
-                bail!("unsupported merge preparation for wezterm")
-            }
-            MergePreparation::None => bail!("source wezterm merge missing pane id"),
-        };
+        let (source_pane_id, target_window_id) = preparation
+            .terminal_mux_source()
+            .context("source wezterm merge missing pane id")?;
         let target_pid = target_pid.context("target wezterm merge missing pid")?;
         Self::merge_source_pane_into_focused_target(
             source_pid.get(),

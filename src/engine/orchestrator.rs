@@ -9,16 +9,11 @@ use crate::adapters::window_managers::{
     WindowManagerAdapter, WindowRecord,
 };
 use crate::engine::domain::ErasedDomain;
-use crate::engine::domain::{
-    decode_native_window_ref, domain_id_for_window, domain_name_for_id, encode_native_window_ref,
-};
+use crate::engine::domain::{domain_id_for_window, encode_native_window_ref};
+use crate::engine::domain::{PayloadRegistry, TransferOutcome, TransferPipeline};
 use crate::engine::runtime::ProcessId;
 use crate::engine::topology::Direction;
-use crate::engine::topology::{
-    DomainId, DomainNode, GlobalDomainTree, GlobalLeaf, GlobalTopology, Rect,
-};
-use crate::engine::transfer::PayloadRegistry;
-use crate::engine::transfer::{TransferOutcome, TransferPipeline};
+use crate::engine::topology::{DomainId, GlobalLeaf, Rect};
 use crate::logging;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,6 +46,12 @@ pub enum RoutingError {
 pub struct Orchestrator {
     payload_registry: PayloadRegistry,
     domains: BTreeMap<DomainId, Box<dyn ErasedDomain>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DirectionalProbeFocusMode {
+    RestoreSource,
+    KeepTarget,
 }
 
 impl Default for Orchestrator {
@@ -136,7 +137,13 @@ impl Orchestrator {
         }
 
         let focused = Self::focused_window_record(wm)?;
-        let Some(target_window) = self.probe_directional_target(wm, dir, focused.id)? else {
+        let Some(target_window) = self.probe_directional_target(
+            wm,
+            dir,
+            focused.id,
+            DirectionalProbeFocusMode::RestoreSource,
+        )?
+        else {
             return wm.move_direction(fallback_dir);
         };
         let focused_leaf = Self::leaf_from_window(&focused, 1);
@@ -417,6 +424,7 @@ impl Orchestrator {
         wm: &mut W,
         dir: Direction,
         source_window_id: u64,
+        focus_mode: DirectionalProbeFocusMode,
     ) -> Result<Option<WindowRecord>>
     where
         W: WindowManagerAdapter,
@@ -441,9 +449,37 @@ impl Orchestrator {
             return Ok(None);
         }
 
-        wm.focus_window_by_id(source_window_id)
-            .with_context(|| format!("failed to restore focus to window {}", source_window_id))?;
+        if matches!(focus_mode, DirectionalProbeFocusMode::RestoreSource) {
+            wm.focus_window_by_id(source_window_id).with_context(|| {
+                format!("failed to restore focus to window {}", source_window_id)
+            })?;
+        }
         Ok(Some(target))
+    }
+
+    fn probe_directional_target_for_adapter<W>(
+        &self,
+        wm: &mut W,
+        dir: Direction,
+        source_window_id: u64,
+        adapter_name: &str,
+        focus_mode: DirectionalProbeFocusMode,
+    ) -> Result<Option<WindowRecord>>
+    where
+        W: WindowManagerAdapter,
+    {
+        let Some(target_window) =
+            self.probe_directional_target(wm, dir, source_window_id, focus_mode)?
+        else {
+            return Ok(None);
+        };
+        if Self::window_matches_adapter(adapter_name, &target_window) {
+            return Ok(Some(target_window));
+        }
+        if matches!(focus_mode, DirectionalProbeFocusMode::KeepTarget) {
+            let _ = wm.focus_window_by_id(source_window_id);
+        }
+        Ok(None)
     }
 
     fn window_matches_adapter(adapter_name: &str, window: &WindowRecord) -> bool {
@@ -504,14 +540,16 @@ impl Orchestrator {
 
         match app.merge_execution_mode() {
             MergeExecutionMode::SourceFocused => {
-                let Some(target_window) =
-                    self.probe_directional_target(wm, dir, source_window_id)?
+                let Some(target_window) = self.probe_directional_target_for_adapter(
+                    wm,
+                    dir,
+                    source_window_id,
+                    adapter_name,
+                    DirectionalProbeFocusMode::RestoreSource,
+                )?
                 else {
                     return Ok(false);
                 };
-                if !Self::window_matches_adapter(adapter_name, &target_window) {
-                    return Ok(false);
-                }
 
                 match app.merge_into_target(dir, source_pid, target_window.pid, preparation) {
                     Ok(()) => {
@@ -530,22 +568,16 @@ impl Orchestrator {
                 }
             }
             MergeExecutionMode::TargetFocused => {
-                if let Err(err) = wm.focus_direction(dir) {
-                    logging::debug(format!(
-                        "orchestrator: app passthrough merge focus probe failed adapter={} err={:#}",
-                        adapter_name, err
-                    ));
+                let Some(target_window) = self.probe_directional_target_for_adapter(
+                    wm,
+                    dir,
+                    source_window_id,
+                    adapter_name,
+                    DirectionalProbeFocusMode::KeepTarget,
+                )?
+                else {
                     return Ok(false);
-                }
-
-                let target_window = Self::focused_window_record(wm)?;
-                if target_window.id == source_window_id {
-                    return Ok(false);
-                }
-                if !Self::window_matches_adapter(adapter_name, &target_window) {
-                    let _ = wm.focus_window_by_id(source_window_id);
-                    return Ok(false);
-                }
+                };
 
                 match app.merge_into_target(dir, source_pid, target_window.pid, preparation) {
                     Ok(()) => {
@@ -586,9 +618,7 @@ impl Orchestrator {
             },
             step.max(1),
         );
-        let result = wm.resize_with_intent(intent);
-        let _ = self.snapshot_from_wm(wm);
-        result
+        wm.resize_with_intent(intent)
     }
 
     pub fn route(&self, source: &GlobalLeaf, target: &GlobalLeaf) -> RoutingDecision {
@@ -692,77 +722,6 @@ impl Orchestrator {
             }
         }
     }
-
-    fn snapshot_from_wm<W>(&self, wm: &mut W) -> Result<GlobalTopology>
-    where
-        W: WindowManagerAdapter,
-    {
-        let windows = wm.windows()?;
-        let mut domain_labels = BTreeMap::<DomainId, String>::new();
-        let mut leaves = Vec::<GlobalLeaf>::new();
-        let mut focused = None;
-
-        for (idx, window) in windows.iter().enumerate() {
-            let domain = domain_id_for_window(
-                window.app_id.as_deref(),
-                window.pid,
-                window.title.as_deref(),
-            );
-            domain_labels
-                .entry(domain)
-                .or_insert_with(|| domain_name_for_id(domain).to_string());
-
-            let leaf_id = (idx as u64) + 1;
-            if window.is_focused {
-                focused = Some(leaf_id);
-            }
-            let x = (idx as i32) * 1000;
-            leaves.push(GlobalLeaf {
-                id: leaf_id,
-                domain,
-                native_id: encode_native_window_ref(window.id, window.pid),
-                rect: Rect {
-                    x,
-                    y: 0,
-                    w: 900,
-                    h: 900,
-                },
-            });
-        }
-
-        if focused.is_none() {
-            let focused_window_id = wm.with_focused_window(|window| Ok(window.id()))?;
-            focused = leaves
-                .iter()
-                .find(|leaf| {
-                    decode_native_window_ref(&leaf.native_id)
-                        .map(|window| window.window_id == focused_window_id)
-                        .unwrap_or(false)
-                })
-                .map(|leaf| leaf.id);
-        }
-
-        let mut domains = Vec::new();
-        for (id, name) in domain_labels {
-            domains.push(DomainNode {
-                id,
-                parent: None,
-                rect: Rect {
-                    x: 0,
-                    y: 0,
-                    w: 10000,
-                    h: 10000,
-                },
-                name,
-            });
-        }
-
-        Ok(GlobalTopology {
-            tree: GlobalDomainTree { domains },
-            leaves,
-            focused_leaf: focused,
-        })
-    }
 }
 
 #[cfg(test)]
@@ -779,12 +738,12 @@ mod tests {
         FocusedWindowView, WindowManagerCapabilities, WindowManagerExecution,
         WindowManagerIntrospection, WindowManagerMetadata, WindowRecord,
     };
+    use crate::engine::domain::PaneState;
     use crate::engine::domain::{DomainLeafSnapshot, DomainSnapshot, ErasedDomain};
     use crate::engine::domain::{EDITOR_DOMAIN_ID, TERMINAL_DOMAIN_ID};
     use crate::engine::runtime::ProcessId;
     use crate::engine::topology::Direction;
     use crate::engine::topology::{GlobalLeaf, Rect};
-    use crate::engine::transfer::PaneState;
 
     #[test]
     fn route_distinguishes_same_and_cross_domain_targets() {

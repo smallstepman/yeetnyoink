@@ -368,11 +368,9 @@ impl DeepApp for EditorBackend {
         _target_pid: Option<ProcessId>,
         preparation: MergePreparation,
     ) -> Result<()> {
-        let frame_id = match preparation {
-            MergePreparation::EditorFrameSource { frame_id } => frame_id,
-            MergePreparation::None => bail!("source emacs frame id missing"),
-            other => bail!("unsupported emacs merge preparation: {:?}", other),
-        };
+        let frame_id = preparation
+            .editor_frame_source()
+            .context("source emacs frame id missing")?;
         let frame_id_lit = frame_id.replace('\\', "\\\\").replace('\"', "\\\"");
         let focused_is_source = Self::eval_in_frame(&format!(
             "(equal (frame-parameter nil 'niri-deep-frame-id) \"{frame_id_lit}\")"

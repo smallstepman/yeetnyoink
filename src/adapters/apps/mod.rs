@@ -67,6 +67,35 @@ pub enum MergePreparation {
     },
 }
 
+impl MergePreparation {
+    pub fn terminal_mux_source(self) -> Option<(u64, Option<u64>)> {
+        match self {
+            Self::TerminalMuxSourcePane {
+                pane_id,
+                target_window_id,
+            } => Some((pane_id, target_window_id)),
+            _ => None,
+        }
+    }
+
+    pub fn editor_frame_source(self) -> Option<String> {
+        match self {
+            Self::EditorFrameSource { frame_id } => Some(frame_id),
+            _ => None,
+        }
+    }
+
+    pub fn with_target_window_hint(self, target_window_id: Option<u64>) -> Self {
+        match self {
+            Self::TerminalMuxSourcePane { pane_id, .. } => Self::TerminalMuxSourcePane {
+                pane_id,
+                target_window_id,
+            },
+            other => other,
+        }
+    }
+}
+
 /// Result of tearing a buffer/pane out of an app.
 pub struct TearResult {
     /// Command to spawn the torn-out content as a new window.

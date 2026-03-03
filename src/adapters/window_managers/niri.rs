@@ -6,13 +6,13 @@ use std::any::TypeId;
 use crate::adapters::window_managers::{
     NiriAdapter, WindowManagerExecution, WindowManagerIntrospection,
 };
-use crate::engine::topology::Direction;
+use crate::engine::domain::PaneState;
+use crate::engine::domain::{decode_native_window_ref, encode_native_window_ref};
 use crate::engine::domain::{
     DomainLeafSnapshot, DomainSnapshot, ErasedDomain, TilingDomain, TopologyModifierImpl,
     TopologyProvider,
 };
-use crate::engine::domain::{decode_native_window_ref, encode_native_window_ref};
-use crate::engine::transfer::PaneState;
+use crate::engine::topology::Direction;
 use crate::engine::topology::{DomainId, LeafId, Rect};
 use crate::logging;
 

@@ -80,26 +80,6 @@ impl Rect {
             SplitAxis::Vertical => self.x < other.x + other.w && self.x + self.w > other.x,
         }
     }
-
-    fn tie_breaker_offset(self, other: Rect, dir: Direction) -> i32 {
-        match dir.axis() {
-            SplitAxis::Horizontal => (other.y - self.y).abs(),
-            SplitAxis::Vertical => (other.x - self.x).abs(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DomainNode {
-    pub id: DomainId,
-    pub parent: Option<DomainId>,
-    pub rect: Rect,
-    pub name: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GlobalDomainTree {
-    pub domains: Vec<DomainNode>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -110,118 +90,39 @@ pub struct GlobalLeaf {
     pub rect: Rect,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GlobalTopology {
-    pub tree: GlobalDomainTree,
-    pub leaves: Vec<GlobalLeaf>,
-    pub focused_leaf: Option<LeafId>,
-}
-
-pub fn find_neighbor<'a>(
-    all_leaves: &'a [GlobalLeaf],
-    focused: &GlobalLeaf,
-    dir: Direction,
-) -> Option<&'a GlobalLeaf> {
-    let my_edge = focused.rect.leading_edge(dir);
-
-    all_leaves
-        .iter()
-        .filter(|leaf| leaf.id != focused.id)
-        .filter(|leaf| {
-            let edge = leaf.rect.receiving_edge(dir);
-            match dir {
-                Direction::East | Direction::South => edge >= my_edge,
-                Direction::West | Direction::North => edge <= my_edge,
-            }
-        })
-        .filter(|leaf| focused.rect.perp_overlap(leaf.rect, dir))
-        .min_by_key(|leaf| {
-            (
-                (leaf.rect.receiving_edge(dir) - my_edge).abs(),
-                focused.rect.tie_breaker_offset(leaf.rect, dir),
-                leaf.id,
-            )
-        })
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{find_neighbor, Direction, GlobalLeaf, Rect};
+    use super::{Direction, Rect};
 
-    fn leaf(id: u64, domain: u64, rect: Rect) -> GlobalLeaf {
-        GlobalLeaf {
-            id,
-            domain,
-            native_id: id.to_le_bytes().to_vec(),
-            rect,
-        }
+    #[test]
+    fn rect_leading_and_receiving_edges_are_opposites() {
+        let rect = Rect {
+            x: 10,
+            y: 20,
+            w: 30,
+            h: 40,
+        };
+        assert_eq!(rect.leading_edge(Direction::East), 40);
+        assert_eq!(rect.receiving_edge(Direction::East), 10);
+        assert_eq!(rect.leading_edge(Direction::South), 60);
+        assert_eq!(rect.receiving_edge(Direction::South), 20);
     }
 
     #[test]
-    fn solver_prefers_closest_directional_candidate() {
-        let focused = leaf(
-            1,
-            1,
-            Rect {
-                x: 100,
-                y: 100,
-                w: 100,
-                h: 100,
-            },
-        );
-        let leaves = vec![
-            focused.clone(),
-            leaf(
-                2,
-                1,
-                Rect {
-                    x: 30,
-                    y: 100,
-                    w: 60,
-                    h: 100,
-                },
-            ),
-            leaf(
-                3,
-                1,
-                Rect {
-                    x: 0,
-                    y: 100,
-                    w: 20,
-                    h: 100,
-                },
-            ),
-        ];
-
-        let picked = find_neighbor(&leaves, &focused, Direction::West).expect("should pick a leaf");
-        assert_eq!(picked.id, 2);
-    }
-
-    #[test]
-    fn solver_rejects_diagonal_without_overlap() {
-        let focused = leaf(
-            1,
-            1,
-            Rect {
-                x: 100,
-                y: 100,
-                w: 100,
-                h: 100,
-            },
-        );
-        let leaves = vec![
-            focused.clone(),
-            leaf(
-                2,
-                1,
-                Rect {
-                    x: 30,
-                    y: 250,
-                    w: 60,
-                    h: 60,
-                },
-            ),
-        ];
-        assert!(find_neighbor(&leaves, &focused, Direction::West).is_none());
+    fn rect_perp_overlap_uses_axis() {
+        let a = Rect {
+            x: 0,
+            y: 0,
+            w: 10,
+            h: 10,
+        };
+        let b = Rect {
+            x: 20,
+            y: 5,
+            w: 10,
+            h: 10,
+        };
+        assert!(a.perp_overlap(b, Direction::East));
+        assert!(!a.perp_overlap(b, Direction::South));
     }
 }
