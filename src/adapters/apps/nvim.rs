@@ -5,8 +5,9 @@ use std::thread::sleep;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::adapters::apps::wezterm::WeztermBackend;
+use crate::adapters::apps::AppAdapter;
 use crate::engine::contract::{
-    AdapterCapabilities, AppKind, DeepApp, MoveDecision, TearResult, TopologyHandler,
+    AdapterCapabilities, AppKind, MoveDecision, TearResult, TopologyHandler,
 };
 use crate::engine::runtime::{self, CommandContext};
 use crate::engine::topology::Direction;
@@ -279,7 +280,7 @@ impl Nvim {
     }
 }
 
-impl DeepApp for Nvim {
+impl AppAdapter for Nvim {
     fn adapter_name(&self) -> &'static str {
         "nvim"
     }
@@ -353,7 +354,7 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     use super::Nvim;
-    use crate::engine::contract::{DeepApp, MoveDecision, TopologyHandler};
+    use crate::engine::contract::{AppAdapter, MoveDecision, TopologyHandler};
     use crate::engine::topology::Direction;
 
     static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -371,7 +372,7 @@ mod tests {
         let app = Nvim {
             server_addr: "/tmp/test.sock".to_string(),
         };
-        let caps = DeepApp::capabilities(&app);
+        let caps = AppAdapter::capabilities(&app);
         assert!(caps.probe);
         assert!(caps.focus);
         assert!(caps.move_internal);

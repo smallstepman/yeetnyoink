@@ -1,10 +1,22 @@
 use std::any::{Any, TypeId};
 use std::collections::{HashMap, HashSet};
+use std::sync::OnceLock;
 
 use anyhow::Result as AnyResult;
+use anyhow::{anyhow, Context, Result};
 
-use crate::engine::topology::Direction;
-use crate::engine::topology::{DomainId, LeafId, Rect};
+use crate::adapters::apps::{self};
+use crate::adapters::window_managers::niri::NiriDomainPlugin;
+use crate::adapters::window_managers::{FocusedWindowView, WindowManagerAdapter};
+use crate::engine::contract::{
+    AppAdapter, AppKind, MergePreparation, TopologyHandler as AppTopologyHandler,
+};
+use crate::engine::runtime::ProcessId;
+use crate::engine::topology::{Direction, DomainId, LeafId, Rect};
+
+pub const WM_DOMAIN_ID: DomainId = 1;
+pub const TERMINAL_DOMAIN_ID: DomainId = 2;
+pub const EDITOR_DOMAIN_ID: DomainId = 3;
 
 mod sealed {
     use std::marker::PhantomData;
@@ -315,22 +327,6 @@ fn pick_target_type(
         .copied()
         .find(|candidate| registry.can_convert(source_type, *candidate))
 }
-
-use std::sync::OnceLock;
-
-use anyhow::{anyhow, Context, Result};
-
-use crate::adapters::apps::{self};
-use crate::adapters::window_managers::niri::NiriDomainPlugin;
-use crate::adapters::window_managers::{FocusedWindowView, WindowManagerAdapter};
-use crate::engine::contract::{
-    AppAdapter, AppKind, MergePreparation, TopologyHandler as AppTopologyHandler,
-};
-use crate::engine::runtime::ProcessId;
-
-pub const WM_DOMAIN_ID: DomainId = 1;
-pub const TERMINAL_DOMAIN_ID: DomainId = 2;
-pub const EDITOR_DOMAIN_ID: DomainId = 3;
 
 fn domain_id_for_app_kind(kind: AppKind) -> DomainId {
     match kind {

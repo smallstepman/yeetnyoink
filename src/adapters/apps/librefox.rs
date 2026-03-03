@@ -4,8 +4,9 @@ use serde_json::Value;
 use std::io::Write;
 use std::process::{Command, Stdio};
 
+use crate::adapters::apps::AppAdapter;
 use crate::engine::contract::{
-    AdapterCapabilities, AppKind, DeepApp, MoveDecision, TearResult, TopologyHandler,
+    AdapterCapabilities, AppKind, MoveDecision, TearResult, TopologyHandler,
 };
 use crate::engine::topology::Direction;
 use crate::logging;
@@ -174,7 +175,7 @@ impl Librefox {
     }
 }
 
-impl DeepApp for Librefox {
+impl AppAdapter for Librefox {
     fn adapter_name(&self) -> &'static str {
         "librefox"
     }
@@ -287,7 +288,7 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     use super::{FirefoxRequest, Librefox};
-    use crate::engine::contract::{DeepApp, MoveDecision, TopologyHandler};
+    use crate::engine::contract::{AppAdapter, MoveDecision, TopologyHandler};
     use crate::engine::topology::Direction;
 
     static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -299,7 +300,7 @@ mod tests {
     #[test]
     fn declares_explicit_capability_contract() {
         let app = Librefox;
-        let caps = DeepApp::capabilities(&app);
+        let caps = AppAdapter::capabilities(&app);
         assert!(caps.probe);
         assert!(caps.focus);
         assert!(caps.move_internal);

@@ -1,15 +1,15 @@
 use anyhow::Result;
 
+use crate::adapters::apps::AppAdapter;
 use crate::engine::contract::{
-    unsupported_operation, AdapterCapabilities, AppKind, DeepApp, MoveDecision, TearResult,
-    TopologyHandler,
+    unsupported_operation, AdapterCapabilities, AppKind, MoveDecision, TearResult, TopologyHandler,
 };
 use crate::engine::topology::Direction;
 
 /// VS Code / Code OSS — stub until extension IPC is available.
 pub struct Vscode;
 
-impl DeepApp for Vscode {
+impl AppAdapter for Vscode {
     fn adapter_name(&self) -> &'static str {
         "vscode"
     }
@@ -56,12 +56,12 @@ impl TopologyHandler for Vscode {
 #[cfg(test)]
 mod tests {
     use super::Vscode;
-    use crate::engine::contract::DeepApp;
+    use crate::engine::contract::AppAdapter;
 
     #[test]
     fn declares_explicit_capability_contract() {
         let app = Vscode;
-        let caps = DeepApp::capabilities(&app);
+        let caps = AppAdapter::capabilities(&app);
         assert!(caps.probe);
         assert!(!caps.focus);
         assert!(!caps.move_internal);

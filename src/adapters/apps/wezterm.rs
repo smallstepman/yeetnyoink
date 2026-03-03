@@ -154,10 +154,11 @@ use std::time::Duration;
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 
+use crate::adapters::apps::AppAdapter;
 use crate::config::TerminalMuxBackend;
 use crate::engine::contract::{
-    AdapterCapabilities, AppKind, DeepApp, MergeExecutionMode, MergePreparation, MoveDecision,
-    TearResult, TopologyHandler,
+    AdapterCapabilities, AppKind, MergeExecutionMode, MergePreparation, MoveDecision, TearResult,
+    TopologyHandler,
 };
 use crate::engine::runtime::ProcessId;
 use crate::engine::topology::Direction;
@@ -788,7 +789,7 @@ impl WeztermBackend {
     }
 }
 
-impl DeepApp for WeztermBackend {
+impl AppAdapter for WeztermBackend {
     fn adapter_name(&self) -> &'static str {
         ADAPTER_NAME
     }
@@ -1018,7 +1019,7 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     use super::WeztermBackend;
-    use crate::engine::contract::{DeepApp, MoveDecision, TopologyHandler};
+    use crate::engine::contract::{AppAdapter, MoveDecision, TopologyHandler};
     use crate::engine::topology::Direction;
 
     static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -1030,7 +1031,7 @@ mod tests {
     #[test]
     fn declares_explicit_capability_contract() {
         let app = WeztermBackend;
-        let caps = DeepApp::capabilities(&app);
+        let caps = AppAdapter::capabilities(&app);
         assert!(caps.probe);
         assert!(caps.focus);
         assert!(caps.move_internal);

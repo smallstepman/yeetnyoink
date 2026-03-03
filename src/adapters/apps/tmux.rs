@@ -1,8 +1,9 @@
 use anyhow::{bail, Context, Result};
 
 use crate::adapters::apps::wezterm::WeztermBackend;
+use crate::adapters::apps::AppAdapter;
 use crate::engine::contract::{
-    AdapterCapabilities, AppKind, DeepApp, MoveDecision, TearResult, TopologyHandler,
+    AdapterCapabilities, AppKind, MoveDecision, TearResult, TopologyHandler,
 };
 use crate::engine::runtime::{self, CommandContext};
 use crate::engine::topology::Direction;
@@ -101,7 +102,7 @@ impl Tmux {
     }
 }
 
-impl DeepApp for Tmux {
+impl AppAdapter for Tmux {
     fn adapter_name(&self) -> &'static str {
         "tmux"
     }
@@ -204,14 +205,14 @@ impl TopologyHandler for Tmux {
 #[cfg(test)]
 mod tests {
     use super::Tmux;
-    use crate::engine::contract::DeepApp;
+    use crate::engine::contract::AppAdapter;
 
     #[test]
     fn declares_explicit_capability_contract() {
         let app = Tmux {
             session: "test".to_string(),
         };
-        let caps = DeepApp::capabilities(&app);
+        let caps = AppAdapter::capabilities(&app);
         assert!(caps.probe);
         assert!(caps.focus);
         assert!(caps.move_internal);

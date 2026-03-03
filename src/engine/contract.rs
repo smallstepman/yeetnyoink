@@ -115,28 +115,6 @@ impl AppCapabilities {
 
 pub type AdapterCapabilities = AppCapabilities;
 
-/// Metadata/capabilities contract for app adapters.
-pub trait DeepApp: Send {
-    /// Human-readable adapter name used in diagnostics.
-    fn adapter_name(&self) -> &'static str;
-
-    /// Optional config aliases used to bind policy for this adapter.
-    fn config_aliases(&self) -> Option<&'static [&'static str]> {
-        None
-    }
-
-    /// High-level app category used by domain resolution policy.
-    fn kind(&self) -> AppKind;
-
-    /// Explicit capability declaration used by orchestrator routing.
-    fn capabilities(&self) -> AdapterCapabilities;
-
-    /// Optional adapter-native expression evaluator.
-    fn eval(&self, _expression: &str, _pid: Option<ProcessId>) -> Result<String> {
-        Err(unsupported_operation(self.adapter_name(), "eval"))
-    }
-}
-
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TopologySnapshot {
     /// Directions where the focused pane has in-app neighbors.
@@ -146,7 +124,7 @@ pub struct TopologySnapshot {
 }
 
 /// Unified query + mutation contract for app topology.
-pub trait TopologyHandler: DeepApp {
+pub trait TopologyHandler {
     /// Snapshot of the current in-app and cross-domain neighbor surface.
     fn topology_snapshot(&self, pid: u32) -> Result<TopologySnapshot> {
         let mut snapshot = TopologySnapshot::default();
@@ -191,19 +169,25 @@ pub trait TopologyHandler: DeepApp {
 
     fn resize_internal(&self, _dir: Direction, _grow: bool, _step: i32, _pid: u32) -> Result<()> {
         Err(unsupported_operation(
-            self.adapter_name(),
+            std::any::type_name::<Self>(),
             "resize_internal",
         ))
     }
 
     fn rearrange(&self, _dir: Direction, _pid: u32) -> Result<()> {
-        Err(unsupported_operation(self.adapter_name(), "rearrange"))
+        Err(unsupported_operation(
+            std::any::type_name::<Self>(),
+            "rearrange",
+        ))
     }
 
     fn move_out(&self, dir: Direction, pid: u32) -> Result<TearResult>;
 
     fn merge_into(&self, _dir: Direction, _source_pid: u32) -> Result<()> {
-        Err(unsupported_operation(self.adapter_name(), "merge_into"))
+        Err(unsupported_operation(
+            std::any::type_name::<Self>(),
+            "merge_into",
+        ))
     }
 
     fn merge_execution_mode(&self) -> MergeExecutionMode {
@@ -233,9 +217,27 @@ pub trait TopologyHandler: DeepApp {
     }
 }
 
-pub trait AppAdapter: DeepApp + TopologyHandler {}
+/// Metadata/capabilities contract for app adapters.
+pub trait AppAdapter: Send + TopologyHandler {
+    /// Human-readable adapter name used in diagnostics.
+    fn adapter_name(&self) -> &'static str;
 
-impl<T> AppAdapter for T where T: DeepApp + TopologyHandler {}
+    /// Optional config aliases used to bind policy for this adapter.
+    fn config_aliases(&self) -> Option<&'static [&'static str]> {
+        None
+    }
+
+    /// High-level app category used by domain resolution policy.
+    fn kind(&self) -> AppKind;
+
+    /// Explicit capability declaration used by orchestrator routing.
+    fn capabilities(&self) -> AdapterCapabilities;
+
+    /// Optional adapter-native expression evaluator.
+    fn eval(&self, _expression: &str, _pid: Option<ProcessId>) -> Result<String> {
+        Err(unsupported_operation(self.adapter_name(), "eval"))
+    }
+}
 
 pub fn unsupported_operation(adapter: &str, operation: &str) -> anyhow::Error {
     anyhow!(

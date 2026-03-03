@@ -1,42 +1,19 @@
 use anyhow::{bail, Context, Result};
 
 use crate::engine::contract::{
-    AdapterCapabilities, AppKind, DeepApp, MergeExecutionMode, MergePreparation, MoveDecision,
+    AdapterCapabilities, AppAdapter, AppKind, MergeExecutionMode, MergePreparation, MoveDecision,
     TearResult, TopologyHandler,
 };
 use crate::engine::runtime::{self, CommandContext, ProcessId};
 use crate::engine::topology::Direction;
 
 pub struct EmacsBackend;
+pub const APP_IDS: &[&str] = &["emacs", "Emacs", "org.gnu.emacs"];
 pub const ADAPTER_NAME: &str = "editor";
 pub const ADAPTER_ALIASES: &[&str] = &["emacs", "editor"];
-pub const APP_IDS: &[&str] = &["emacs", "Emacs", "org.gnu.emacs"];
 
 struct EmacsMergePreparation {
     frame_id: String,
-}
-
-/// Find the focused GUI frame's selected window, then run body in that context.
-/// Uses `with-selected-window` which RESTORES the original selection on exit.
-/// Use for read-only queries (at_side, window_count, buffer-name, etc).
-fn in_focused_window(body: &str) -> String {
-    format!(
-        "(let* ((--f (car (filtered-frame-list (lambda (f) (frame-focus-state f))))) \
-                (--w (and --f (frame-selected-window --f)))) \
-           (if --w (with-selected-window --w {body}) (error \"no focused frame\")))"
-    )
-}
-
-/// Find the focused GUI frame's selected window, select it PERSISTENTLY, then run body.
-/// The window/frame selection change sticks after the eval returns.
-/// Use for mutations (windmove, swap, delete-window, make-frame, etc).
-fn in_focused_window_mut(body: &str) -> String {
-    format!(
-        "(let* ((--f (car (filtered-frame-list (lambda (f) (frame-focus-state f))))) \
-                (--w (and --f (frame-selected-window --f)))) \
-           (if --w (progn (select-frame-set-input-focus --f) (select-window --w) {body}) \
-             (error \"no focused frame\")))"
-    )
 }
 
 fn emacs_eval(expr: &str) -> Result<String> {
@@ -59,27 +36,32 @@ fn emacs_eval(expr: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+/// Find the focused GUI frame's selected window, then run body in that context.
+/// Uses `with-selected-window` which RESTORES the original selection on exit.
+/// Use for read-only queries (at_side, window_count, buffer-name, etc).
 /// Eval a read-only query in the focused frame's window (temporary context).
 fn eval_in_frame(body: &str) -> Result<String> {
-    emacs_eval(&in_focused_window(body))
+    emacs_eval(&format!(
+        "(let* ((--f (car (filtered-frame-list (lambda (f) (frame-focus-state f))))) \
+                (--w (and --f (frame-selected-window --f)))) \
+           (if --w (with-selected-window --w {body}) (error \"no focused frame\")))"
+    ))
 }
 
+/// Find the focused GUI frame's selected window, select it PERSISTENTLY, then run body.
+/// The window/frame selection change sticks after the eval returns.
+/// Use for mutations (windmove, swap, delete-window, make-frame, etc).
 /// Eval a mutation in the focused frame's window (persistent selection).
 fn eval_in_frame_mut(body: &str) -> Result<String> {
-    emacs_eval(&in_focused_window_mut(body))
+    emacs_eval(&format!(
+        "(let* ((--f (car (filtered-frame-list (lambda (f) (frame-focus-state f))))) \
+                (--w (and --f (frame-selected-window --f)))) \
+           (if --w (progn (select-frame-set-input-focus --f) (select-window --w) {body}) \
+             (error \"no focused frame\")))"
+    ))
 }
 
-fn resize_delta(dir: Direction, grow: bool, step: i32) -> (i32, bool) {
-    let directional = match dir {
-        Direction::East | Direction::South => step,
-        Direction::West | Direction::North => -step,
-    };
-    let delta = if grow { directional } else { -directional };
-    let horizontal = matches!(dir, Direction::West | Direction::East);
-    (delta, horizontal)
-}
-
-impl DeepApp for EmacsBackend {
+impl AppAdapter for EmacsBackend {
     fn adapter_name(&self) -> &'static str {
         ADAPTER_NAME
     }
@@ -168,7 +150,15 @@ impl TopologyHandler for EmacsBackend {
     }
 
     fn resize_internal(&self, dir: Direction, grow: bool, step: i32, _pid: u32) -> Result<()> {
-        let (delta, horizontal) = resize_delta(dir, grow, step.max(1));
+        let (delta, horizontal) = {
+            let directional = match dir {
+                Direction::East | Direction::South => step.max(1),
+                Direction::West | Direction::North => -step.max(1),
+            };
+            let delta = if grow { directional } else { -directional };
+            let horizontal = matches!(dir, Direction::West | Direction::East);
+            (delta, horizontal)
+        };
         let horizontal_arg = if horizontal { "t" } else { "nil" };
         let expr = format!("(window-resize nil {delta} {horizontal_arg})");
         eval_in_frame_mut(&expr)?;
@@ -343,12 +333,12 @@ impl TopologyHandler for EmacsBackend {
 #[cfg(test)]
 mod tests {
     use super::EmacsBackend;
-    use crate::engine::contract::DeepApp;
+    use crate::engine::contract::AppAdapter;
 
     #[test]
     fn declares_explicit_capability_contract() {
         let app = EmacsBackend;
-        let caps = DeepApp::capabilities(&app);
+        let caps = AppAdapter::capabilities(&app);
         assert!(caps.probe);
         assert!(caps.focus);
         assert!(caps.move_internal);

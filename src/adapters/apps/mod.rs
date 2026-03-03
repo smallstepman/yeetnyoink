@@ -17,13 +17,13 @@ use vscode::Vscode;
 use wezterm::WeztermBackend;
 
 pub use crate::engine::contract::{
-    unsupported_operation, AdapterCapabilities, AppAdapter, AppCapabilities, AppKind, DeepApp,
+    unsupported_operation, AdapterCapabilities, AppAdapter, AppCapabilities, AppKind,
     MergeExecutionMode, MergePreparation, MoveDecision, TearResult, TopologyHandler,
     TopologySnapshot,
 };
 
 /// Developer note for adding a new adapter:
-/// 1. Implement `DeepApp` and declare all booleans in `capabilities`.
+/// 1. Implement `AppAdapter` and declare all booleans in `capabilities`.
 /// 2. Keep unsupported operations disabled in `capabilities` so the orchestrator
 ///    classify them as `Unsupported` without runtime probes.
 /// 3. Add adapter tests that cover focus/move/resize behavior and precedence.
@@ -62,7 +62,7 @@ impl PolicyBoundApp {
     }
 }
 
-impl DeepApp for PolicyBoundApp {
+impl AppAdapter for PolicyBoundApp {
     fn adapter_name(&self) -> &'static str {
         self.inner.adapter_name()
     }
@@ -362,7 +362,7 @@ fn resolve_direct_adapter(app_id: &str, preferred: Option<&str>) -> Option<Box<d
     None
 }
 
-/// Resolve a chain of DeepApp handlers for a window, innermost-first.
+/// Resolve a chain of app handlers for a window, innermost-first.
 ///
 /// For a terminal running `terminal → zsh → tmux → nvim`:
 ///   returns `[Nvim { .. }, Tmux { .. }]`
