@@ -475,11 +475,18 @@ fn config_paths() -> Vec<PathBuf> {
     }
 
     let mut paths = Vec::new();
-    if let Some(xdg_dir) = std::env::var_os("XDG_CONFIG_DIR").map(PathBuf::from) {
-        paths.push(xdg_dir.join("niri-deep").join("config.toml"));
+    // Legacy compatibility for existing test harnesses and old setups.
+    if let Some(legacy_xdg_dir) = std::env::var_os("XDG_CONFIG_DIR").map(PathBuf::from) {
+        let legacy_path = legacy_xdg_dir.join("niri-deep").join("config.toml");
+        if !paths.contains(&legacy_path) {
+            paths.push(legacy_path);
+        }
     }
     if let Some(xdg_home) = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from) {
-        paths.push(xdg_home.join("niri-deep").join("config.toml"));
+        let xdg_path = xdg_home.join("niri-deep").join("config.toml");
+        if !paths.contains(&xdg_path) {
+            paths.push(xdg_path);
+        }
     }
     if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
         paths.push(home.join(".config").join("niri-deep").join("config.toml"));
@@ -528,20 +535,136 @@ fn normalize_override(value: &str) -> Option<String> {
     }
 }
 
-fn terminal_profile<'a>(cfg: &'a Config) -> Option<&'a TerminalAppConfig> {
-    cfg.app
-        .terminal
-        .get("wezterm")
-        .or_else(|| cfg.app.terminal.values().find(|item| item.enabled))
-        .or_else(|| cfg.app.terminal.values().next())
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppSection {
+    Browser,
+    Terminal,
+    Editor,
 }
 
-fn editor_profile<'a>(cfg: &'a Config) -> Option<&'a EditorAppConfig> {
-    cfg.app
-        .editor
-        .get("emacs")
-        .or_else(|| cfg.app.editor.values().find(|item| item.enabled))
-        .or_else(|| cfg.app.editor.values().next())
+#[derive(Debug, Clone)]
+pub struct PanePolicy {
+    integration_enabled: bool,
+    focus_internal: InternalPaneDirectionConfig,
+    move_internal: InternalPaneDirectionConfig,
+    resize_internal: InternalPaneDirectionConfig,
+    tear_out_enabled: bool,
+}
+
+impl PanePolicy {
+    fn defaults(integration_enabled: bool) -> Self {
+        Self {
+            integration_enabled,
+            focus_internal: InternalPaneDirectionConfig::default(),
+            move_internal: InternalPaneDirectionConfig::default(),
+            resize_internal: InternalPaneDirectionConfig::default(),
+            tear_out_enabled: true,
+        }
+    }
+
+    pub fn integration_enabled(&self) -> bool {
+        self.integration_enabled
+    }
+
+    pub fn focus_capability(&self) -> bool {
+        self.integration_enabled && self.focus_internal.enabled
+    }
+
+    pub fn move_capability(&self) -> bool {
+        self.integration_enabled && self.move_internal.enabled
+    }
+
+    pub fn resize_capability(&self) -> bool {
+        self.integration_enabled && self.resize_internal.enabled
+    }
+
+    pub fn tear_out_capability(&self) -> bool {
+        self.integration_enabled && self.tear_out_enabled
+    }
+
+    pub fn focus_allowed(&self, direction: Direction) -> bool {
+        self.integration_enabled && check_allowed(&self.focus_internal, direction)
+    }
+
+    pub fn move_allowed(&self, direction: Direction) -> bool {
+        self.integration_enabled && check_allowed(&self.move_internal, direction)
+    }
+
+    pub fn resize_allowed(&self, direction: Direction) -> bool {
+        self.integration_enabled && check_allowed(&self.resize_internal, direction)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MuxPolicy {
+    pub integration_enabled: bool,
+    pub backend: TerminalMuxBackend,
+    pub enable_override: Option<bool>,
+}
+
+impl MuxPolicy {
+    pub fn bridge_enable_override(self) -> Option<bool> {
+        self.enable_override.or_else(|| match self.backend {
+            TerminalMuxBackend::Wezterm => None,
+            TerminalMuxBackend::Tmux | TerminalMuxBackend::Zellij | TerminalMuxBackend::Kitty => {
+                Some(false)
+            }
+        })
+    }
+}
+
+fn alias_keys(aliases: &[&str]) -> Vec<String> {
+    let mut keys = Vec::new();
+    for alias in aliases {
+        let Some(normalized) = normalize_override(alias) else {
+            continue;
+        };
+        if !keys.contains(&normalized) {
+            keys.push(normalized);
+        }
+    }
+    keys
+}
+
+fn profile_by_aliases<'a, T>(profiles: &'a HashMap<String, T>, aliases: &[&str]) -> Option<&'a T> {
+    let aliases = alias_keys(aliases);
+    if aliases.is_empty() {
+        return None;
+    }
+
+    for alias in &aliases {
+        if let Some(profile) = profiles.get(alias) {
+            return Some(profile);
+        }
+    }
+
+    for (key, profile) in profiles {
+        if aliases.iter().any(|alias| key.eq_ignore_ascii_case(alias)) {
+            return Some(profile);
+        }
+    }
+
+    None
+}
+
+fn section_enabled_from<T>(
+    profiles: &HashMap<String, T>,
+    aliases: &[&str],
+    enabled: impl Fn(&T) -> bool,
+) -> bool {
+    profile_by_aliases(profiles, aliases)
+        .map(enabled)
+        .unwrap_or(profiles.is_empty())
+}
+
+fn app_enabled_from(cfg: &Config, section: AppSection, aliases: &[&str]) -> bool {
+    match section {
+        AppSection::Browser => section_enabled_from(&cfg.app.browser, aliases, |profile| profile.enabled),
+        AppSection::Terminal => {
+            section_enabled_from(&cfg.app.terminal, aliases, |profile| profile.enabled)
+        }
+        AppSection::Editor => section_enabled_from(&cfg.app.editor, aliases, |profile| profile.enabled),
+    }
 }
 
 pub fn wm_adapter_override() -> Option<String> {
@@ -578,130 +701,77 @@ pub fn app_adapter_override() -> Option<String> {
     None
 }
 
-pub fn terminal_enabled() -> bool {
-    terminal_profile(&read_config())
+pub fn app_integration_enabled(section: AppSection, aliases: &[&str]) -> bool {
+    app_enabled_from(&read_config(), section, aliases)
+}
+
+fn pane_policy_from(cfg: &Config, section: AppSection, aliases: &[&str]) -> PanePolicy {
+    match section {
+        AppSection::Terminal => {
+            let profile = profile_by_aliases(&cfg.app.terminal, aliases);
+            let integration_enabled = profile
+                .map(|profile| profile.enabled)
+                .unwrap_or(cfg.app.terminal.is_empty());
+            match profile {
+                Some(profile) => PanePolicy {
+                    integration_enabled,
+                    focus_internal: profile.focus.pane.internal_panes.clone(),
+                    move_internal: profile.movement.pane.internal_panes.clone(),
+                    resize_internal: profile.resize.internal_panes.clone(),
+                    tear_out_enabled: profile.movement.pane.docking.tear_off.enabled,
+                },
+                None => PanePolicy::defaults(integration_enabled),
+            }
+        }
+        AppSection::Editor => {
+            let profile = profile_by_aliases(&cfg.app.editor, aliases);
+            let integration_enabled = profile
+                .map(|profile| profile.enabled)
+                .unwrap_or(cfg.app.editor.is_empty());
+            match profile {
+                Some(profile) => PanePolicy {
+                    integration_enabled,
+                    focus_internal: profile.focus.internal_panes.clone(),
+                    move_internal: profile.movement.internal_panes.clone(),
+                    resize_internal: profile.resize.internal_panes.clone(),
+                    tear_out_enabled: profile.movement.docking.tear_off.enabled,
+                },
+                None => PanePolicy::defaults(integration_enabled),
+            }
+        }
+        AppSection::Browser => PanePolicy::defaults(app_enabled_from(cfg, section, aliases)),
+    }
+}
+
+pub fn pane_policy_for(section: AppSection, aliases: &[&str]) -> PanePolicy {
+    pane_policy_from(&read_config(), section, aliases)
+}
+
+fn mux_policy_from(cfg: &Config, aliases: &[&str]) -> MuxPolicy {
+    let profile = profile_by_aliases(&cfg.app.terminal, aliases);
+    let integration_enabled = profile
         .map(|profile| profile.enabled)
-        .unwrap_or(true)
+        .unwrap_or(cfg.app.terminal.is_empty());
+    MuxPolicy {
+        integration_enabled,
+        backend: profile
+            .and_then(|profile| profile.variant.mux_backend)
+            .unwrap_or(TerminalMuxBackend::Wezterm),
+        enable_override: profile.and_then(|profile| profile.variant.mux.enable),
+    }
 }
 
-pub fn terminal_mux_enable() -> Option<bool> {
-    let cfg = read_config();
-    let profile = terminal_profile(&cfg)?;
-    profile
-        .variant
-        .mux
-        .enable
-        .or_else(|| match profile.variant.mux_backend {
-            Some(TerminalMuxBackend::Wezterm) | None => None,
-            Some(_) => Some(false),
-        })
+pub fn mux_policy_for(aliases: &[&str]) -> MuxPolicy {
+    mux_policy_from(&read_config(), aliases)
 }
 
-pub fn terminal_mux_backend() -> TerminalMuxBackend {
-    terminal_profile(&read_config())
-        .and_then(|profile| profile.variant.mux_backend)
-        .unwrap_or(TerminalMuxBackend::Wezterm)
-}
-
-pub fn terminal_focus_internal_enabled() -> bool {
-    terminal_profile(&read_config())
-        .map(|profile| profile.focus.pane.internal_panes.enabled)
-        .unwrap_or(true)
-}
-
-pub fn terminal_move_internal_enabled() -> bool {
-    terminal_profile(&read_config())
-        .map(|profile| profile.movement.pane.internal_panes.enabled)
-        .unwrap_or(true)
-}
-
-pub fn terminal_resize_internal_enabled() -> bool {
-    terminal_profile(&read_config())
-        .map(|profile| profile.resize.internal_panes.enabled)
-        .unwrap_or(true)
-}
-
-pub fn terminal_move_tearout_enabled() -> bool {
-    terminal_profile(&read_config())
-        .map(|profile| profile.movement.pane.docking.tear_off.enabled)
-        .unwrap_or(true)
-}
-
-fn check_allowed(cfg: Option<&InternalPaneDirectionConfig>, direction: Direction) -> bool {
-    cfg.map(|c| {
-        c.enabled
-            && c.allowed_directions
-                .as_ref()
-                .map(|dirs| dirs.contains(&direction))
-                .unwrap_or(true)
-    })
-    .unwrap_or(true)
-}
-
-pub fn terminal_focus_allowed(direction: Direction) -> bool {
-    check_allowed(
-        terminal_profile(&read_config()).map(|p| &p.focus.pane.internal_panes),
-        direction,
-    )
-}
-
-pub fn terminal_move_allowed(direction: Direction) -> bool {
-    check_allowed(
-        terminal_profile(&read_config()).map(|p| &p.movement.pane.internal_panes),
-        direction,
-    )
-}
-
-pub fn terminal_resize_allowed(direction: Direction) -> bool {
-    check_allowed(
-        terminal_profile(&read_config()).map(|p| &p.resize.internal_panes),
-        direction,
-    )
-}
-
-pub fn editor_focus_internal_enabled() -> bool {
-    editor_profile(&read_config())
-        .map(|profile| profile.focus.internal_panes.enabled)
-        .unwrap_or(true)
-}
-
-pub fn editor_move_internal_enabled() -> bool {
-    editor_profile(&read_config())
-        .map(|profile| profile.movement.internal_panes.enabled)
-        .unwrap_or(true)
-}
-
-pub fn editor_resize_internal_enabled() -> bool {
-    editor_profile(&read_config())
-        .map(|profile| profile.resize.internal_panes.enabled)
-        .unwrap_or(true)
-}
-
-pub fn editor_move_tearout_enabled() -> bool {
-    editor_profile(&read_config())
-        .map(|profile| profile.movement.docking.tear_off.enabled)
-        .unwrap_or(true)
-}
-
-pub fn editor_focus_allowed(direction: Direction) -> bool {
-    check_allowed(
-        editor_profile(&read_config()).map(|p| &p.focus.internal_panes),
-        direction,
-    )
-}
-
-pub fn editor_move_allowed(direction: Direction) -> bool {
-    check_allowed(
-        editor_profile(&read_config()).map(|p| &p.movement.internal_panes),
-        direction,
-    )
-}
-
-pub fn editor_resize_allowed(direction: Direction) -> bool {
-    check_allowed(
-        editor_profile(&read_config()).map(|p| &p.resize.internal_panes),
-        direction,
-    )
+fn check_allowed(cfg: &InternalPaneDirectionConfig, direction: Direction) -> bool {
+    cfg.enabled
+        && cfg
+            .allowed_directions
+            .as_ref()
+            .map(|dirs| dirs.contains(&direction))
+            .unwrap_or(true)
 }
 
 // ---------------------------------------------------------------------------
@@ -736,5 +806,37 @@ move.docking.tear_off.enabled = true
         let parsed: Config = toml::from_str(sample).expect("sample config should parse");
         assert!(parsed.app.terminal.contains_key("wezterm"));
         assert!(parsed.app.editor.contains_key("emacs"));
+    }
+
+    #[test]
+    fn pane_policy_resolves_matching_alias_without_cross_profile_fallback() {
+        let sample = r#"
+[app.terminal.wezterm]
+enabled = true
+focus.internal_panes.enabled = false
+
+[app.terminal.kitty]
+enabled = false
+"#;
+        let parsed: Config = toml::from_str(sample).expect("sample config should parse");
+
+        let wezterm_policy = pane_policy_from(&parsed, AppSection::Terminal, &["terminal", "wezterm"]);
+        assert!(wezterm_policy.integration_enabled());
+        assert!(!wezterm_policy.focus_capability());
+
+        let kitty_policy = pane_policy_from(&parsed, AppSection::Terminal, &["kitty"]);
+        assert!(!kitty_policy.integration_enabled());
+    }
+
+    #[test]
+    fn unmatched_alias_defaults_to_disabled_when_section_is_explicitly_configured() {
+        let sample = r#"
+[app.editor.vscode]
+enabled = true
+"#;
+        let parsed: Config = toml::from_str(sample).expect("sample config should parse");
+
+        assert!(app_enabled_from(&parsed, AppSection::Editor, &["vscode"]));
+        assert!(!app_enabled_from(&parsed, AppSection::Editor, &["editor", "emacs"]));
     }
 }

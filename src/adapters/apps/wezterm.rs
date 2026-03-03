@@ -154,7 +154,7 @@ use std::time::Duration;
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 
-use crate::config::TerminalMuxBackend;
+use crate::config::{AppSection, TerminalMuxBackend};
 use crate::engine::contracts::{
     unsupported_operation, AdapterCapabilities, AppKind, DeepApp, MergeExecutionMode,
     MergePreparation, MoveDecision, TearResult,
@@ -197,7 +197,7 @@ impl ClientFocusSelection {
 
 pub struct WeztermBackend;
 pub const ADAPTER_NAME: &str = "terminal";
-pub const ADAPTER_ALIASES: &[&str] = &["terminal", "wezterm"];
+pub const ADAPTER_ALIASES: &[&str] = &["wezterm", "terminal"];
 pub const APP_IDS: &[&str] = &["org.wezfurlong.wezterm"];
 
 struct WeztermMergePreparation {
@@ -218,22 +218,31 @@ impl WeztermBackend {
     const MUX_BRIDGE_READY_MAX_AGE: Duration = Duration::from_secs(2);
     const MUX_BRIDGE_READY_FILE: &'static str = "ready";
 
+    fn pane_policy() -> crate::config::PanePolicy {
+        crate::config::pane_policy_for(AppSection::Terminal, ADAPTER_ALIASES)
+    }
+
+    fn mux_policy() -> crate::config::MuxPolicy {
+        crate::config::mux_policy_for(ADAPTER_ALIASES)
+    }
+
     fn mux_bridge_mode() -> MuxBridgeMode {
-        if !crate::config::terminal_enabled() {
+        let mux_policy = Self::mux_policy();
+        if !mux_policy.integration_enabled {
             return MuxBridgeMode::Disabled;
         }
-        if let Some(enabled) = crate::config::terminal_mux_enable() {
+        if let Some(enabled) = mux_policy.bridge_enable_override() {
             if !enabled {
                 return MuxBridgeMode::Disabled;
             }
-            return match crate::config::terminal_mux_backend() {
+            return match mux_policy.backend {
                 TerminalMuxBackend::Wezterm => MuxBridgeMode::Enabled,
                 TerminalMuxBackend::Tmux
                 | TerminalMuxBackend::Zellij
                 | TerminalMuxBackend::Kitty => MuxBridgeMode::Disabled,
             };
         }
-        match crate::config::terminal_mux_backend() {
+        match mux_policy.backend {
             TerminalMuxBackend::Wezterm => MuxBridgeMode::Auto,
             TerminalMuxBackend::Tmux | TerminalMuxBackend::Zellij | TerminalMuxBackend::Kitty => {
                 MuxBridgeMode::Disabled
@@ -791,22 +800,23 @@ impl DeepApp for WeztermBackend {
     }
 
     fn capabilities(&self) -> AdapterCapabilities {
-        let focus_enabled = crate::config::terminal_focus_internal_enabled();
-        let move_enabled = crate::config::terminal_move_internal_enabled();
-        let resize_enabled = crate::config::terminal_resize_internal_enabled();
+        let policy = Self::pane_policy();
+        let focus_enabled = policy.focus_capability();
+        let move_enabled = policy.move_capability();
+        let resize_enabled = policy.resize_capability();
         AdapterCapabilities {
             probe: true,
             focus: focus_enabled,
             move_internal: move_enabled,
             resize_internal: resize_enabled,
             rearrange: move_enabled,
-            tear_out: crate::config::terminal_move_tearout_enabled(),
+            tear_out: policy.tear_out_capability(),
             merge: true,
         }
     }
 
     fn can_focus(&self, dir: Direction, pid: u32) -> Result<bool> {
-        if !crate::config::terminal_focus_allowed(dir) {
+        if !Self::pane_policy().focus_allowed(dir) {
             return Ok(false);
         }
         let pane_id = Self::focused_pane_id(pid)?;
@@ -814,7 +824,7 @@ impl DeepApp for WeztermBackend {
     }
 
     fn focus(&self, dir: Direction, pid: u32) -> Result<()> {
-        if !crate::config::terminal_focus_allowed(dir) {
+        if !Self::pane_policy().focus_allowed(dir) {
             return Err(unsupported_operation(self.adapter_name(), "focus"));
         }
         let pane_id = Self::focused_pane_id(pid)?;
@@ -832,7 +842,8 @@ impl DeepApp for WeztermBackend {
     }
 
     fn move_decision(&self, dir: Direction, pid: u32) -> Result<MoveDecision> {
-        if !crate::config::terminal_move_allowed(dir) {
+        let policy = Self::pane_policy();
+        if !policy.move_allowed(dir) {
             logging::debug(format!(
                 "wezterm: move_decision dir={dir} => Passthrough (config)"
             ));
@@ -868,7 +879,7 @@ impl DeepApp for WeztermBackend {
             return Ok(MoveDecision::Rearrange);
         }
 
-        if !crate::config::terminal_move_tearout_enabled() {
+        if !policy.tear_out_capability() {
             logging::debug(format!(
                 "wezterm: move_decision dir={dir} => Passthrough (tearout disabled)"
             ));
@@ -880,7 +891,7 @@ impl DeepApp for WeztermBackend {
     }
 
     fn move_internal(&self, dir: Direction, pid: u32) -> Result<()> {
-        if !crate::config::terminal_move_allowed(dir) {
+        if !Self::pane_policy().move_allowed(dir) {
             return Err(unsupported_operation(self.adapter_name(), "move_internal"));
         }
         let pane_id = Self::focused_pane_id(pid)?;
@@ -903,11 +914,11 @@ impl DeepApp for WeztermBackend {
     }
 
     fn can_resize(&self, dir: Direction, _grow: bool, _pid: u32) -> Result<bool> {
-        Ok(crate::config::terminal_resize_allowed(dir))
+        Ok(Self::pane_policy().resize_allowed(dir))
     }
 
     fn resize_internal(&self, dir: Direction, grow: bool, step: i32, pid: u32) -> Result<()> {
-        if !crate::config::terminal_resize_allowed(dir) {
+        if !Self::pane_policy().resize_allowed(dir) {
             return Err(unsupported_operation(
                 self.adapter_name(),
                 "resize_internal",
@@ -964,9 +975,8 @@ impl DeepApp for WeztermBackend {
     }
 
     fn move_out(&self, dir: Direction, pid: u32) -> Result<TearResult> {
-        if !crate::config::terminal_move_allowed(dir)
-            || !crate::config::terminal_move_tearout_enabled()
-        {
+        let policy = Self::pane_policy();
+        if !policy.move_allowed(dir) || !policy.tear_out_capability() {
             return Err(unsupported_operation(self.adapter_name(), "move_out"));
         }
         let pane_id = Self::focused_pane_id(pid)?;

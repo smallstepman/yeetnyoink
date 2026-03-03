@@ -7,6 +7,7 @@ pub mod wezterm;
 
 use crate::engine::runtime;
 use crate::logging;
+use crate::config::AppSection;
 
 use emacs::EmacsBackend;
 use librefox::Librefox;
@@ -39,6 +40,7 @@ struct DirectAdapterSpec {
     name: &'static str,
     aliases: &'static [&'static str],
     app_ids: &'static [&'static str],
+    section: AppSection,
     build: fn() -> Box<dyn DeepApp>,
 }
 
@@ -59,18 +61,21 @@ const DIRECT_ADAPTERS: &[DirectAdapterSpec] = &[
         name: emacs::ADAPTER_NAME,
         aliases: emacs::ADAPTER_ALIASES,
         app_ids: emacs::APP_IDS,
+        section: AppSection::Editor,
         build: build_editor,
     },
     DirectAdapterSpec {
         name: "librefox",
         aliases: &["librefox"],
         app_ids: &["librewolf", "LibreWolf", "firefox", "Firefox"],
+        section: AppSection::Browser,
         build: build_librefox,
     },
     DirectAdapterSpec {
         name: "vscode",
         aliases: &["vscode"],
         app_ids: &["code", "code-url-handler", "Code", "code-oss"],
+        section: AppSection::Editor,
         build: build_vscode,
     },
 ];
@@ -112,6 +117,14 @@ fn resolve_direct_adapter(app_id: &str, preferred: Option<&str>) -> Option<Box<d
             }
         }
 
+        if !crate::config::app_integration_enabled(spec.section, spec.aliases) {
+            logging::debug(format!(
+                "resolve_chain: direct adapter '{}' disabled via config",
+                spec.name
+            ));
+            return None;
+        }
+
         return Some((spec.build)());
     }
 
@@ -142,7 +155,7 @@ pub fn resolve_chain(app_id: &str, pid: u32, title: &str) -> Vec<Box<dyn DeepApp
                 return vec![];
             }
         }
-        if !crate::config::terminal_enabled() {
+        if !crate::config::app_integration_enabled(AppSection::Terminal, wezterm::ADAPTER_ALIASES) {
             logging::debug("resolve_chain: terminal integration disabled via config");
             return vec![];
         }

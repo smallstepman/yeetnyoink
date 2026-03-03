@@ -1,5 +1,6 @@
 use anyhow::{bail, Context, Result};
 
+use crate::config::AppSection;
 use crate::engine::contracts::{
     unsupported_operation, AdapterCapabilities, AppKind, DeepApp, MergeExecutionMode,
     MergePreparation, MoveDecision, TearResult,
@@ -9,7 +10,7 @@ use crate::engine::topology::Direction;
 
 pub struct EmacsBackend;
 pub const ADAPTER_NAME: &str = "editor";
-pub const ADAPTER_ALIASES: &[&str] = &["editor", "emacs"];
+pub const ADAPTER_ALIASES: &[&str] = &["emacs", "editor"];
 pub const APP_IDS: &[&str] = &["emacs", "Emacs", "org.gnu.emacs"];
 
 struct EmacsMergePreparation {
@@ -40,6 +41,10 @@ fn in_focused_window_mut(body: &str) -> String {
 }
 
 impl EmacsBackend {
+    fn pane_policy() -> crate::config::PanePolicy {
+        crate::config::pane_policy_for(AppSection::Editor, ADAPTER_ALIASES)
+    }
+
     fn eval(expr: &str) -> Result<String> {
         let output = runtime::run_command_output(
             "emacsclient",
@@ -138,10 +143,11 @@ impl DeepApp for EmacsBackend {
     }
 
     fn capabilities(&self) -> AdapterCapabilities {
-        let focus_enabled = crate::config::editor_focus_internal_enabled();
-        let move_enabled = crate::config::editor_move_internal_enabled();
-        let tear_out_enabled = crate::config::editor_move_tearout_enabled();
-        let resize_enabled = crate::config::editor_resize_internal_enabled();
+        let policy = Self::pane_policy();
+        let focus_enabled = policy.focus_capability();
+        let move_enabled = policy.move_capability();
+        let tear_out_enabled = policy.tear_out_capability();
+        let resize_enabled = policy.resize_capability();
         AdapterCapabilities {
             probe: true,
             focus: focus_enabled,
@@ -154,14 +160,14 @@ impl DeepApp for EmacsBackend {
     }
 
     fn can_focus(&self, dir: Direction, _pid: u32) -> Result<bool> {
-        if !crate::config::editor_focus_allowed(dir) {
+        if !Self::pane_policy().focus_allowed(dir) {
             return Ok(false);
         }
         Ok(!self.at_side(dir)?)
     }
 
     fn focus(&self, dir: Direction, _pid: u32) -> Result<()> {
-        if !crate::config::editor_focus_allowed(dir) {
+        if !Self::pane_policy().focus_allowed(dir) {
             return Err(unsupported_operation(self.adapter_name(), "focus"));
         }
         let func = Self::windmove_fn(dir);
@@ -170,7 +176,8 @@ impl DeepApp for EmacsBackend {
     }
 
     fn move_decision(&self, dir: Direction, _pid: u32) -> Result<MoveDecision> {
-        if !crate::config::editor_move_allowed(dir) {
+        let policy = Self::pane_policy();
+        if !policy.move_allowed(dir) {
             return Ok(MoveDecision::Passthrough);
         }
         let win_count = self.window_count()?;
@@ -198,7 +205,7 @@ impl DeepApp for EmacsBackend {
 
         if has_perpendicular_neighbor {
             Ok(MoveDecision::Rearrange)
-        } else if !crate::config::editor_move_tearout_enabled() {
+        } else if !policy.tear_out_capability() {
             Ok(MoveDecision::Passthrough)
         } else {
             // At edge and neighbors only along this axis — tear out.
@@ -207,7 +214,7 @@ impl DeepApp for EmacsBackend {
     }
 
     fn move_internal(&self, dir: Direction, _pid: u32) -> Result<()> {
-        if !crate::config::editor_move_allowed(dir) {
+        if !Self::pane_policy().move_allowed(dir) {
             return Err(unsupported_operation(self.adapter_name(), "move_internal"));
         }
         let func = Self::windmove_swap_fn(dir);
@@ -216,11 +223,11 @@ impl DeepApp for EmacsBackend {
     }
 
     fn can_resize(&self, dir: Direction, _grow: bool, _pid: u32) -> Result<bool> {
-        Ok(crate::config::editor_resize_allowed(dir))
+        Ok(Self::pane_policy().resize_allowed(dir))
     }
 
     fn resize_internal(&self, dir: Direction, grow: bool, step: i32, _pid: u32) -> Result<()> {
-        if !crate::config::editor_resize_allowed(dir) {
+        if !Self::pane_policy().resize_allowed(dir) {
             return Err(unsupported_operation(
                 self.adapter_name(),
                 "resize_internal",
@@ -250,7 +257,7 @@ impl DeepApp for EmacsBackend {
     }
 
     fn move_out(&self, _dir: Direction, _pid: u32) -> Result<TearResult> {
-        if !crate::config::editor_move_tearout_enabled() {
+        if !Self::pane_policy().tear_out_capability() {
             return Err(unsupported_operation(self.adapter_name(), "move_out"));
         }
         // All in one eval in the focused frame's context:
