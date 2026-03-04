@@ -215,192 +215,15 @@ struct WeztermMuxMergePreparation {
     target_window_id: Option<u64>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum MuxBridgeMode {
-    Disabled,
-    Enabled,
-}
-
 impl WeztermMux {
-    const NON_SOURCE_PANE_POLL_ATTEMPTS: usize = 3;
-    const NON_SOURCE_PANE_POLL_DELAY: Duration = Duration::from_millis(10);
-
-    fn mux_bridge_mode() -> MuxBridgeMode {
-        let mux_policy = crate::config::mux_policy_for(ADAPTER_ALIASES);
-        if !mux_policy.integration_enabled {
-            return MuxBridgeMode::Disabled;
-        }
-        if let Some(false) = mux_policy.bridge_enable_override() {
-            return MuxBridgeMode::Disabled;
-        }
-        match mux_policy.backend {
-            TerminalMuxBackend::Wezterm => MuxBridgeMode::Enabled,
-            TerminalMuxBackend::Tmux
-            | TerminalMuxBackend::Zellij
-            | TerminalMuxBackend::Kitty => MuxBridgeMode::Disabled,
-        }
-    }
-
-    fn should_use_mux_bridge() -> bool {
-        Self::mux_bridge_mode() == MuxBridgeMode::Enabled
-    }
-
-    fn enqueue_mux_merge_command(source_pane_id: u64, dir: Direction) -> Result<()> {
-        let dir_name = dir.to_string();
-        let command = format!("merge {source_pane_id} {dir_name}\n");
-        let dir_path = Self::mux_bridge_dir();
-        fs::create_dir_all(&dir_path)
-            .with_context(|| format!("failed to create mux bridge dir: {}", dir_path.display()))?;
-        let final_path = dir_path.join("merge.cmd");
-        let temp_path = dir_path.join(format!(
-            "merge.cmd.tmp-{}-{}",
-            std::process::id(),
-            source_pane_id
-        ));
-        fs::write(&temp_path, command).with_context(|| {
-            format!(
-                "failed to write mux bridge temp command: {}",
-                temp_path.display()
-            )
-        })?;
-        fs::rename(&temp_path, &final_path).with_context(|| {
-            format!(
-                "failed to publish mux bridge command {} -> {}",
-                temp_path.display(),
-                final_path.display()
-            )
-        })?;
-        Ok(())
-    }
-
-    fn mux_bridge_dir() -> PathBuf {
-        let runtime_dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_string());
-        PathBuf::from(runtime_dir).join("niri-deep-wezterm-mux")
-    }
-
-    fn merge_target_pane_id(
-        pid: u32,
-        source_pane_id: u64,
-        target_window_id: Option<u64>,
-    ) -> Result<u64> {
-        let panes = Self::list_panes(pid)?;
-        let clients = Self::list_clients(pid)?;
-        let pane_exists = |pane_id: u64| panes.iter().any(|p| p.pane_id == pane_id);
-        let not_source = |pane_id: u64| pane_id != source_pane_id;
-
-        if let Some(target_window_id) = target_window_id {
-            let mut candidates: Vec<&WeztermMuxPane> = panes
-                .iter()
-                .filter(|pane| pane.window_id == target_window_id && pane.pane_id != source_pane_id)
-                .collect();
-            candidates.sort_by_key(|pane| pane.pane_id);
-            if let Some(active) = candidates.iter().copied().find(|pane| pane.is_active) {
-                logging::debug(format!(
-                    "wezterm: merge target from explicit window {} active pane = {}",
-                    target_window_id, active.pane_id
-                ));
-                return Ok(active.pane_id);
-            }
-            if let Some(first) = candidates.first() {
-                logging::debug(format!(
-                    "wezterm: merge target from explicit window {} pane = {}",
-                    target_window_id, first.pane_id
-                ));
-                return Ok(first.pane_id);
-            }
-        }
-
-        if let Some(selection) = Self::select_client_focused_pane(&clients, pid, |pane_id| {
-            pane_exists(pane_id) && not_source(pane_id)
-        }) {
-            let pane_id = selection.pane_id();
-            let origin = match selection {
-                WeztermMuxFocusSelection::MatchingPid(_) => "matching client focused pane",
-                WeztermMuxFocusSelection::AnyClient(_) => "any client focused pane",
-            };
-            logging::debug(format!(
-                "wezterm: merge target from {} = {}",
-                origin, pane_id
-            ));
-            return Ok(pane_id);
-        }
-
-        if let Some(source_window_id) = panes
-            .iter()
-            .find(|p| p.pane_id == source_pane_id)
-            .map(|p| p.window_id)
-        {
-            let mut different_window_candidates: Vec<u64> = panes
-                .iter()
-                .filter(|p| p.window_id != source_window_id)
-                .map(|p| p.pane_id)
-                .collect();
-            different_window_candidates.sort_unstable();
-            different_window_candidates.dedup();
-            if different_window_candidates.len() == 1 {
-                let pane_id = different_window_candidates[0];
-                logging::debug(format!(
-                    "wezterm: merge target from non-source window candidate = {}",
-                    pane_id
-                ));
-                return Ok(pane_id);
-            }
-
-            let mut active_different_window_candidates: Vec<u64> = panes
-                .iter()
-                .filter(|p| p.window_id != source_window_id && p.is_active)
-                .map(|p| p.pane_id)
-                .collect();
-            active_different_window_candidates.sort_unstable();
-            active_different_window_candidates.dedup();
-            if active_different_window_candidates.len() == 1 {
-                let pane_id = active_different_window_candidates[0];
-                logging::debug(format!(
-                    "wezterm: merge target from active non-source window candidate = {}",
-                    pane_id
-                ));
-                return Ok(pane_id);
-            } else if active_different_window_candidates.len() > 1 {
-                logging::debug(format!(
-                    "wezterm: ambiguous active non-source window candidates = {:?}",
-                    active_different_window_candidates
-                ));
-                bail!("ambiguous merge target pane across non-source windows");
-            }
-        }
-
-        let mut other_panes: Vec<u64> = panes
-            .iter()
-            .filter(|p| p.pane_id != source_pane_id)
-            .map(|p| p.pane_id)
-            .collect();
-        other_panes.sort_unstable();
-        other_panes.dedup();
-        if other_panes.len() == 1 {
-            let pane_id = other_panes[0];
-            logging::debug(format!(
-                "wezterm: merge target from sole non-source pane candidate = {}",
-                pane_id
-            ));
-            return Ok(pane_id);
-        }
-
-        bail!("unable to resolve merge target pane (ambiguous)")
-    }
-
-    fn wezterm_socket_path(pid: u32) -> Result<PathBuf> {
+    fn cli_output(pid: u32, args: &[&str]) -> Result<std::process::Output> {
         let runtime_dir = std::env::var("XDG_RUNTIME_DIR")
             .context("XDG_RUNTIME_DIR is not set; cannot locate wezterm socket")?;
-        let path = PathBuf::from(format!("{runtime_dir}/wezterm/gui-sock-{pid}"));
-        if !path.exists() {
-            bail!("wezterm socket not found: {}", path.display());
+        let sock_path = PathBuf::from(format!("{runtime_dir}/wezterm/gui-sock-{pid}"));
+        if !sock_path.exists() {
+            bail!("wezterm socket not found: {}", sock_path.display());
         }
-        Ok(path)
-    }
-
-    fn cli_output(pid: u32, args: &[&str]) -> Result<std::process::Output> {
-        let sock = Self::wezterm_socket_path(pid)?;
-        let sock = sock.to_string_lossy().to_string();
+        let sock = sock_path.to_string_lossy().to_string();
         logging::debug(format!(
             "wezterm: pid={} cli {:?} via WEZTERM_UNIX_SOCKET",
             pid, args
@@ -559,6 +382,116 @@ impl WeztermMux {
         }
     }
 
+    fn merge_target_pane_id(
+        pid: u32,
+        source_pane_id: u64,
+        target_window_id: Option<u64>,
+    ) -> Result<u64> {
+        let panes = Self::list_panes(pid)?;
+        let clients = Self::list_clients(pid)?;
+        let pane_exists = |pane_id: u64| panes.iter().any(|p| p.pane_id == pane_id);
+        let not_source = |pane_id: u64| pane_id != source_pane_id;
+
+        if let Some(target_window_id) = target_window_id {
+            let mut candidates: Vec<&WeztermMuxPane> = panes
+                .iter()
+                .filter(|pane| pane.window_id == target_window_id && pane.pane_id != source_pane_id)
+                .collect();
+            candidates.sort_by_key(|pane| pane.pane_id);
+            if let Some(active) = candidates.iter().copied().find(|pane| pane.is_active) {
+                logging::debug(format!(
+                    "wezterm: merge target from explicit window {} active pane = {}",
+                    target_window_id, active.pane_id
+                ));
+                return Ok(active.pane_id);
+            }
+            if let Some(first) = candidates.first() {
+                logging::debug(format!(
+                    "wezterm: merge target from explicit window {} pane = {}",
+                    target_window_id, first.pane_id
+                ));
+                return Ok(first.pane_id);
+            }
+        }
+
+        if let Some(selection) = Self::select_client_focused_pane(&clients, pid, |pane_id| {
+            pane_exists(pane_id) && not_source(pane_id)
+        }) {
+            let pane_id = selection.pane_id();
+            let origin = match selection {
+                WeztermMuxFocusSelection::MatchingPid(_) => "matching client focused pane",
+                WeztermMuxFocusSelection::AnyClient(_) => "any client focused pane",
+            };
+            logging::debug(format!(
+                "wezterm: merge target from {} = {}",
+                origin, pane_id
+            ));
+            return Ok(pane_id);
+        }
+
+        if let Some(source_window_id) = panes
+            .iter()
+            .find(|p| p.pane_id == source_pane_id)
+            .map(|p| p.window_id)
+        {
+            let mut different_window_candidates: Vec<u64> = panes
+                .iter()
+                .filter(|p| p.window_id != source_window_id)
+                .map(|p| p.pane_id)
+                .collect();
+            different_window_candidates.sort_unstable();
+            different_window_candidates.dedup();
+            if different_window_candidates.len() == 1 {
+                let pane_id = different_window_candidates[0];
+                logging::debug(format!(
+                    "wezterm: merge target from non-source window candidate = {}",
+                    pane_id
+                ));
+                return Ok(pane_id);
+            }
+
+            let mut active_different_window_candidates: Vec<u64> = panes
+                .iter()
+                .filter(|p| p.window_id != source_window_id && p.is_active)
+                .map(|p| p.pane_id)
+                .collect();
+            active_different_window_candidates.sort_unstable();
+            active_different_window_candidates.dedup();
+            if active_different_window_candidates.len() == 1 {
+                let pane_id = active_different_window_candidates[0];
+                logging::debug(format!(
+                    "wezterm: merge target from active non-source window candidate = {}",
+                    pane_id
+                ));
+                return Ok(pane_id);
+            } else if active_different_window_candidates.len() > 1 {
+                logging::debug(format!(
+                    "wezterm: ambiguous active non-source window candidates = {:?}",
+                    active_different_window_candidates
+                ));
+                bail!("ambiguous merge target pane across non-source windows");
+            }
+        }
+
+        let mut other_panes: Vec<u64> = panes
+            .iter()
+            .filter(|p| p.pane_id != source_pane_id)
+            .map(|p| p.pane_id)
+            .collect();
+        other_panes.sort_unstable();
+        other_panes.dedup();
+        if other_panes.len() == 1 {
+            let pane_id = other_panes[0];
+            logging::debug(format!(
+                "wezterm: merge target from sole non-source pane candidate = {}",
+                pane_id
+            ));
+            return Ok(pane_id);
+        }
+
+        bail!("unable to resolve merge target pane (ambiguous)")
+    }
+
     fn pane_in_direction(pid: u32, pane_id: u64, dir: Direction) -> Result<Option<u64>> {
         let pane_id_str = pane_id.to_string();
         let output = Self::cli_output(
@@ -642,15 +575,50 @@ impl TerminalMuxProvider for WeztermMux {
             bail!("cannot merge panes across different wezterm instances");
         }
 
-        if Self::should_use_mux_bridge() && target_window_id.is_none() {
+        // Determine whether the mux bridge path should be used.
+        let use_bridge = {
+            let mux_policy = crate::config::mux_policy_for(ADAPTER_ALIASES);
+            mux_policy.integration_enabled
+                && mux_policy.bridge_enable_override() != Some(false)
+                && mux_policy.backend == TerminalMuxBackend::Wezterm
+        };
+
+        if use_bridge && target_window_id.is_none() {
             logging::debug(format!(
                 "wezterm: mux bridge enabled; enqueue merge source pane {} dir={}",
                 source_pane_id, dir
             ));
-            Self::enqueue_mux_merge_command(source_pane_id, dir)?;
+            // Enqueue merge command via filesystem bridge.
+            let dir_name = dir.to_string();
+            let command = format!("merge {source_pane_id} {dir_name}\n");
+            let runtime_dir =
+                std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_string());
+            let bridge_dir = PathBuf::from(runtime_dir).join("niri-deep-wezterm-mux");
+            fs::create_dir_all(&bridge_dir).with_context(|| {
+                format!("failed to create mux bridge dir: {}", bridge_dir.display())
+            })?;
+            let final_path = bridge_dir.join("merge.cmd");
+            let temp_path = bridge_dir.join(format!(
+                "merge.cmd.tmp-{}-{}",
+                std::process::id(),
+                source_pane_id
+            ));
+            fs::write(&temp_path, command).with_context(|| {
+                format!(
+                    "failed to write mux bridge temp command: {}",
+                    temp_path.display()
+                )
+            })?;
+            fs::rename(&temp_path, &final_path).with_context(|| {
+                format!(
+                    "failed to publish mux bridge command {} -> {}",
+                    temp_path.display(),
+                    final_path.display()
+                )
+            })?;
             return Ok(());
         }
-        if Self::should_use_mux_bridge() && target_window_id.is_some() {
+        if use_bridge && target_window_id.is_some() {
             logging::debug(
                 "wezterm: skipping mux bridge because explicit merge target is available",
             );
@@ -661,8 +629,10 @@ impl TerminalMuxProvider for WeztermMux {
             Self::merge_target_pane_id(target_pid, source_pane_id, Some(window_id))?
         } else {
             // Poll for focus transition away from source pane.
+            const POLL_ATTEMPTS: usize = 3;
+            const POLL_DELAY: Duration = Duration::from_millis(10);
             let mut transitioned_pane = None;
-            for attempt in 0..Self::NON_SOURCE_PANE_POLL_ATTEMPTS {
+            for attempt in 0..POLL_ATTEMPTS {
                 let panes = Self::list_panes(target_pid)?;
                 let clients = Self::list_clients(target_pid)?;
                 let pane_exists = |pane_id: u64| panes.iter().any(|p| p.pane_id == pane_id);
@@ -675,8 +645,8 @@ impl TerminalMuxProvider for WeztermMux {
                         break;
                     }
                 }
-                if attempt + 1 < Self::NON_SOURCE_PANE_POLL_ATTEMPTS {
-                    std::thread::sleep(Self::NON_SOURCE_PANE_POLL_DELAY);
+                if attempt + 1 < POLL_ATTEMPTS {
+                    std::thread::sleep(POLL_DELAY);
                 }
             }
             if let Some(pane_id) = transitioned_pane {
@@ -731,12 +701,8 @@ impl TerminalMuxProvider for WeztermMux {
 pub const TERMINAL_LAUNCH_PREFIX: &[&str] = &["wezterm", "-e"];
 
 impl WeztermBackend {
-    fn mux_backend() -> TerminalMuxBackend {
-        crate::config::mux_policy_for(ADAPTER_ALIASES).backend
-    }
-
     pub(crate) fn mux_provider() -> &'static dyn TerminalMuxProvider {
-        match Self::mux_backend() {
+        match crate::config::mux_policy_for(ADAPTER_ALIASES).backend {
             TerminalMuxBackend::Wezterm => &WEZTERM_MUX_PROVIDER,
             TerminalMuxBackend::Tmux => &TMUX_MUX_PROVIDER,
             TerminalMuxBackend::Zellij => &ZELLIJ_MUX_PROVIDER,
