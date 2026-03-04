@@ -1,10 +1,9 @@
 use anyhow::{bail, Context, Result};
 
-use crate::adapters::apps::terminal_mux::TerminalMuxProvider;
 use crate::adapters::apps::AppAdapter;
 use crate::engine::contract::{
     AdapterCapabilities, AppKind, MergeExecutionMode, MergePreparation, MoveDecision, TearResult,
-    TopologyHandler,
+    TerminalMuxProvider, TopologyHandler,
 };
 use crate::engine::runtime::{self, CommandContext, ProcessId};
 use crate::engine::topology::Direction;
@@ -70,8 +69,7 @@ impl Tmux {
     /// tmux client). Used by `TmuxMuxProvider` when tmux is the mux backend
     /// under a terminal host.
     fn for_terminal_pid(terminal_pid: u32) -> Result<Tmux> {
-        let mut tmux_candidates: Vec<u32> =
-            runtime::find_descendants_by_comm(terminal_pid, "tmux");
+        let mut tmux_candidates: Vec<u32> = runtime::find_descendants_by_comm(terminal_pid, "tmux");
         let shell_candidates: Vec<u32> = runtime::child_pids(terminal_pid)
             .into_iter()
             .filter(|&pid| runtime::is_shell_pid(pid))
@@ -86,9 +84,7 @@ impl Tmux {
             format!("tmux mux backend selected but no tmux client found for pid {terminal_pid}")
         })?;
         Self::from_client_pid(client_pid, vec![]).with_context(|| {
-            format!(
-                "tmux mux backend selected but unable to map client {client_pid} to session"
-            )
+            format!("tmux mux backend selected but unable to map client {client_pid} to session")
         })
     }
 

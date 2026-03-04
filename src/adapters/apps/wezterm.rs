@@ -154,7 +154,6 @@ use std::time::Duration;
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 
-use crate::adapters::apps::terminal_mux::TerminalMuxProvider;
 use crate::adapters::apps::kitty::KITTY_MUX_PROVIDER;
 use crate::adapters::apps::tmux::TMUX_MUX_PROVIDER;
 use crate::adapters::apps::zellij::ZELLIJ_MUX_PROVIDER;
@@ -162,7 +161,7 @@ use crate::adapters::apps::AppAdapter;
 use crate::config::TerminalMuxBackend;
 use crate::engine::contract::{
     AdapterCapabilities, AppKind, MergeExecutionMode, MergePreparation, MoveDecision, TearResult,
-    TopologyHandler,
+    TerminalMuxProvider, TopologyHandler,
 };
 use crate::engine::runtime::ProcessId;
 use crate::engine::topology::Direction;
@@ -712,7 +711,10 @@ impl WeztermBackend {
 
     pub fn spawn_attach_command(target: String) -> Option<Vec<String>> {
         let mux_args = Self::mux_provider().mux_attach_args(target)?;
-        let mut cmd: Vec<String> = TERMINAL_LAUNCH_PREFIX.iter().map(|s| s.to_string()).collect();
+        let mut cmd: Vec<String> = TERMINAL_LAUNCH_PREFIX
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         cmd.extend(mux_args);
         Some(cmd)
     }
@@ -843,16 +845,17 @@ impl TopologyHandler for WeztermMux {
 
     fn rearrange(&self, dir: Direction, pid: u32) -> Result<()> {
         let pane_id = Self::focused_pane_id(pid)?;
-        let target = match dir {
-            Direction::North | Direction::South => {
-                Self::pane_in_direction(pid, pane_id, Direction::West)?
-                    .or(Self::pane_in_direction(pid, pane_id, Direction::East)?)
-            }
-            Direction::West | Direction::East => {
-                Self::pane_in_direction(pid, pane_id, Direction::North)?
-                    .or(Self::pane_in_direction(pid, pane_id, Direction::South)?)
-            }
-        };
+        let target =
+            match dir {
+                Direction::North | Direction::South => {
+                    Self::pane_in_direction(pid, pane_id, Direction::West)?
+                        .or(Self::pane_in_direction(pid, pane_id, Direction::East)?)
+                }
+                Direction::West | Direction::East => {
+                    Self::pane_in_direction(pid, pane_id, Direction::North)?
+                        .or(Self::pane_in_direction(pid, pane_id, Direction::South)?)
+                }
+            };
         // Fallback: pick any other pane in the same tab.
         let target = match target {
             Some(t) => t,
@@ -978,7 +981,13 @@ macro_rules! delegate_topology_to_mux_provider {
             fn move_internal(&self, dir: Direction, pid: u32) -> Result<()> {
                 Self::mux_provider().move_internal(dir, pid)
             }
-            fn resize_internal(&self, dir: Direction, grow: bool, step: i32, pid: u32) -> Result<()> {
+            fn resize_internal(
+                &self,
+                dir: Direction,
+                grow: bool,
+                step: i32,
+                pid: u32,
+            ) -> Result<()> {
                 Self::mux_provider().resize_internal(dir, grow, step, pid)
             }
             fn rearrange(&self, dir: Direction, pid: u32) -> Result<()> {
@@ -988,8 +997,10 @@ macro_rules! delegate_topology_to_mux_provider {
                 let mut tear = Self::mux_provider().move_out(dir, pid)?;
                 // Mux providers return only mux-level args; compose the terminal prefix.
                 if let Some(mux_args) = tear.spawn_command.take() {
-                    let mut cmd: Vec<String> =
-                        TERMINAL_LAUNCH_PREFIX.iter().map(|s| s.to_string()).collect();
+                    let mut cmd: Vec<String> = TERMINAL_LAUNCH_PREFIX
+                        .iter()
+                        .map(|s| s.to_string())
+                        .collect();
                     cmd.extend(mux_args);
                     tear.spawn_command = Some(cmd);
                 }
@@ -1016,8 +1027,7 @@ macro_rules! delegate_topology_to_mux_provider {
                 target_pid: Option<ProcessId>,
                 preparation: MergePreparation,
             ) -> Result<()> {
-                Self::mux_provider()
-                    .merge_into_target(dir, source_pid, target_pid, preparation)
+                Self::mux_provider().merge_into_target(dir, source_pid, target_pid, preparation)
             }
         }
     };
@@ -1034,10 +1044,9 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     use super::{WeztermBackend, WeztermMux};
-    use crate::adapters::apps::terminal_mux::TerminalMuxProvider;
     use crate::adapters::apps::tmux::TmuxMuxProvider;
     use crate::adapters::apps::zellij::ZellijMuxProvider;
-    use crate::engine::contract::{AppAdapter, MoveDecision, TopologyHandler};
+    use crate::engine::contract::{AppAdapter, MoveDecision, TerminalMuxProvider, TopologyHandler};
     use crate::engine::topology::Direction;
 
     static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -1670,7 +1679,8 @@ exit "$status"
             "",
         );
 
-        WeztermBackend::mux_provider().merge_source_pane_into_focused_target(pid, 10, pid, None, Direction::West)
+        WeztermBackend::mux_provider()
+            .merge_source_pane_into_focused_target(pid, 10, pid, None, Direction::West)
             .expect("merge should succeed");
         let log = harness.command_log();
         assert!(log.contains("split-pane --pane-id 9 --right --move-pane-id 10"));
@@ -1682,7 +1692,8 @@ exit "$status"
         let pid = 9696;
         let harness = WeztermHarness::new(pid);
 
-        WeztermBackend::mux_provider().merge_source_pane_into_focused_target(pid, 10, pid, None, Direction::West)
+        WeztermBackend::mux_provider()
+            .merge_source_pane_into_focused_target(pid, 10, pid, None, Direction::West)
             .expect("merge enqueue should succeed");
 
         let bridge_cmd = harness
@@ -1702,7 +1713,8 @@ exit "$status"
         let pid = 9707;
         let harness = WeztermHarness::new(pid);
 
-        WeztermBackend::mux_provider().merge_source_pane_into_focused_target(pid, 10, pid, None, Direction::West)
+        WeztermBackend::mux_provider()
+            .merge_source_pane_into_focused_target(pid, 10, pid, None, Direction::West)
             .expect("bridge enqueue should succeed");
 
         let bridge_cmd = harness
@@ -1738,18 +1750,16 @@ exit "$status"
             "",
         );
 
-        WeztermBackend::mux_provider().merge_source_pane_into_focused_target(
-            pid,
-            10,
-            pid,
-            Some(2),
-            Direction::West,
-        )
-        .expect("merge with explicit target should use direct cli");
+        WeztermBackend::mux_provider()
+            .merge_source_pane_into_focused_target(pid, 10, pid, Some(2), Direction::West)
+            .expect("merge with explicit target should use direct cli");
 
         let log = harness.command_log();
         assert!(log.contains("split-pane --pane-id 20 --right --move-pane-id 10"));
-        let bridge_cmd = harness.runtime_dir.join("niri-deep-wezterm-mux").join("merge.cmd");
+        let bridge_cmd = harness
+            .runtime_dir
+            .join("niri-deep-wezterm-mux")
+            .join("merge.cmd");
         assert!(!bridge_cmd.exists());
     }
 
@@ -1779,7 +1789,8 @@ exit "$status"
             "",
         );
 
-        WeztermBackend::mux_provider().merge_source_pane_into_focused_target(pid, 10, pid, None, Direction::West)
+        WeztermBackend::mux_provider()
+            .merge_source_pane_into_focused_target(pid, 10, pid, None, Direction::West)
             .expect("direct merge should succeed when bridge is disabled");
 
         let bridge_cmd = harness
@@ -1816,7 +1827,8 @@ exit "$status"
         );
         harness.set_response("split-pane --pane-id 0 --right --move-pane-id 1", 0, "", "");
 
-        WeztermBackend::mux_provider().merge_source_pane_into_focused_target(pid, 1, pid, None, Direction::West)
+        WeztermBackend::mux_provider()
+            .merge_source_pane_into_focused_target(pid, 1, pid, None, Direction::West)
             .expect("merge should resolve target pane from other window");
 
         let log = harness.command_log();
@@ -1848,14 +1860,9 @@ exit "$status"
         );
         harness.set_response("split-pane --pane-id 2 --right --move-pane-id 1", 0, "", "");
 
-        WeztermBackend::mux_provider().merge_source_pane_into_focused_target(
-            pid,
-            1,
-            pid,
-            Some(2),
-            Direction::West,
-        )
-        .expect("merge should target hinted window pane");
+        WeztermBackend::mux_provider()
+            .merge_source_pane_into_focused_target(pid, 1, pid, Some(2), Direction::West)
+            .expect("merge should target hinted window pane");
 
         let log = harness.command_log();
         assert!(log.contains("split-pane --pane-id 2 --right --move-pane-id 1"));
@@ -1887,7 +1894,8 @@ exit "$status"
             "",
         );
 
-        WeztermBackend::mux_provider().merge_source_pane_into_focused_target(pid, 10, pid, None, Direction::West)
+        WeztermBackend::mux_provider()
+            .merge_source_pane_into_focused_target(pid, 10, pid, None, Direction::West)
             .expect("merge should use direct cli when config disables mux bridge");
 
         let log = harness.command_log();

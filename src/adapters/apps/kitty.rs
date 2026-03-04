@@ -1,7 +1,8 @@
 use anyhow::{anyhow, Result};
 
-use crate::adapters::apps::terminal_mux::TerminalMuxProvider;
-use crate::engine::contract::{AdapterCapabilities, MoveDecision, TearResult, TopologyHandler};
+use crate::engine::contract::{
+    AdapterCapabilities, MoveDecision, TearResult, TerminalMuxProvider, TopologyHandler,
+};
 use crate::engine::topology::Direction;
 
 #[derive(Debug, Clone, Copy, Default)]

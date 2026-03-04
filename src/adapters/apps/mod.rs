@@ -470,14 +470,15 @@ fn resolve_terminal_chain(terminal_pid: u32) -> Vec<Box<dyn AppAdapter>> {
                 "resolve_terminal_chain: tmux descendants under shell {} => {:?}",
                 search_pid, tmux_pids
             ));
-            let found_tmux = tmux_pids
-                .first()
-                .and_then(|tmux_client_pid| {
-                    tmux::Tmux::from_client_pid(
-                        *tmux_client_pid,
-                        wezterm::TERMINAL_LAUNCH_PREFIX.iter().map(|s| s.to_string()).collect(),
-                    )
-                });
+            let found_tmux = tmux_pids.first().and_then(|tmux_client_pid| {
+                tmux::Tmux::from_client_pid(
+                    *tmux_client_pid,
+                    wezterm::TERMINAL_LAUNCH_PREFIX
+                        .iter()
+                        .map(|s| s.to_string())
+                        .collect(),
+                )
+            });
             if let Some(tmux) = found_tmux {
                 if let Some(nvim_pid) = tmux.nvim_in_current_pane() {
                     if let Some(nvim) = Nvim::for_pid(nvim_pid) {
