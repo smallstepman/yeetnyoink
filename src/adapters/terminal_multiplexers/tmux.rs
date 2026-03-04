@@ -4,7 +4,7 @@ use anyhow::{bail, Context, Result};
 
 use crate::engine::contract::{
     AdapterCapabilities, AppAdapter, AppKind, MergeExecutionMode, MergePreparation, MoveDecision,
-    TearResult, TerminalMuxProvider, TopologyHandler,
+    TearResult, TerminalMultiplexerProvider, TopologyHandler,
 };
 use crate::engine::runtime::{self, CommandContext, ProcessId};
 use crate::engine::topology::Direction;
@@ -358,7 +358,7 @@ impl Tmux {
 // terminal host like wezterm)
 // ---------------------------------------------------------------------------
 
-impl TerminalMuxProvider for TmuxMuxProvider {
+impl TerminalMultiplexerProvider for TmuxMuxProvider {
     fn capabilities(&self) -> AdapterCapabilities {
         AdapterCapabilities {
             probe: true,

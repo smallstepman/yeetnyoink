@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Result};
 
 use crate::engine::contract::{
-    AdapterCapabilities, MoveDecision, TearResult, TerminalMuxProvider, TopologyHandler,
+    AdapterCapabilities, MoveDecision, TearResult, TerminalMultiplexerProvider, TopologyHandler,
 };
 use crate::engine::topology::Direction;
 
@@ -10,7 +10,7 @@ pub(crate) struct ZellijMuxProvider;
 
 pub(crate) static ZELLIJ_MUX_PROVIDER: ZellijMuxProvider = ZellijMuxProvider;
 
-impl TerminalMuxProvider for ZellijMuxProvider {
+impl TerminalMultiplexerProvider for ZellijMuxProvider {
     fn capabilities(&self) -> AdapterCapabilities {
         AdapterCapabilities {
             probe: true,

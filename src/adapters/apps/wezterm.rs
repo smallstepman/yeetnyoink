@@ -152,7 +152,7 @@ use crate::adapters::apps::AppAdapter;
 use crate::adapters::terminal_multiplexers;
 use crate::engine::contract::{
     AdapterCapabilities, AppKind, MergeExecutionMode, MergePreparation, MoveDecision, TearResult,
-    TerminalMuxProvider, TopologyHandler,
+    TerminalMultiplexerProvider, TopologyHandler,
 };
 use crate::engine::runtime::ProcessId;
 use crate::engine::topology::Direction;
@@ -167,7 +167,7 @@ pub const APP_IDS: &[&str] = &["org.wezfurlong.wezterm"];
 pub const TERMINAL_LAUNCH_PREFIX: &[&str] = &["wezterm", "-e"];
 
 impl WeztermBackend {
-    pub(crate) fn mux_provider() -> &'static dyn TerminalMuxProvider {
+    pub(crate) fn mux_provider() -> &'static dyn TerminalMultiplexerProvider {
         terminal_multiplexers::active_mux_provider(ADAPTER_ALIASES)
     }
 
@@ -282,7 +282,7 @@ mod tests {
     use crate::adapters::terminal_multiplexers::tmux::TmuxMuxProvider;
     use crate::adapters::terminal_multiplexers::wezterm::WeztermMux;
     use crate::adapters::terminal_multiplexers::zellij::ZellijMuxProvider;
-    use crate::engine::contract::{AppAdapter, MoveDecision, TerminalMuxProvider, TopologyHandler};
+    use crate::engine::contract::{AppAdapter, MoveDecision, TerminalMultiplexerProvider, TopologyHandler};
     use crate::engine::topology::Direction;
 
     static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -340,7 +340,7 @@ mod tests {
 
     #[test]
     fn mux_providers_implement_expected_traits() {
-        fn assert_mux_trait<T: TerminalMuxProvider>() {}
+        fn assert_mux_trait<T: TerminalMultiplexerProvider>() {}
         assert_mux_trait::<WeztermMux>();
         assert_mux_trait::<TmuxMuxProvider>();
         assert_mux_trait::<ZellijMuxProvider>();

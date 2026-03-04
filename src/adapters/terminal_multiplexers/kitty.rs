@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Result};
 
 use crate::engine::contract::{
-    AdapterCapabilities, MoveDecision, TearResult, TerminalMuxProvider, TopologyHandler,
+    AdapterCapabilities, MoveDecision, TearResult, TerminalMultiplexerProvider, TopologyHandler,
 };
 use crate::engine::topology::Direction;
 
@@ -10,7 +10,7 @@ pub struct KittyMuxProvider;
 
 pub(crate) static KITTY_MUX_PROVIDER: KittyMuxProvider = KittyMuxProvider;
 
-impl TerminalMuxProvider for KittyMuxProvider {
+impl TerminalMultiplexerProvider for KittyMuxProvider {
     fn capabilities(&self) -> AdapterCapabilities {
         AdapterCapabilities {
             probe: true,

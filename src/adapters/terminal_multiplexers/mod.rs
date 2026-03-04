@@ -1,7 +1,7 @@
 use anyhow::Result;
 
 use crate::config::TerminalMuxBackend;
-use crate::engine::contract::TerminalMuxProvider;
+use crate::engine::contract::TerminalMultiplexerProvider;
 
 pub mod kitty;
 pub mod tmux;
@@ -10,7 +10,7 @@ pub mod zellij;
 
 pub const WEZTERM_HOST_ALIASES: &[&str] = &["wezterm", "terminal"];
 
-pub fn active_mux_provider(aliases: &[&str]) -> &'static dyn TerminalMuxProvider {
+pub fn active_mux_provider(aliases: &[&str]) -> &'static dyn TerminalMultiplexerProvider {
     match crate::config::mux_policy_for(aliases).backend {
         TerminalMuxBackend::Wezterm => &wezterm::WEZTERM_MUX_PROVIDER,
         TerminalMuxBackend::Tmux => &tmux::TMUX_MUX_PROVIDER,

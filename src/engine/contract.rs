@@ -16,7 +16,7 @@ pub trait ChainResolver {
     ) -> DomainId;
 }
 
-pub trait TerminalMuxProvider: TopologyHandler + ChainResolver {
+pub trait TerminalMultiplexerProvider: TopologyHandler + ChainResolver {
     /// Capabilities this mux backend supports (pane focus, move, resize, etc).
     fn capabilities(&self) -> AdapterCapabilities;
     fn focused_pane_for_pid(&self, pid: u32) -> Result<u64>;

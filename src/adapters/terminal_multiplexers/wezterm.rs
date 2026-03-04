@@ -10,7 +10,7 @@ use super::WEZTERM_HOST_ALIASES;
 use crate::config::TerminalMuxBackend;
 use crate::engine::contract::{
     AdapterCapabilities, MergeExecutionMode, MergePreparation, MoveDecision, TearResult,
-    TerminalMuxProvider, TopologyHandler,
+    TerminalMultiplexerProvider, TopologyHandler,
 };
 use crate::engine::runtime::ProcessId;
 use crate::engine::topology::Direction;
@@ -361,7 +361,7 @@ impl WeztermMux {
     }
 }
 
-impl TerminalMuxProvider for WeztermMux {
+impl TerminalMultiplexerProvider for WeztermMux {
     fn capabilities(&self) -> AdapterCapabilities {
         AdapterCapabilities {
             probe: true,
