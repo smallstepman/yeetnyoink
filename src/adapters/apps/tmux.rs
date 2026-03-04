@@ -12,6 +12,9 @@ use crate::engine::topology::Direction;
 pub struct Tmux {
     /// Tmux session name, used as `-t` target for all commands.
     session: String,
+    /// Terminal launch prefix for composing spawn commands (e.g. `["wezterm", "-e"]`).
+    /// Set by the terminal host that detected this tmux session.
+    terminal_launch_prefix: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -192,12 +195,6 @@ fn tmux_attach_args(target: String) -> Vec<String> {
     ]
 }
 
-fn tmux_spawn_command(target: String) -> Vec<String> {
-    let mut command = vec!["wezterm".into(), "-e".into()];
-    command.extend(tmux_attach_args(target));
-    command
-}
-
 fn focus_session_in_direction(session: &str, dir: Direction) -> Result<()> {
     let flag = pane_direction_flag(dir);
     runtime::run_command_status(
@@ -253,7 +250,7 @@ fn move_out_of_session(session: &str) -> Result<TearResult> {
     }
     let target = String::from_utf8_lossy(&output.stdout).trim().to_string();
     Ok(TearResult {
-        spawn_command: Some(tmux_spawn_command(target)),
+        spawn_command: Some(tmux_attach_args(target)),
     })
 }
 
@@ -272,13 +269,14 @@ fn resolve_tmux_for_terminal_pid(terminal_pid: u32) -> Result<Tmux> {
     let client_pid = tmux_candidates.first().copied().with_context(|| {
         format!("tmux mux backend selected but no tmux client found for pid {terminal_pid}")
     })?;
-    tmux_from_client_pid(client_pid).with_context(|| {
+    tmux_from_client_pid(client_pid, vec![]).with_context(|| {
         format!("tmux mux backend selected but unable to map client {client_pid} to session")
     })
 }
 
 /// Create a tmux adapter from a known tmux client PID.
-pub(crate) fn tmux_from_client_pid(client_pid: u32) -> Option<Tmux> {
+/// `terminal_launch_prefix` is the command prefix for the hosting terminal (e.g. `["wezterm", "-e"]`).
+pub(crate) fn tmux_from_client_pid(client_pid: u32, terminal_launch_prefix: Vec<String>) -> Option<Tmux> {
     let output = runtime::run_command_output(
         "tmux",
         &["list-clients", "-F", "#{client_pid}:#{session_name}"],
@@ -299,6 +297,7 @@ pub(crate) fn tmux_from_client_pid(client_pid: u32) -> Option<Tmux> {
             if pid_str == target {
                 return Some(Tmux {
                     session: session.to_string(),
+                    terminal_launch_prefix: terminal_launch_prefix.clone(),
                 });
             }
         }
@@ -488,7 +487,14 @@ impl TopologyHandler for Tmux {
     }
 
     fn move_out(&self, _dir: Direction, _pid: u32) -> Result<TearResult> {
-        move_out_of_session(&self.session)
+        let mut tear = move_out_of_session(&self.session)?;
+        // Compose the terminal launch prefix onto the mux-level spawn args.
+        if let Some(mux_args) = tear.spawn_command.take() {
+            let mut cmd = self.terminal_launch_prefix.clone();
+            cmd.extend(mux_args);
+            tear.spawn_command = Some(cmd);
+        }
+        Ok(tear)
     }
 }
 
@@ -501,6 +507,7 @@ mod tests {
     fn declares_explicit_capability_contract() {
         let app = Tmux {
             session: "test".to_string(),
+            terminal_launch_prefix: vec!["wezterm".into(), "-e".into()],
         };
         let caps = AppAdapter::capabilities(&app);
         assert!(caps.probe);

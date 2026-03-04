@@ -412,7 +412,7 @@ fn resolve_terminal_chain(terminal_pid: u32) -> Vec<Box<dyn AppAdapter>> {
     let mut chain: Vec<Box<dyn AppAdapter>> = Vec::new();
 
     // Ask the terminal multiplexer backend for active pane foreground process name.
-    let fg_hint = wezterm::WeztermBackend::active_foreground_process(terminal_pid);
+    let fg_hint = wezterm::WeztermBackend::mux_provider().active_foreground_process(terminal_pid);
     let fg_base = fg_hint
         .as_deref()
         .map(runtime::normalize_process_name)
@@ -472,7 +472,12 @@ fn resolve_terminal_chain(terminal_pid: u32) -> Vec<Box<dyn AppAdapter>> {
             ));
             let found_tmux = tmux_pids
                 .first()
-                .and_then(|tmux_client_pid| tmux::tmux_from_client_pid(*tmux_client_pid));
+                .and_then(|tmux_client_pid| {
+                    tmux::tmux_from_client_pid(
+                        *tmux_client_pid,
+                        wezterm::TERMINAL_LAUNCH_PREFIX.iter().map(|s| s.to_string()).collect(),
+                    )
+                });
             if let Some(tmux) = found_tmux {
                 if let Some(nvim_pid) = tmux::tmux_nvim_in_current_pane(&tmux) {
                     if let Some(nvim) = Nvim::for_pid(nvim_pid) {

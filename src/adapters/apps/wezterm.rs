@@ -840,12 +840,15 @@ impl TerminalMuxProvider for WeztermMux {
     }
 }
 
+/// Terminal launch prefix for composing spawn commands (e.g. `["wezterm", "-e"]`).
+pub const TERMINAL_LAUNCH_PREFIX: &[&str] = &["wezterm", "-e"];
+
 impl WeztermBackend {
     fn mux_backend() -> TerminalMuxBackend {
         crate::config::mux_policy_for(ADAPTER_ALIASES).backend
     }
 
-    fn mux_provider() -> &'static dyn TerminalMuxProvider {
+    pub(crate) fn mux_provider() -> &'static dyn TerminalMuxProvider {
         match Self::mux_backend() {
             TerminalMuxBackend::Wezterm => &WEZTERM_MUX_PROVIDER,
             TerminalMuxBackend::Tmux => &TMUX_MUX_PROVIDER,
@@ -854,45 +857,11 @@ impl WeztermBackend {
         }
     }
 
-    pub fn focused_pane_for_pid(pid: u32) -> Result<u64> {
-        Self::mux_provider().focused_pane_for_pid(pid)
-    }
-
-    pub fn pane_neighbor_for_pid(pid: u32, pane_id: u64, dir: Direction) -> Result<u64> {
-        Self::mux_provider().pane_neighbor_for_pid(pid, pane_id, dir)
-    }
-
-    pub fn send_text_to_pane(pid: u32, pane_id: u64, text: &str) -> Result<()> {
-        Self::mux_provider().send_text_to_pane(pid, pane_id, text)
-    }
-
     pub fn spawn_attach_command(target: String) -> Option<Vec<String>> {
         let mux_args = Self::mux_provider().mux_attach_args(target)?;
-        let mut cmd = vec!["wezterm".into(), "-e".into()];
+        let mut cmd: Vec<String> = TERMINAL_LAUNCH_PREFIX.iter().map(|s| s.to_string()).collect();
         cmd.extend(mux_args);
         Some(cmd)
-    }
-
-    pub fn merge_source_pane_into_focused_target(
-        source_pid: u32,
-        source_pane_id: u64,
-        target_pid: u32,
-        target_window_id: Option<u64>,
-        dir: Direction,
-    ) -> Result<()> {
-        Self::mux_provider().merge_source_pane_into_focused_target(
-            source_pid,
-            source_pane_id,
-            target_pid,
-            target_window_id,
-            dir,
-        )
-    }
-
-    /// Returns the foreground process name of the active pane for the WezTerm
-    /// instance identified by `pid`, using `wezterm cli list --format json`.
-    pub fn active_foreground_process(pid: u32) -> Option<String> {
-        Self::mux_provider().active_foreground_process(pid)
     }
 }
 
@@ -1109,65 +1078,74 @@ impl TopologyHandler for WeztermMux {
     }
 }
 
-impl TopologyHandler for WeztermBackend {
-    fn can_focus(&self, dir: Direction, pid: u32) -> Result<bool> {
-        Self::mux_provider().can_focus(dir, pid)
-    }
-
-    fn move_decision(&self, dir: Direction, pid: u32) -> Result<MoveDecision> {
-        Self::mux_provider().move_decision(dir, pid)
-    }
-
-    fn can_resize(&self, dir: Direction, grow: bool, pid: u32) -> Result<bool> {
-        Self::mux_provider().can_resize(dir, grow, pid)
-    }
-
-    fn focus(&self, dir: Direction, pid: u32) -> Result<()> {
-        Self::mux_provider().focus(dir, pid)
-    }
-
-    fn move_internal(&self, dir: Direction, pid: u32) -> Result<()> {
-        Self::mux_provider().move_internal(dir, pid)
-    }
-
-    fn resize_internal(&self, dir: Direction, grow: bool, step: i32, pid: u32) -> Result<()> {
-        Self::mux_provider().resize_internal(dir, grow, step, pid)
-    }
-
-    fn rearrange(&self, dir: Direction, pid: u32) -> Result<()> {
-        Self::mux_provider().rearrange(dir, pid)
-    }
-
-    fn move_out(&self, dir: Direction, pid: u32) -> Result<TearResult> {
-        Self::mux_provider().move_out(dir, pid)
-    }
-
-    fn merge_execution_mode(&self) -> MergeExecutionMode {
-        Self::mux_provider().merge_execution_mode()
-    }
-
-    fn prepare_merge(&self, source_pid: Option<ProcessId>) -> Result<MergePreparation> {
-        Self::mux_provider().prepare_merge(source_pid)
-    }
-
-    fn augment_merge_preparation_for_target(
-        &self,
-        preparation: MergePreparation,
-        target_window_id: Option<u64>,
-    ) -> MergePreparation {
-        Self::mux_provider().augment_merge_preparation_for_target(preparation, target_window_id)
-    }
-
-    fn merge_into_target(
-        &self,
-        dir: Direction,
-        source_pid: Option<ProcessId>,
-        target_pid: Option<ProcessId>,
-        preparation: MergePreparation,
-    ) -> Result<()> {
-        Self::mux_provider().merge_into_target(dir, source_pid, target_pid, preparation)
-    }
+/// Delegate all TopologyHandler methods to the config-selected mux provider.
+/// `move_out` composes the terminal launch prefix onto any mux-level spawn command,
+/// so mux providers return only their own args (e.g. `["tmux", "attach", "-t", "..."]`)
+/// and the terminal host prepends `["wezterm", "-e"]`.
+macro_rules! delegate_topology_to_mux_provider {
+    ($ty:ty) => {
+        impl TopologyHandler for $ty {
+            fn can_focus(&self, dir: Direction, pid: u32) -> Result<bool> {
+                Self::mux_provider().can_focus(dir, pid)
+            }
+            fn move_decision(&self, dir: Direction, pid: u32) -> Result<MoveDecision> {
+                Self::mux_provider().move_decision(dir, pid)
+            }
+            fn can_resize(&self, dir: Direction, grow: bool, pid: u32) -> Result<bool> {
+                Self::mux_provider().can_resize(dir, grow, pid)
+            }
+            fn focus(&self, dir: Direction, pid: u32) -> Result<()> {
+                Self::mux_provider().focus(dir, pid)
+            }
+            fn move_internal(&self, dir: Direction, pid: u32) -> Result<()> {
+                Self::mux_provider().move_internal(dir, pid)
+            }
+            fn resize_internal(&self, dir: Direction, grow: bool, step: i32, pid: u32) -> Result<()> {
+                Self::mux_provider().resize_internal(dir, grow, step, pid)
+            }
+            fn rearrange(&self, dir: Direction, pid: u32) -> Result<()> {
+                Self::mux_provider().rearrange(dir, pid)
+            }
+            fn move_out(&self, dir: Direction, pid: u32) -> Result<TearResult> {
+                let mut tear = Self::mux_provider().move_out(dir, pid)?;
+                // Mux providers return only mux-level args; compose the terminal prefix.
+                if let Some(mux_args) = tear.spawn_command.take() {
+                    let mut cmd: Vec<String> =
+                        TERMINAL_LAUNCH_PREFIX.iter().map(|s| s.to_string()).collect();
+                    cmd.extend(mux_args);
+                    tear.spawn_command = Some(cmd);
+                }
+                Ok(tear)
+            }
+            fn merge_execution_mode(&self) -> MergeExecutionMode {
+                Self::mux_provider().merge_execution_mode()
+            }
+            fn prepare_merge(&self, source_pid: Option<ProcessId>) -> Result<MergePreparation> {
+                Self::mux_provider().prepare_merge(source_pid)
+            }
+            fn augment_merge_preparation_for_target(
+                &self,
+                preparation: MergePreparation,
+                target_window_id: Option<u64>,
+            ) -> MergePreparation {
+                Self::mux_provider()
+                    .augment_merge_preparation_for_target(preparation, target_window_id)
+            }
+            fn merge_into_target(
+                &self,
+                dir: Direction,
+                source_pid: Option<ProcessId>,
+                target_pid: Option<ProcessId>,
+                preparation: MergePreparation,
+            ) -> Result<()> {
+                Self::mux_provider()
+                    .merge_into_target(dir, source_pid, target_pid, preparation)
+            }
+        }
+    };
 }
+
+delegate_topology_to_mux_provider!(WeztermBackend);
 
 #[cfg(test)]
 mod tests {
@@ -1549,7 +1527,7 @@ exit "$status"
             "",
         );
 
-        let fg = WeztermBackend::active_foreground_process(pid);
+        let fg = WeztermBackend::mux_provider().active_foreground_process(pid);
         assert_eq!(fg.as_deref(), Some("tmux"));
     }
 
@@ -1791,7 +1769,7 @@ exit "$status"
             "",
         );
 
-        WeztermBackend::merge_source_pane_into_focused_target(pid, 10, pid, None, Direction::West)
+        WeztermBackend::mux_provider().merge_source_pane_into_focused_target(pid, 10, pid, None, Direction::West)
             .expect("merge should succeed");
         let log = harness.command_log();
         assert!(log.contains("split-pane --pane-id 9 --right --move-pane-id 10"));
@@ -1825,7 +1803,7 @@ exit "$status"
             "",
         );
 
-        WeztermBackend::merge_source_pane_into_focused_target(pid, 10, pid, None, Direction::West)
+        WeztermBackend::mux_provider().merge_source_pane_into_focused_target(pid, 10, pid, None, Direction::West)
             .expect("merge enqueue should succeed");
 
         let bridge_cmd = harness
@@ -1851,7 +1829,7 @@ exit "$status"
         fs::create_dir_all(&bridge_dir).expect("bridge dir should be creatable");
         fs::write(bridge_dir.join("ready"), "ready\n").expect("ready marker should be writable");
 
-        WeztermBackend::merge_source_pane_into_focused_target(pid, 10, pid, None, Direction::West)
+        WeztermBackend::mux_provider().merge_source_pane_into_focused_target(pid, 10, pid, None, Direction::West)
             .expect("auto bridge enqueue should succeed");
 
         let bridge_cmd = bridge_dir.join("merge.cmd");
@@ -1896,7 +1874,7 @@ exit "$status"
             "",
         );
 
-        WeztermBackend::merge_source_pane_into_focused_target(
+        WeztermBackend::mux_provider().merge_source_pane_into_focused_target(
             pid,
             10,
             pid,
@@ -1941,7 +1919,7 @@ exit "$status"
             "",
         );
 
-        WeztermBackend::merge_source_pane_into_focused_target(pid, 10, pid, None, Direction::West)
+        WeztermBackend::mux_provider().merge_source_pane_into_focused_target(pid, 10, pid, None, Direction::West)
             .expect("default direct merge should succeed");
 
         let bridge_cmd = harness
@@ -1979,7 +1957,7 @@ exit "$status"
         );
         harness.set_response("split-pane --pane-id 0 --right --move-pane-id 1", 0, "", "");
 
-        WeztermBackend::merge_source_pane_into_focused_target(pid, 1, pid, None, Direction::West)
+        WeztermBackend::mux_provider().merge_source_pane_into_focused_target(pid, 1, pid, None, Direction::West)
             .expect("merge should resolve target pane from other window");
 
         let log = harness.command_log();
@@ -2018,7 +1996,7 @@ exit "$status"
         );
         harness.set_response("split-pane --pane-id 2 --right --move-pane-id 1", 0, "", "");
 
-        WeztermBackend::merge_source_pane_into_focused_target(
+        WeztermBackend::mux_provider().merge_source_pane_into_focused_target(
             pid,
             1,
             pid,
@@ -2083,7 +2061,7 @@ enable = false
             "",
         );
 
-        WeztermBackend::merge_source_pane_into_focused_target(pid, 10, pid, None, Direction::West)
+        WeztermBackend::mux_provider().merge_source_pane_into_focused_target(pid, 10, pid, None, Direction::West)
             .expect("merge should use direct cli when config disables mux bridge");
 
         let log = harness.command_log();
