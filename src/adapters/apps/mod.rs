@@ -15,7 +15,6 @@ use crate::logging;
 use emacs::EmacsBackend;
 use librefox::Librefox;
 use nvim::Nvim;
-use tmux::Tmux;
 use vscode::Vscode;
 use wezterm::WeztermBackend;
 
@@ -426,11 +425,7 @@ fn resolve_terminal_chain(terminal_pid: u32) -> Vec<Box<dyn AppAdapter>> {
     // Find shell children of the terminal process.
     let shells: Vec<u32> = runtime::child_pids(terminal_pid)
         .into_iter()
-        .filter(|&p| {
-            std::fs::read_to_string(format!("/proc/{p}/comm"))
-                .map(|c| matches!(c.trim(), "zsh" | "bash" | "fish"))
-                .unwrap_or(false)
-        })
+        .filter(|&pid| runtime::is_shell_pid(pid))
         .collect();
     logging::debug(format!(
         "resolve_terminal_chain: shell_candidates={:?}",
@@ -450,8 +445,8 @@ fn resolve_terminal_chain(terminal_pid: u32) -> Vec<Box<dyn AppAdapter>> {
             let Some(tpgid) = runtime::parse_stat_tpgid(&stat) else {
                 return false;
             };
-            std::fs::read_to_string(format!("/proc/{tpgid}/comm"))
-                .map(|c| runtime::normalize_process_name(c.trim()) == fg_base)
+            runtime::process_comm(tpgid)
+                .map(|comm| comm == fg_base)
                 .unwrap_or(false)
         })
     } else {
@@ -477,9 +472,9 @@ fn resolve_terminal_chain(terminal_pid: u32) -> Vec<Box<dyn AppAdapter>> {
             ));
             let found_tmux = tmux_pids
                 .first()
-                .and_then(|tmux_client_pid| Tmux::for_client_pid(*tmux_client_pid));
+                .and_then(|tmux_client_pid| tmux::tmux_from_client_pid(*tmux_client_pid));
             if let Some(tmux) = found_tmux {
-                if let Some(nvim_pid) = tmux.nvim_in_current_pane() {
+                if let Some(nvim_pid) = tmux::tmux_nvim_in_current_pane(&tmux) {
                     if let Some(nvim) = Nvim::for_pid(nvim_pid) {
                         chain.push(bind_policy(Box::new(nvim)));
                     }

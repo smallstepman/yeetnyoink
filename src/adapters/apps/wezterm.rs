@@ -167,8 +167,6 @@ use crate::engine::contract::{
 use crate::engine::runtime::ProcessId;
 use crate::engine::topology::Direction;
 use crate::logging;
-mod providers;
-use providers::WEZTERM_MUX_PROVIDER;
 
 #[derive(Debug, Deserialize)]
 struct WeztermMuxPane {
@@ -207,6 +205,7 @@ pub struct WeztermBackend;
 /// Built-in WezTerm mux pane-grid topology handler.
 #[derive(Debug, Clone, Copy, Default)]
 struct WeztermMux;
+static WEZTERM_MUX_PROVIDER: WeztermMux = WeztermMux;
 pub const ADAPTER_NAME: &str = "terminal";
 pub const ADAPTER_ALIASES: &[&str] = &["wezterm", "terminal"];
 pub const APP_IDS: &[&str] = &["org.wezfurlong.wezterm"];
@@ -316,16 +315,16 @@ impl WeztermMux {
         age <= Self::MUX_BRIDGE_READY_MAX_AGE
     }
 
-    pub fn focused_pane_for_pid(pid: u32) -> Result<u64> {
+    fn resolve_focused_pane_for_pid(pid: u32) -> Result<u64> {
         Self::focused_pane_id(pid)
     }
 
-    pub fn pane_neighbor_for_pid(pid: u32, pane_id: u64, dir: Direction) -> Result<u64> {
+    fn resolve_pane_neighbor_for_pid(pid: u32, pane_id: u64, dir: Direction) -> Result<u64> {
         Self::pane_in_direction(pid, pane_id, dir)?
             .context("no terminal multiplexer pane exists in requested direction")
     }
 
-    pub fn send_text_to_pane(pid: u32, pane_id: u64, text: &str) -> Result<()> {
+    fn send_text_to_pane_raw(pid: u32, pane_id: u64, text: &str) -> Result<()> {
         let pane_id_str = pane_id.to_string();
         let output = Self::cli_output(
             pid,
@@ -340,7 +339,7 @@ impl WeztermMux {
         Ok(())
     }
 
-    pub fn merge_source_pane_into_focused_target(
+    fn merge_source_pane_into_focused_target_raw(
         source_pid: u32,
         source_pane_id: u64,
         target_pid: u32,
@@ -777,7 +776,7 @@ impl WeztermMux {
 
     /// Returns the foreground process name of the active pane for the WezTerm
     /// instance identified by `pid`, using `wezterm cli list --format json`.
-    pub fn active_foreground_process(pid: u32) -> Option<String> {
+    fn active_foreground_process_raw(pid: u32) -> Option<String> {
         let pane_id = Self::focused_pane_id(pid).ok()?;
         let panes = Self::list_panes(pid).ok()?;
         panes
@@ -787,6 +786,57 @@ impl WeztermMux {
                 let name = p.foreground_process_name.trim().to_string();
                 (!name.is_empty()).then_some(name)
             })
+    }
+}
+
+impl TerminalMuxProvider for WeztermMux {
+    fn capabilities(&self) -> AdapterCapabilities {
+        AdapterCapabilities {
+            probe: true,
+            focus: true,
+            move_internal: true,
+            resize_internal: true,
+            rearrange: true,
+            tear_out: true,
+            merge: true,
+        }
+    }
+
+    fn focused_pane_for_pid(&self, pid: u32) -> Result<u64> {
+        Self::resolve_focused_pane_for_pid(pid)
+    }
+
+    fn pane_neighbor_for_pid(&self, pid: u32, pane_id: u64, dir: Direction) -> Result<u64> {
+        Self::resolve_pane_neighbor_for_pid(pid, pane_id, dir)
+    }
+
+    fn send_text_to_pane(&self, pid: u32, pane_id: u64, text: &str) -> Result<()> {
+        Self::send_text_to_pane_raw(pid, pane_id, text)
+    }
+
+    fn mux_attach_args(&self, _target: String) -> Option<Vec<String>> {
+        None
+    }
+
+    fn merge_source_pane_into_focused_target(
+        &self,
+        source_pid: u32,
+        source_pane_id: u64,
+        target_pid: u32,
+        target_window_id: Option<u64>,
+        dir: Direction,
+    ) -> Result<()> {
+        Self::merge_source_pane_into_focused_target_raw(
+            source_pid,
+            source_pane_id,
+            target_pid,
+            target_window_id,
+            dir,
+        )
+    }
+
+    fn active_foreground_process(&self, pid: u32) -> Option<String> {
+        Self::active_foreground_process_raw(pid)
     }
 }
 
@@ -816,15 +866,11 @@ impl WeztermBackend {
         Self::mux_provider().send_text_to_pane(pid, pane_id, text)
     }
 
-    pub fn spawn_attach_command(target: String) -> Vec<String> {
-        match Self::mux_provider().mux_attach_args(target) {
-            Some(mux_args) => {
-                let mut cmd = vec!["wezterm".into(), "-e".into()];
-                cmd.extend(mux_args);
-                cmd
-            }
-            None => vec![],
-        }
+    pub fn spawn_attach_command(target: String) -> Option<Vec<String>> {
+        let mux_args = Self::mux_provider().mux_attach_args(target)?;
+        let mut cmd = vec!["wezterm".into(), "-e".into()];
+        cmd.extend(mux_args);
+        Some(cmd)
     }
 
     pub fn merge_source_pane_into_focused_target(
@@ -1022,7 +1068,7 @@ impl TopologyHandler for WeztermMux {
 
     fn prepare_merge(&self, source_pid: Option<ProcessId>) -> Result<MergePreparation> {
         let source_pid = source_pid.context("source wezterm merge missing pid")?;
-        let source_pane_id = Self::focused_pane_for_pid(source_pid.get())?;
+        let source_pane_id = Self::resolve_focused_pane_for_pid(source_pid.get())?;
         Ok(MergePreparation::with_payload(WeztermMuxMergePreparation {
             pane_id: source_pane_id,
             target_window_id: None,
@@ -1052,7 +1098,7 @@ impl TopologyHandler for WeztermMux {
             .into_payload::<WeztermMuxMergePreparation>()
             .context("source wezterm merge missing pane id")?;
         let target_pid = target_pid.context("target wezterm merge missing pid")?;
-        Self::merge_source_pane_into_focused_target(
+        Self::merge_source_pane_into_focused_target_raw(
             source_pid.get(),
             preparation.pane_id,
             target_pid.get(),
@@ -1258,14 +1304,43 @@ mux_backend = "zellij"
         let command = WeztermBackend::spawn_attach_command("dev".to_string());
         assert_eq!(
             command,
-            vec![
+            Some(vec![
                 "wezterm".to_string(),
                 "-e".to_string(),
                 "zellij".to_string(),
                 "attach".to_string(),
                 "dev".to_string(),
-            ]
+            ])
         );
+
+        restore_env("NIRI_DEEP_CONFIG", old_override);
+        crate::config::prepare().expect("config should reload");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn wezterm_mux_backend_has_no_attach_spawn_command() {
+        let _guard = env_guard();
+        let root = unique_temp_dir("wezterm-attach-none");
+        let config_dir = root.join("niri-deep");
+        fs::create_dir_all(&config_dir).expect("config dir should be created");
+        fs::write(
+            config_dir.join("config.toml"),
+            r#"
+[app.terminal.wezterm]
+enabled = true
+mux_backend = "wezterm"
+"#,
+        )
+        .expect("config file should be writable");
+        let old_override = set_env(
+            "NIRI_DEEP_CONFIG",
+            Some(config_dir.join("config.toml").to_str().expect("utf-8 path")),
+        );
+        crate::config::prepare().expect("config should load");
+
+        let command = WeztermBackend::spawn_attach_command("dev".to_string());
+        assert_eq!(command, None);
 
         restore_env("NIRI_DEEP_CONFIG", old_override);
         crate::config::prepare().expect("config should reload");

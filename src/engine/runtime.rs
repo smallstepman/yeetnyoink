@@ -109,11 +109,7 @@ pub fn descendant_pids(pid: u32) -> Vec<u32> {
 pub fn find_descendants_by_comm(pid: u32, name: &str) -> Vec<u32> {
     descendant_pids(pid)
         .into_iter()
-        .filter(|candidate| {
-            std::fs::read_to_string(format!("/proc/{candidate}/comm"))
-                .map(|value| value.trim() == name)
-                .unwrap_or(false)
-        })
+        .filter(|candidate| process_comm(*candidate).as_deref() == Some(name))
         .collect()
 }
 
@@ -125,6 +121,25 @@ pub fn normalize_process_name(comm: &str) -> String {
         .unwrap_or(without_path)
         .trim()
         .to_string()
+}
+
+pub fn process_comm(pid: u32) -> Option<String> {
+    std::fs::read_to_string(format!("/proc/{pid}/comm"))
+        .ok()
+        .map(|value| normalize_process_name(value.trim()))
+}
+
+pub fn is_shell_comm(comm: &str) -> bool {
+    matches!(
+        normalize_process_name(comm).as_str(),
+        "bash" | "fish" | "zsh" | "sh" | "dash" | "ksh" | "tcsh" | "csh" | "nu" | "xonsh"
+    )
+}
+
+pub fn is_shell_pid(pid: u32) -> bool {
+    process_comm(pid)
+        .map(|comm| is_shell_comm(&comm))
+        .unwrap_or(false)
 }
 
 pub fn parse_stat_tpgid(stat: &str) -> Option<u32> {
