@@ -4,7 +4,7 @@ use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 
 use crate::engine::contract::{
-    AdapterCapabilities, MergeExecutionMode, MergePreparation, MoveDecision, TearResult,
+    AdapterCapabilities, MergeExecutionMode, MergePreparation, TearResult,
     TerminalMultiplexerProvider, TerminalPaneSnapshot, TopologyHandler,
 };
 use crate::engine::runtime::{self, ProcessId};
@@ -72,15 +72,7 @@ impl KittyPane {
 }
 
 impl KittyMux {
-    fn direction_name(dir: Direction) -> &'static str {
-        dir.positional()
-    }
-
-    fn action_direction_name(dir: Direction) -> &'static str {
-        dir.egocentric()
-    }
-
-    fn no_match(stderr: &str) -> bool {
+    fn no_match(&self, stderr: &str) -> bool {
         let value = stderr.to_ascii_lowercase();
         value.contains("no matching window")
             || value.contains("no matching windows")
@@ -88,12 +80,12 @@ impl KittyMux {
             || value.contains("matches no windows")
     }
 
-    fn missing_tty_remote_control(stderr: &str) -> bool {
+    fn missing_tty_remote_control(&self, stderr: &str) -> bool {
         let value = stderr.to_ascii_lowercase();
         value.contains("/dev/tty") || value.contains("controlling terminal")
     }
 
-    fn detached_remote_control_help(pid: u32, stderr: &str) -> String {
+    fn detached_remote_control_help(&self, pid: u32, stderr: &str) -> String {
         format!(
             "kitty native mux requires kitty remote control to be reachable from outside kitty \
              for detached invocations such as WM keybindings. No KITTY_LISTEN_ON socket was \
@@ -107,9 +99,9 @@ Original error: {stderr}"
         )
     }
 
-    fn status_error(pid: u32, args: &[&str], stderr: &str) -> anyhow::Error {
-        if Self::missing_tty_remote_control(stderr) && Self::socket_for_pid(pid).is_none() {
-            anyhow::anyhow!(Self::detached_remote_control_help(pid, stderr))
+    fn status_error(&self, pid: u32, args: &[&str], stderr: &str) -> anyhow::Error {
+        if self.missing_tty_remote_control(stderr) && self.socket_for_pid(pid).is_none() {
+            anyhow::anyhow!(self.detached_remote_control_help(pid, stderr))
         } else {
             anyhow::anyhow!(
                 "terminal multiplexer command {:?} failed: {}",
@@ -119,51 +111,28 @@ Original error: {stderr}"
         }
     }
 
-    fn action_spec(action: &str, dir: Direction) -> String {
-        format!("{action} {}", Self::action_direction_name(dir))
+    fn action_spec(&self, action: &str, dir: Direction) -> String {
+        format!("{action} {}", dir.egocentric())
     }
 
-    fn move_window_action(dir: Direction) -> String {
-        Self::action_spec("move_window", dir)
+    fn move_window_action(&self, dir: Direction) -> String {
+        self.action_spec("move_window", dir)
     }
 
-    fn move_to_screen_edge_action(dir: Direction) -> String {
-        format!(
-            "layout_action move_to_screen_edge {}",
-            Self::direction_name(dir)
-        )
+    fn move_to_screen_edge_action(&self, dir: Direction) -> String {
+        format!("layout_action move_to_screen_edge {}", dir.positional())
     }
 
-    fn target_merge_layout(dir: Direction) -> &'static str {
+    fn target_merge_layout(&self, dir: Direction) -> &'static str {
         match dir {
             Direction::West | Direction::East => "splits:split_axis=horizontal",
             Direction::North | Direction::South => "splits:split_axis=vertical",
         }
     }
 
-    fn read_environ_var(pid: u32, key: &str) -> Option<String> {
-        let environ = std::fs::read(format!("/proc/{pid}/environ")).ok()?;
-        let prefix = format!("{key}=");
-        for chunk in environ.split(|byte| *byte == 0) {
-            let entry = String::from_utf8_lossy(chunk);
-            if let Some(value) = entry.strip_prefix(&prefix) {
-                if !value.trim().is_empty() {
-                    return Some(value.to_string());
-                }
-            }
-        }
-        None
-    }
-
-    fn socket_for_pid(pid: u32) -> Option<String> {
-        let mut candidates = vec![pid];
-        for child in runtime::descendant_pids(pid) {
-            if !candidates.contains(&child) {
-                candidates.push(child);
-            }
-        }
-        for candidate in candidates {
-            if let Some(socket) = Self::read_environ_var(candidate, "KITTY_LISTEN_ON") {
+    fn socket_for_pid(&self, pid: u32) -> Option<String> {
+        for candidate in runtime::process_tree_pids(pid) {
+            if let Some(socket) = runtime::process_environ_var(candidate, "KITTY_LISTEN_ON") {
                 return Some(socket);
             }
         }
@@ -171,9 +140,11 @@ Original error: {stderr}"
     }
 
     fn active_tab_panes(&self, pid: u32) -> Result<Vec<TerminalPaneSnapshot>> {
-        let raw = self.cli_stdout_for_pid(pid, &["ls", "--output-format", "json"])?;
-        let windows: Vec<KittyOsWindow> =
-            serde_json::from_str(&raw).context("failed to parse kitty ls json")?;
+        let windows: Vec<KittyOsWindow> = self.cli_json_for_pid(
+            pid,
+            &["ls", "--output-format", "json"],
+            "failed to parse kitty ls json",
+        )?;
         let window = windows
             .iter()
             .find(|window| window.is_focused)
@@ -241,19 +212,9 @@ Original error: {stderr}"
         Ok(())
     }
 
-    fn axis_name(dir: Direction) -> &'static str {
-        match dir {
-            Direction::West | Direction::East => "horizontal",
-            Direction::North | Direction::South => "vertical",
-        }
-    }
-
     fn resize_increment(dir: Direction, grow: bool, step: i32) -> i32 {
         let magnitude = step.abs().max(1);
-        let directional_delta = match dir {
-            Direction::East | Direction::South => magnitude,
-            Direction::West | Direction::North => -magnitude,
-        };
+        let directional_delta = dir.sign() * magnitude;
         if grow {
             directional_delta
         } else {
@@ -276,28 +237,28 @@ Original error: {stderr}"
     }
 
     fn try_focus_neighbor(&self, pid: u32, dir: Direction) -> Result<bool> {
-        let matcher = format!("neighbor:{}", Self::direction_name(dir));
+        let matcher = format!("neighbor:{}", dir.positional());
         let output = self.cli_output_for_pid(pid, &["focus-window", "--match", &matcher])?;
         if output.status.success() {
             return Ok(true);
         }
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        if Self::no_match(&stderr) {
+        if self.no_match(&stderr) {
             return Ok(false);
         }
-        return Err(Self::status_error(
-            pid,
-            &["focus-window", "--match", &matcher],
-            &stderr,
-        ));
+        Err(self.status_error(pid, &["focus-window", "--match", &matcher], &stderr))
     }
 }
 
 impl TerminalMultiplexerProvider for KittyMux {
+    fn command_error_for_pid(&self, pid: u32, args: &[&str], stderr: &str) -> anyhow::Error {
+        self.status_error(pid, args, stderr)
+    }
+
     fn cli_output_for_pid(&self, pid: u32, args: &[&str]) -> Result<std::process::Output> {
         let mut command = Command::new("kitty");
         command.arg("@");
-        if let Some(socket) = Self::socket_for_pid(pid) {
+        if let Some(socket) = self.socket_for_pid(pid) {
             command.args(["--to", &socket]);
         } else {
             logging::debug(format!(
@@ -311,15 +272,6 @@ impl TerminalMultiplexerProvider for KittyMux {
             .context("failed to run kitty remote-control command")
     }
 
-    fn cli_stdout_for_pid(&self, pid: u32, args: &[&str]) -> Result<String> {
-        let output = self.cli_output_for_pid(pid, args)?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            return Err(Self::status_error(pid, args, &stderr));
-        }
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-    }
-
     fn list_panes_for_pid(&self, pid: u32) -> Result<Vec<TerminalPaneSnapshot>> {
         self.active_tab_panes(pid)
     }
@@ -331,13 +283,10 @@ impl TerminalMultiplexerProvider for KittyMux {
     }
 
     fn focused_pane_for_pid(&self, pid: u32) -> Result<u64> {
-        let panes = self.active_tab_panes(pid)?;
-        panes
-            .iter()
-            .find(|pane| pane.is_active)
-            .map(|pane| pane.pane_id)
-            .or_else(|| panes.first().map(|pane| pane.pane_id))
-            .context("unable to determine focused kitty pane")
+        self.focused_pane_from_snapshots(
+            &self.active_tab_panes(pid)?,
+            "unable to determine focused kitty pane",
+        )
     }
 
     fn pane_in_direction_for_pid(
@@ -365,16 +314,7 @@ impl TerminalMultiplexerProvider for KittyMux {
 
     fn send_text_to_pane(&self, pid: u32, pane_id: u64, text: &str) -> Result<()> {
         let matcher = format!("id:{pane_id}");
-        let output =
-            self.cli_output_for_pid(pid, &["send-text", "--match", &matcher, "--", text])?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            return Err(Self::status_error(
-                pid,
-                &["send-text", "--match", &matcher, "--", text],
-                &stderr,
-            ));
-        }
+        self.cli_status_for_pid(pid, &["send-text", "--match", &matcher, "--", text])?;
         Ok(())
     }
 
@@ -391,8 +331,8 @@ impl TerminalMultiplexerProvider for KittyMux {
         dir: Direction,
     ) -> Result<()> {
         if let (Some(source_socket), Some(target_socket)) = (
-            Self::socket_for_pid(source_pid),
-            Self::socket_for_pid(target_pid),
+            self.socket_for_pid(source_pid),
+            self.socket_for_pid(target_pid),
         ) {
             if source_socket != target_socket {
                 bail!(
@@ -411,7 +351,7 @@ impl TerminalMultiplexerProvider for KittyMux {
         let target_tab_pane_count = self.active_tab_panes(target_pid)?.len();
         let target_tab_id = self.active_tab_id_for_pid(target_pid)?;
         if target_tab_pane_count == 1 {
-            self.set_tab_layout(target_pid, target_tab_id, Self::target_merge_layout(dir))?;
+            self.set_tab_layout(target_pid, target_tab_id, self.target_merge_layout(dir))?;
         }
         let source_match = format!("id:{source_pane_id}");
         let target_tab_match = format!("id:{target_tab_id}");
@@ -430,7 +370,7 @@ impl TerminalMultiplexerProvider for KittyMux {
         if let Err(err) = self.run_action_for_pane(
             target_pid,
             source_pane_id,
-            &Self::move_to_screen_edge_action(target_side),
+            &self.move_to_screen_edge_action(target_side),
         ) {
             logging::debug(format!(
                 "kitty: merge post-placement move_to_screen_edge failed source_pane_id={} target_pid={} dir={} err={:#}",
@@ -442,7 +382,7 @@ impl TerminalMultiplexerProvider for KittyMux {
             if let Err(edge_err) = self.run_action_for_pane(
                 target_pid,
                 source_pane_id,
-                &Self::move_window_action(target_side),
+                &self.move_window_action(target_side),
             ) {
                 logging::debug(format!(
                     "kitty: merge post-placement move_window failed source_pane_id={} target_pid={} dir={} err={:#}",
@@ -455,18 +395,6 @@ impl TerminalMultiplexerProvider for KittyMux {
         }
         Ok(())
     }
-
-    fn active_foreground_process(&self, pid: u32) -> Option<String> {
-        if pid == 0 {
-            return None;
-        }
-        let pane_id = self.focused_pane_for_pid(pid).ok()?;
-        let panes = self.active_tab_panes(pid).ok()?;
-        panes
-            .into_iter()
-            .find(|pane| pane.pane_id == pane_id)
-            .and_then(|pane| pane.foreground_process_name)
-    }
 }
 
 impl TopologyHandler for KittyMux {
@@ -475,7 +403,7 @@ impl TopologyHandler for KittyMux {
     }
 
     fn window_count(&self, pid: u32) -> Result<u32> {
-        Ok(self.active_tab_panes(pid)?.len() as u32)
+        self.active_scope_pane_count_for_pid(pid)
     }
 
     fn supports_rearrange_decision(&self) -> bool {
@@ -486,10 +414,6 @@ impl TopologyHandler for KittyMux {
 
     fn can_focus(&self, dir: Direction, pid: u32) -> Result<bool> {
         self.can_focus_from_pane_lookup(dir, pid)
-    }
-
-    fn move_decision(&self, dir: Direction, pid: u32) -> Result<MoveDecision> {
-        Ok(self.move_surface(pid)?.decision_for(dir))
     }
 
     fn can_resize(&self, dir: Direction, _grow: bool, pid: u32) -> Result<bool> {
@@ -508,7 +432,7 @@ impl TopologyHandler for KittyMux {
 
     fn move_internal(&self, dir: Direction, pid: u32) -> Result<()> {
         let pane_id = self.focused_pane_for_pid(pid)?;
-        self.run_action_for_pane(pid, pane_id, &Self::move_window_action(dir))?;
+        self.run_action_for_pane(pid, pane_id, &self.move_window_action(dir))?;
         Ok(())
     }
 
@@ -523,7 +447,7 @@ impl TopologyHandler for KittyMux {
                 "--match",
                 &matcher,
                 "--axis",
-                Self::axis_name(dir),
+                dir.axis_name(),
                 "--increment",
                 &increment,
             ],
@@ -533,7 +457,7 @@ impl TopologyHandler for KittyMux {
 
     fn rearrange(&self, dir: Direction, pid: u32) -> Result<()> {
         let pane_id = self.focused_pane_for_pid(pid)?;
-        self.run_action_for_pane(pid, pane_id, &Self::move_to_screen_edge_action(dir))?;
+        self.run_action_for_pane(pid, pane_id, &self.move_to_screen_edge_action(dir))?;
         Ok(())
     }
 

@@ -41,20 +41,11 @@ impl Nvim {
     /// 2. Fallback: scan XDG_RUNTIME_DIR for nvim.<pid>.* sockets
     fn find_socket_for_pid(pid: u32) -> Result<String> {
         // Try reading the nvim process's environment
-        if let Ok(environ) = std::fs::read(format!("/proc/{pid}/environ")) {
-            for entry in environ.split(|&b| b == 0) {
-                let entry = String::from_utf8_lossy(entry);
-                if let Some(addr) = entry.strip_prefix("NVIM=") {
-                    if !addr.is_empty() {
-                        return Ok(addr.to_string());
-                    }
-                }
-                if let Some(addr) = entry.strip_prefix("NVIM_LISTEN_ADDRESS=") {
-                    if !addr.is_empty() {
-                        return Ok(addr.to_string());
-                    }
-                }
-            }
+        if let Some(addr) = runtime::process_environ_var(pid, "NVIM") {
+            return Ok(addr);
+        }
+        if let Some(addr) = runtime::process_environ_var(pid, "NVIM_LISTEN_ADDRESS") {
+            return Ok(addr);
         }
 
         // Fallback: scan for socket files matching the PID

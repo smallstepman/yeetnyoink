@@ -106,6 +106,17 @@ pub fn descendant_pids(pid: u32) -> Vec<u32> {
     result
 }
 
+pub fn process_tree_pids(pid: u32) -> Vec<u32> {
+    if pid == 0 {
+        return Vec::new();
+    }
+    let mut result = descendant_pids(pid);
+    result.insert(0, pid);
+    result.sort_unstable();
+    result.dedup();
+    result
+}
+
 pub fn find_descendants_by_comm(pid: u32, name: &str) -> Vec<u32> {
     descendant_pids(pid)
         .into_iter()
@@ -127,6 +138,32 @@ pub fn process_comm(pid: u32) -> Option<String> {
     std::fs::read_to_string(format!("/proc/{pid}/comm"))
         .ok()
         .map(|value| normalize_process_name(value.trim()))
+}
+
+pub fn process_environ_var(pid: u32, key: &str) -> Option<String> {
+    let environ = std::fs::read(format!("/proc/{pid}/environ")).ok()?;
+    let prefix = format!("{key}=");
+    for chunk in environ.split(|byte| *byte == 0) {
+        let entry = String::from_utf8_lossy(chunk);
+        if let Some(value) = entry.strip_prefix(&prefix) {
+            let value = value.trim();
+            if !value.is_empty() {
+                return Some(value.to_string());
+            }
+        }
+    }
+    None
+}
+
+pub fn process_cmdline_args(pid: u32) -> Option<Vec<String>> {
+    let cmdline = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+    Some(
+        cmdline
+            .split(|byte| *byte == 0)
+            .filter(|segment| !segment.is_empty())
+            .map(|segment| String::from_utf8_lossy(segment).to_string())
+            .collect(),
+    )
 }
 
 pub fn is_shell_comm(comm: &str) -> bool {
@@ -151,4 +188,27 @@ pub fn parse_stat_tpgid(stat: &str) -> Option<u32> {
         .ok()
         .filter(|value| *value > 0)
         .map(|value| value as u32)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{process_cmdline_args, process_environ_var, process_tree_pids};
+
+    #[test]
+    fn process_tree_pids_rejects_zero_pid() {
+        assert!(process_tree_pids(0).is_empty());
+    }
+
+    #[test]
+    fn process_cmdline_args_reads_current_process() {
+        let args = process_cmdline_args(std::process::id()).expect("current process has cmdline");
+        assert!(!args.is_empty());
+    }
+
+    #[test]
+    fn process_environ_var_reads_current_process() {
+        if let Ok(path) = std::env::var("PATH") {
+            assert_eq!(process_environ_var(std::process::id(), "PATH"), Some(path));
+        }
+    }
 }

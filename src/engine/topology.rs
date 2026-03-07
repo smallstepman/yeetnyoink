@@ -39,6 +39,15 @@ pub enum Direction {
 impl Direction {
     pub const ALL: [Self; 4] = [Self::West, Self::East, Self::North, Self::South];
 
+    pub fn select<T>(self, west: T, east: T, north: T, south: T) -> T {
+        match self {
+            Self::West => west,
+            Self::East => east,
+            Self::North => north,
+            Self::South => south,
+        }
+    }
+
     pub fn opposite(self) -> Self {
         match self {
             Self::West => Self::East,
@@ -48,10 +57,24 @@ impl Direction {
         }
     }
 
-    pub fn axis(self) -> SplitAxis {
+    pub const fn axis(self) -> SplitAxis {
         match self {
             Self::West | Self::East => SplitAxis::Horizontal,
             Self::North | Self::South => SplitAxis::Vertical,
+        }
+    }
+
+    pub const fn axis_name(self) -> &'static str {
+        match self.axis() {
+            SplitAxis::Horizontal => "horizontal",
+            SplitAxis::Vertical => "vertical",
+        }
+    }
+
+    pub const fn sign(self) -> i32 {
+        match self {
+            Self::West | Self::North => -1,
+            Self::East | Self::South => 1,
         }
     }
 
@@ -180,6 +203,62 @@ impl Rect {
             SplitAxis::Vertical => self.x < other.x + other.w && self.x + self.w > other.x,
         }
     }
+
+    pub fn perp_overlap_len(self, other: Rect, dir: Direction) -> i32 {
+        match dir.axis() {
+            SplitAxis::Horizontal => (self.y + self.h).min(other.y + other.h) - self.y.max(other.y),
+            SplitAxis::Vertical => (self.x + self.w).min(other.x + other.w) - self.x.max(other.x),
+        }
+        .max(0)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DirectedRect<T> {
+    pub id: T,
+    pub rect: Rect,
+}
+
+pub fn select_closest_in_direction<T>(
+    rects: &[DirectedRect<T>],
+    source_id: T,
+    dir: Direction,
+) -> Option<T>
+where
+    T: Copy + Eq,
+{
+    let source = rects.iter().find(|rect| rect.id == source_id)?;
+    let mut best: Option<(T, i32, i32)> = None;
+
+    for candidate in rects.iter().copied().filter(|rect| rect.id != source_id) {
+        let distance = match dir {
+            Direction::West if candidate.rect.x + candidate.rect.w <= source.rect.x => {
+                source.rect.x - (candidate.rect.x + candidate.rect.w)
+            }
+            Direction::East if candidate.rect.x >= source.rect.x + source.rect.w => {
+                candidate.rect.x - (source.rect.x + source.rect.w)
+            }
+            Direction::North if candidate.rect.y + candidate.rect.h <= source.rect.y => {
+                source.rect.y - (candidate.rect.y + candidate.rect.h)
+            }
+            Direction::South if candidate.rect.y >= source.rect.y + source.rect.h => {
+                candidate.rect.y - (source.rect.y + source.rect.h)
+            }
+            _ => continue,
+        };
+        let overlap = source.rect.perp_overlap_len(candidate.rect, dir);
+        if overlap <= 0 {
+            continue;
+        }
+        match best {
+            Some((_, best_distance, best_overlap))
+                if best_distance < distance
+                    || (best_distance == distance && best_overlap >= overlap) => {}
+            _ => best = Some((candidate.id, distance, overlap)),
+        }
+    }
+
+    best.map(|(id, _, _)| id)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -249,7 +328,10 @@ impl MoveSurface {
 
 #[cfg(test)]
 mod tests {
-    use super::{Direction, DirectionalNeighbors, MoveSurface, Rect};
+    use super::{
+        select_closest_in_direction, DirectedRect, Direction, DirectionalNeighbors, MoveSurface,
+        Rect,
+    };
     use crate::engine::contract::MoveDecision;
 
     #[test]
@@ -282,6 +364,8 @@ mod tests {
         };
         assert!(a.perp_overlap(b, Direction::East));
         assert!(!a.perp_overlap(b, Direction::South));
+        assert_eq!(a.perp_overlap_len(b, Direction::East), 5);
+        assert_eq!(a.perp_overlap_len(b, Direction::South), 0);
     }
 
     #[test]
@@ -341,5 +425,70 @@ mod tests {
             without_rearrange.decision_for(Direction::West),
             MoveDecision::TearOut
         ));
+    }
+
+    #[test]
+    fn select_closest_in_direction_prefers_nearest_overlapping_rect() {
+        let rects = vec![
+            DirectedRect {
+                id: 1_u64,
+                rect: Rect {
+                    x: 10,
+                    y: 10,
+                    w: 10,
+                    h: 10,
+                },
+            },
+            DirectedRect {
+                id: 2_u64,
+                rect: Rect {
+                    x: 0,
+                    y: 12,
+                    w: 9,
+                    h: 8,
+                },
+            },
+            DirectedRect {
+                id: 3_u64,
+                rect: Rect {
+                    x: -20,
+                    y: 12,
+                    w: 10,
+                    h: 8,
+                },
+            },
+        ];
+        assert_eq!(
+            select_closest_in_direction(&rects, 1, Direction::West),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn select_closest_in_direction_requires_perpendicular_overlap() {
+        let rects = vec![
+            DirectedRect {
+                id: 1_u64,
+                rect: Rect {
+                    x: 10,
+                    y: 10,
+                    w: 10,
+                    h: 10,
+                },
+            },
+            DirectedRect {
+                id: 2_u64,
+                rect: Rect {
+                    x: 0,
+                    y: 100,
+                    w: 9,
+                    h: 8,
+                },
+            },
+        ];
+        assert_eq!(
+            select_closest_in_direction(&rects, 1, Direction::West),
+            None
+        );
     }
 }

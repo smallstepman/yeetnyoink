@@ -3,11 +3,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{bail, Context, Result};
 
 use crate::engine::contract::{
-    AdapterCapabilities, AppAdapter, AppKind, MergeExecutionMode, MergePreparation, MoveDecision,
-    TearResult, TerminalMultiplexerProvider, TerminalPaneSnapshot, TopologyHandler,
+    AdapterCapabilities, AppAdapter, AppKind, MergeExecutionMode, MergePreparation, TearResult,
+    TerminalMultiplexerProvider, TerminalPaneSnapshot, TopologyHandler,
 };
 use crate::engine::runtime::{self, CommandContext, ProcessId};
-use crate::engine::topology::{Direction, DirectionalNeighbors};
+use crate::engine::topology::{
+    select_closest_in_direction, DirectedRect, Direction, DirectionalNeighbors, Rect,
+};
 
 pub struct Tmux {
     session: TmuxSession,
@@ -45,77 +47,18 @@ struct TmuxPaneGeom {
     height: i32,
 }
 
-fn overlap_len(a_start: i32, a_len: i32, b_start: i32, b_len: i32) -> i32 {
-    let a_end = a_start + a_len;
-    let b_end = b_start + b_len;
-    (a_end.min(b_end) - a_start.max(b_start)).max(0)
-}
-
-fn select_directional_neighbor(
-    panes: &[TmuxPaneGeom],
-    source_pane_id: u64,
-    dir: Direction,
-) -> Option<u64> {
-    let source = panes.iter().find(|pane| pane.pane_id == source_pane_id)?;
-    let mut best: Option<(u64, i32, i32)> = None;
-    for pane in panes
-        .iter()
-        .copied()
-        .filter(|pane| pane.pane_id != source_pane_id)
-    {
-        let (distance, overlap) = match dir {
-            Direction::West => {
-                if pane.left + pane.width <= source.left {
-                    (
-                        source.left - (pane.left + pane.width),
-                        overlap_len(source.top, source.height, pane.top, pane.height),
-                    )
-                } else {
-                    (i32::MAX, 0)
-                }
-            }
-            Direction::East => {
-                if pane.left >= source.left + source.width {
-                    (
-                        pane.left - (source.left + source.width),
-                        overlap_len(source.top, source.height, pane.top, pane.height),
-                    )
-                } else {
-                    (i32::MAX, 0)
-                }
-            }
-            Direction::North => {
-                if pane.top + pane.height <= source.top {
-                    (
-                        source.top - (pane.top + pane.height),
-                        overlap_len(source.left, source.width, pane.left, pane.width),
-                    )
-                } else {
-                    (i32::MAX, 0)
-                }
-            }
-            Direction::South => {
-                if pane.top >= source.top + source.height {
-                    (
-                        pane.top - (source.top + source.height),
-                        overlap_len(source.left, source.width, pane.left, pane.width),
-                    )
-                } else {
-                    (i32::MAX, 0)
-                }
-            }
-        };
-        if overlap <= 0 || distance == i32::MAX {
-            continue;
-        }
-        match best {
-            Some((_, best_distance, best_overlap))
-                if best_distance < distance
-                    || (best_distance == distance && best_overlap >= overlap) => {}
-            _ => best = Some((pane.pane_id, distance, overlap)),
+impl TmuxPaneGeom {
+    fn directed_rect(self) -> DirectedRect<u64> {
+        DirectedRect {
+            id: self.pane_id,
+            rect: Rect {
+                x: self.left,
+                y: self.top,
+                w: self.width,
+                h: self.height,
+            },
         }
     }
-    best.map(|(pane_id, _, _)| pane_id)
 }
 
 // ---------------------------------------------------------------------------
@@ -123,9 +66,6 @@ fn select_directional_neighbor(
 // ---------------------------------------------------------------------------
 
 impl Tmux {
-    /// Create a Tmux adapter from a known tmux client PID.
-    /// `terminal_launch_prefix` is the command prefix for the hosting terminal
-    /// (e.g. `["wezterm", "-e"]`).
     pub(crate) fn from_client_pid(
         client_pid: u32,
         terminal_launch_prefix: Vec<String>,
@@ -137,8 +77,6 @@ impl Tmux {
         })
     }
 
-    /// Check if the active pane in this session is running nvim/vim.
-    /// Returns the nvim process PID if found.
     pub(crate) fn nvim_in_current_pane(&self) -> Option<u32> {
         self.session.nvim_in_current_pane()
     }
@@ -339,7 +277,8 @@ impl TmuxSession {
             .iter()
             .find(|pane| pane.pane_id == source_pane_id)
             .with_context(|| format!("source tmux pane %{source_pane_id} missing from window"))?;
-        Ok(select_directional_neighbor(&panes, source_pane_id, dir))
+        let rects: Vec<_> = panes.into_iter().map(TmuxPaneGeom::directed_rect).collect();
+        Ok(select_closest_in_direction(&rects, source_pane_id, dir))
     }
 
     fn directional_neighbor_pane_id(&self, source_pane_id: u64, dir: Direction) -> Result<u64> {
@@ -517,7 +456,7 @@ impl TerminalMultiplexerProvider for TmuxMuxProvider {
     }
 
     fn focused_pane_for_pid(&self, pid: u32) -> Result<u64> {
-        self.with_session(pid, TmuxSession::focused_pane_id_for_client)
+        self.with_session(pid, |session| session.focused_pane_id_for_client())
     }
 
     fn list_panes_for_pid(&self, pid: u32) -> Result<Vec<TerminalPaneSnapshot>> {
@@ -651,17 +590,11 @@ impl TerminalMultiplexerProvider for TmuxMuxProvider {
 
 impl TopologyHandler for TmuxMuxProvider {
     fn can_focus(&self, dir: Direction, pid: u32) -> Result<bool> {
-        self.with_session(pid, |session| {
-            Ok(session.directional_neighbors()?.in_direction(dir))
-        })
-    }
-
-    fn move_decision(&self, dir: Direction, pid: u32) -> Result<MoveDecision> {
-        Ok(self.move_surface(pid)?.decision_for(dir))
+        self.can_focus_from_directional_neighbors(dir, pid)
     }
 
     fn directional_neighbors(&self, pid: u32) -> Result<DirectionalNeighbors> {
-        self.with_session(pid, TmuxSession::directional_neighbors)
+        self.with_session(pid, |session| session.directional_neighbors())
     }
 
     fn supports_rearrange_decision(&self) -> bool {
@@ -669,11 +602,7 @@ impl TopologyHandler for TmuxMuxProvider {
     }
 
     fn window_count(&self, pid: u32) -> Result<u32> {
-        self.with_session(pid, TmuxSession::window_count)
-    }
-
-    fn can_resize(&self, _dir: Direction, _grow: bool, _pid: u32) -> Result<bool> {
-        Ok(false)
+        self.active_scope_pane_count_for_pid(pid)
     }
 
     fn focus(&self, dir: Direction, pid: u32) -> Result<()> {
@@ -784,11 +713,7 @@ impl TopologyHandler for Tmux {
     }
 
     fn can_focus(&self, dir: Direction, _pid: u32) -> Result<bool> {
-        Ok(self.directional_neighbors(0)?.in_direction(dir))
-    }
-
-    fn move_decision(&self, dir: Direction, pid: u32) -> Result<MoveDecision> {
-        Ok(self.move_surface(pid)?.decision_for(dir))
+        self.can_focus_from_directional_neighbors(dir, 0)
     }
 
     fn focus(&self, dir: Direction, _pid: u32) -> Result<()> {
@@ -806,9 +731,8 @@ impl TopologyHandler for Tmux {
 
 #[cfg(test)]
 mod tests {
-    use super::{select_directional_neighbor, Tmux, TmuxPaneGeom, TmuxSession};
+    use super::{Tmux, TmuxSession};
     use crate::engine::contract::AppAdapter;
-    use crate::engine::topology::Direction;
 
     #[test]
     fn declares_explicit_capability_contract() {
@@ -827,60 +751,5 @@ mod tests {
         assert!(caps.tear_out);
         assert!(!caps.rearrange);
         assert!(!caps.merge);
-    }
-
-    #[test]
-    fn directional_neighbor_prefers_closest_with_overlap() {
-        let panes = vec![
-            TmuxPaneGeom {
-                pane_id: 1,
-                left: 10,
-                top: 10,
-                width: 10,
-                height: 10,
-            },
-            TmuxPaneGeom {
-                pane_id: 2,
-                left: 0,
-                top: 12,
-                width: 9,
-                height: 8,
-            },
-            TmuxPaneGeom {
-                pane_id: 3,
-                left: -20,
-                top: 12,
-                width: 10,
-                height: 8,
-            },
-        ];
-        assert_eq!(
-            select_directional_neighbor(&panes, 1, Direction::West),
-            Some(2)
-        );
-    }
-
-    #[test]
-    fn directional_neighbor_returns_none_without_overlap() {
-        let panes = vec![
-            TmuxPaneGeom {
-                pane_id: 1,
-                left: 10,
-                top: 10,
-                width: 10,
-                height: 10,
-            },
-            TmuxPaneGeom {
-                pane_id: 2,
-                left: 0,
-                top: 100,
-                width: 9,
-                height: 8,
-            },
-        ];
-        assert_eq!(
-            select_directional_neighbor(&panes, 1, Direction::West),
-            None
-        );
     }
 }

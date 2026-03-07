@@ -31,10 +31,6 @@ static SESSION_CACHE: OnceLock<Mutex<HashMap<u32, String>>> = OnceLock::new();
 const SOURCE_PANE_ENV: &str = "YEET_AND_YOINK_ZELLIJ_SOURCE_PANE_ID";
 
 impl ZellijMuxProvider {
-    fn direction_name(dir: Direction) -> &'static str {
-        dir.egocentric()
-    }
-
     fn session_cache() -> &'static Mutex<HashMap<u32, String>> {
         SESSION_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
     }
@@ -59,20 +55,6 @@ impl ZellijMuxProvider {
             .contains("please specify the session name")
     }
 
-    fn read_environ_var(pid: u32, key: &str) -> Option<String> {
-        let environ = std::fs::read(format!("/proc/{pid}/environ")).ok()?;
-        let prefix = format!("{key}=");
-        for chunk in environ.split(|byte| *byte == 0) {
-            let entry = String::from_utf8_lossy(chunk);
-            if let Some(value) = entry.strip_prefix(&prefix) {
-                if !value.trim().is_empty() {
-                    return Some(value.trim().to_string());
-                }
-            }
-        }
-        None
-    }
-
     fn session_from_server_path(path: &str) -> Option<String> {
         let name = Path::new(path).file_name()?.to_str()?.trim();
         if name.is_empty() {
@@ -83,12 +65,7 @@ impl ZellijMuxProvider {
     }
 
     fn session_name_from_cmdline(pid: u32) -> Option<String> {
-        let cmdline = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
-        let args: Vec<String> = cmdline
-            .split(|byte| *byte == 0)
-            .filter(|segment| !segment.is_empty())
-            .map(|segment| String::from_utf8_lossy(segment).to_string())
-            .collect();
+        let args = runtime::process_cmdline_args(pid)?;
         for (index, arg) in args.iter().enumerate() {
             if arg == "--session" {
                 if let Some(value) = args.get(index + 1) {
@@ -242,13 +219,13 @@ impl ZellijMuxProvider {
             .into_iter()
             .filter(|pid| runtime::process_comm(*pid).as_deref() == Some("zellij"))
         {
-            let mut candidates = runtime::descendant_pids(zellij_pid);
-            candidates.push(zellij_pid);
-            for candidate in candidates {
-                let Some(session) = Self::read_environ_var(candidate, "ZELLIJ_SESSION_NAME") else {
+            for candidate in runtime::process_tree_pids(zellij_pid) {
+                let Some(session) = runtime::process_environ_var(candidate, "ZELLIJ_SESSION_NAME")
+                else {
                     continue;
                 };
-                let Some(candidate_kitty_pid) = Self::read_environ_var(candidate, "KITTY_PID")
+                let Some(candidate_kitty_pid) =
+                    runtime::process_environ_var(candidate, "KITTY_PID")
                 else {
                     continue;
                 };
@@ -268,13 +245,10 @@ impl ZellijMuxProvider {
             return Some(session);
         }
 
-        let mut candidates = runtime::descendant_pids(pid);
-        candidates.insert(0, pid);
-        candidates.sort_unstable();
-        candidates.dedup();
+        let candidates = runtime::process_tree_pids(pid);
 
         for candidate in &candidates {
-            if let Some(session) = Self::read_environ_var(*candidate, "ZELLIJ_SESSION_NAME") {
+            if let Some(session) = runtime::process_environ_var(*candidate, "ZELLIJ_SESSION_NAME") {
                 Self::store_session_name(pid, &session);
                 return Some(session);
             }
@@ -680,17 +654,13 @@ impl ZellijMuxProvider {
     }
 
     fn pane_id_from_environ(pid: u32) -> Option<String> {
-        let mut candidates = runtime::descendant_pids(pid);
-        candidates.insert(0, pid);
-        candidates.sort_unstable();
-        candidates.dedup();
-        for candidate in candidates {
-            if let Some(pane_id) = Self::read_environ_var(candidate, SOURCE_PANE_ENV) {
+        for candidate in runtime::process_tree_pids(pid) {
+            if let Some(pane_id) = runtime::process_environ_var(candidate, SOURCE_PANE_ENV) {
                 if let Some(pane_id) = Self::normalize_pane_id(&pane_id) {
                     return Some(pane_id);
                 }
             }
-            let Some(pane_id) = Self::read_environ_var(candidate, "ZELLIJ_PANE_ID") else {
+            let Some(pane_id) = runtime::process_environ_var(candidate, "ZELLIJ_PANE_ID") else {
                 continue;
             };
             if let Some(pane_id) = Self::normalize_pane_id(&pane_id) {
@@ -1020,8 +990,7 @@ impl ZellijMuxProvider {
     }
 
     fn try_move_focus(&self, pid: u32, dir: Direction) -> Result<bool> {
-        let output =
-            self.cli_output_for_pid(pid, &["action", "move-focus", Self::direction_name(dir)])?;
+        let output = self.cli_output_for_pid(pid, &["action", "move-focus", dir.egocentric()])?;
         if output.status.success() {
             return Ok(true);
         }
@@ -1167,10 +1136,6 @@ impl TerminalMultiplexerProvider for ZellijMuxProvider {
         self.invoke_merge_plugin(target_pid, &plugin_url, source_pane_id, target_tab_index)?;
         Ok(())
     }
-
-    fn active_foreground_process(&self, _pid: u32) -> Option<String> {
-        None
-    }
 }
 
 impl TopologyHandler for ZellijMuxProvider {
@@ -1183,7 +1148,7 @@ impl TopologyHandler for ZellijMuxProvider {
     }
 
     fn window_count(&self, pid: u32) -> Result<u32> {
-        Ok(self.layout_snapshot(pid)?.pane_count)
+        self.active_scope_pane_count_for_pid(pid)
     }
 
     fn can_focus(&self, dir: Direction, pid: u32) -> Result<bool> {
@@ -1201,12 +1166,12 @@ impl TopologyHandler for ZellijMuxProvider {
     }
 
     fn focus(&self, dir: Direction, pid: u32) -> Result<()> {
-        self.cli_stdout_for_pid(pid, &["action", "move-focus", Self::direction_name(dir)])?;
+        self.cli_stdout_for_pid(pid, &["action", "move-focus", dir.egocentric()])?;
         Ok(())
     }
 
     fn move_internal(&self, dir: Direction, pid: u32) -> Result<()> {
-        self.cli_stdout_for_pid(pid, &["action", "move-pane", Self::direction_name(dir)])?;
+        self.cli_stdout_for_pid(pid, &["action", "move-pane", dir.egocentric()])?;
         Ok(())
     }
 
