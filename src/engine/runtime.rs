@@ -17,6 +17,41 @@ impl ProcessId {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct ProcessTree {
+    pids: Vec<u32>,
+}
+
+impl ProcessTree {
+    pub fn for_pid(pid: u32) -> Self {
+        Self {
+            pids: process_tree_pids(pid),
+        }
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = u32> + '_ {
+        self.pids.iter().copied()
+    }
+
+    pub fn env_var(&self, key: &str) -> Option<String> {
+        self.find_map(|pid| process_environ_var(pid, key))
+    }
+
+    pub fn find_map<T>(&self, find: impl FnMut(u32) -> Option<T>) -> Option<T> {
+        self.iter().find_map(find)
+    }
+
+    pub fn find_map_by_comm<T>(
+        &self,
+        name: &str,
+        mut find: impl FnMut(u32) -> Option<T>,
+    ) -> Option<T> {
+        self.iter()
+            .filter(|pid| process_comm(*pid).as_deref() == Some(name))
+            .find_map(|pid| find(pid))
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct CommandContext {
     pub adapter: &'static str,
@@ -218,8 +253,8 @@ mod tests {
     use std::process::Output;
 
     use super::{
-        process_cmdline_args, process_environ_var, process_tree_pids, stderr_text, stdout_text,
-        CommandContext,
+        process_cmdline_args, process_comm, process_environ_var, process_tree_pids, stderr_text,
+        stdout_text, CommandContext, ProcessTree,
     };
 
     #[cfg(unix)]
@@ -248,6 +283,23 @@ mod tests {
     fn process_environ_var_reads_current_process() {
         if let Ok(path) = std::env::var("PATH") {
             assert_eq!(process_environ_var(std::process::id(), "PATH"), Some(path));
+        }
+    }
+
+    #[test]
+    fn process_tree_helper_reads_env_and_finds_current_process() {
+        let tree = ProcessTree::for_pid(std::process::id());
+        assert!(tree.iter().any(|pid| pid == std::process::id()));
+        if let Ok(path) = std::env::var("PATH") {
+            assert_eq!(tree.env_var("PATH"), Some(path));
+        }
+        assert!(tree
+            .find_map(|pid| (pid == std::process::id()).then_some(pid))
+            .is_some());
+        if let Some(comm) = process_comm(std::process::id()) {
+            assert!(tree
+                .find_map_by_comm(&comm, |pid| (pid == std::process::id()).then_some(pid))
+                .is_some());
         }
     }
 

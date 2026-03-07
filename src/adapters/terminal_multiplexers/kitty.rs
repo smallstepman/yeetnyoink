@@ -126,12 +126,7 @@ Original error: {stderr}"
     }
 
     fn socket_for_pid(&self, pid: u32) -> Option<String> {
-        for candidate in runtime::process_tree_pids(pid) {
-            if let Some(socket) = runtime::process_environ_var(candidate, "KITTY_LISTEN_ON") {
-                return Some(socket);
-            }
-        }
-        None
+        runtime::ProcessTree::for_pid(pid).env_var("KITTY_LISTEN_ON")
     }
 
     fn active_tab_panes(&self, pid: u32) -> Result<Vec<TerminalPaneSnapshot>> {

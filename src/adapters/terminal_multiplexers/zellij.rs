@@ -210,23 +210,18 @@ impl ZellijMuxProvider {
     }
 
     fn session_name_by_kitty_pid(kitty_pid: u32) -> Option<String> {
+        let kitty_pid = kitty_pid.to_string();
         for zellij_pid in Self::all_pids()
             .into_iter()
             .filter(|pid| runtime::process_comm(*pid).as_deref() == Some("zellij"))
         {
-            for candidate in runtime::process_tree_pids(zellij_pid) {
-                let Some(session) = runtime::process_environ_var(candidate, "ZELLIJ_SESSION_NAME")
-                else {
-                    continue;
-                };
-                let Some(candidate_kitty_pid) =
-                    runtime::process_environ_var(candidate, "KITTY_PID")
-                else {
-                    continue;
-                };
-                if candidate_kitty_pid == kitty_pid.to_string() {
-                    return Some(session);
-                }
+            let tree = runtime::ProcessTree::for_pid(zellij_pid);
+            if let Some(session) = tree.find_map(|candidate| {
+                let session = runtime::process_environ_var(candidate, "ZELLIJ_SESSION_NAME")?;
+                let candidate_kitty_pid = runtime::process_environ_var(candidate, "KITTY_PID")?;
+                (candidate_kitty_pid == kitty_pid).then_some(session)
+            }) {
+                return Some(session);
             }
         }
         None
@@ -240,43 +235,28 @@ impl ZellijMuxProvider {
             return Some(session);
         }
 
-        let candidates = runtime::process_tree_pids(pid);
+        let tree = runtime::ProcessTree::for_pid(pid);
 
-        for candidate in &candidates {
-            if let Some(session) = runtime::process_environ_var(*candidate, "ZELLIJ_SESSION_NAME") {
-                Self::store_session_name(pid, &session);
-                return Some(session);
-            }
+        if let Some(session) = tree.env_var("ZELLIJ_SESSION_NAME") {
+            Self::store_session_name(pid, &session);
+            return Some(session);
         }
 
-        for candidate in &candidates {
-            if runtime::process_comm(*candidate).as_deref() != Some("zellij") {
-                continue;
-            }
-            if let Some(session) = Self::session_name_from_cmdline(*candidate) {
-                Self::store_session_name(pid, &session);
-                return Some(session);
-            }
+        if let Some(session) = tree.find_map_by_comm("zellij", Self::session_name_from_cmdline) {
+            Self::store_session_name(pid, &session);
+            return Some(session);
         }
 
-        for candidate in &candidates {
-            if runtime::process_comm(*candidate).as_deref() != Some("zellij") {
-                continue;
-            }
-            if let Some(session) = Self::session_name_from_open_socket(*candidate) {
-                Self::store_session_name(pid, &session);
-                return Some(session);
-            }
+        if let Some(session) = tree.find_map_by_comm("zellij", Self::session_name_from_open_socket)
+        {
+            Self::store_session_name(pid, &session);
+            return Some(session);
         }
 
-        for candidate in &candidates {
-            if runtime::process_comm(*candidate).as_deref() != Some("zellij") {
-                continue;
-            }
-            if let Some(session) = Self::session_name_from_socket_peers(*candidate) {
-                Self::store_session_name(pid, &session);
-                return Some(session);
-            }
+        if let Some(session) = tree.find_map_by_comm("zellij", Self::session_name_from_socket_peers)
+        {
+            Self::store_session_name(pid, &session);
+            return Some(session);
         }
 
         if let Some(session) = Self::session_name_by_kitty_pid(pid) {
@@ -649,20 +629,14 @@ impl ZellijMuxProvider {
     }
 
     fn pane_id_from_environ(pid: u32) -> Option<String> {
-        for candidate in runtime::process_tree_pids(pid) {
-            if let Some(pane_id) = runtime::process_environ_var(candidate, SOURCE_PANE_ENV) {
-                if let Some(pane_id) = Self::normalize_pane_id(&pane_id) {
-                    return Some(pane_id);
-                }
-            }
-            let Some(pane_id) = runtime::process_environ_var(candidate, "ZELLIJ_PANE_ID") else {
-                continue;
-            };
-            if let Some(pane_id) = Self::normalize_pane_id(&pane_id) {
-                return Some(pane_id);
-            }
-        }
-        None
+        runtime::ProcessTree::for_pid(pid).find_map(|candidate| {
+            runtime::process_environ_var(candidate, SOURCE_PANE_ENV)
+                .and_then(|pane_id| Self::normalize_pane_id(&pane_id))
+                .or_else(|| {
+                    runtime::process_environ_var(candidate, "ZELLIJ_PANE_ID")
+                        .and_then(|pane_id| Self::normalize_pane_id(&pane_id))
+                })
+        })
     }
 
     fn parse_pipe_query_pane_id(stdout: &str) -> Option<String> {
