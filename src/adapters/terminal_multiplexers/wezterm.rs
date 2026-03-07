@@ -9,11 +9,11 @@ use serde::Deserialize;
 use super::WEZTERM_HOST_ALIASES;
 use crate::config::TerminalMuxBackend;
 use crate::engine::contract::{
-    AdapterCapabilities, MergeExecutionMode, MergePreparation, MoveDecision, TearResult,
-    TerminalMultiplexerProvider, TerminalPaneSnapshot, TopologyHandler,
+    AdapterCapabilities, MergeExecutionMode, MergePreparation, MoveDecision, SourcePaneMerge,
+    TearResult, TerminalMultiplexerProvider, TerminalPaneSnapshot, TopologyHandler,
 };
-use crate::engine::runtime::ProcessId;
-use crate::engine::topology::{Direction, DirectionalNeighbors, MoveSurface};
+use crate::engine::runtime::{self, ProcessId};
+use crate::engine::topology::{Direction, DirectionalNeighbors};
 use crate::logging;
 
 #[derive(Debug, Deserialize)]
@@ -53,11 +53,6 @@ impl From<WeztermMuxFocusSelection> for u64 {
 pub(crate) struct WeztermMux;
 pub(crate) static WEZTERM_MUX_PROVIDER: WeztermMux = WeztermMux;
 
-struct WeztermMuxMergePreparation {
-    pane_id: u64,
-    target_window_id: Option<u64>,
-}
-
 impl WeztermMux {
     fn list_clients(&self, pid: u32) -> Result<Vec<WeztermMuxClient>> {
         let output = match self.cli_output_for_pid(pid, &["list-clients", "--format", "json"]) {
@@ -80,7 +75,7 @@ impl WeztermMux {
             return Ok(vec![]);
         }
 
-        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let stdout = runtime::stdout_text(&output);
         if stdout.is_empty() {
             logging::debug(format!(
                 "wezterm: pid={} list-clients returned empty output",
@@ -235,8 +230,8 @@ impl TerminalMultiplexerProvider for WeztermMux {
             pid,
             args,
             output.status,
-            String::from_utf8_lossy(&output.stdout).trim(),
-            String::from_utf8_lossy(&output.stderr).trim()
+            runtime::stdout_text(&output),
+            runtime::stderr_text(&output)
         ));
         Ok(output)
     }
@@ -327,7 +322,7 @@ impl TerminalMultiplexerProvider for WeztermMux {
             return Ok(None);
         }
 
-        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let stdout = runtime::stdout_text(&output);
         if stdout.is_empty() {
             return Ok(None);
         }
@@ -491,47 +486,7 @@ impl TopologyHandler for WeztermMux {
     }
 
     fn move_decision(&self, dir: Direction, pid: u32) -> Result<MoveDecision> {
-        let pane_id = self.focused_pane_for_pid(pid)?;
-        let pane_count = self.active_scope_pane_count_for_pid(pid)?;
-        let mut neighbors = DirectionalNeighbors::default();
-        neighbors.set(
-            dir,
-            self.pane_in_direction_for_pid(pid, pane_id, dir)?.is_some(),
-        );
-        if !neighbors.in_direction(dir) {
-            match dir {
-                Direction::North | Direction::South => {
-                    neighbors.set(
-                        Direction::West,
-                        self.pane_in_direction_for_pid(pid, pane_id, Direction::West)?
-                            .is_some(),
-                    );
-                    neighbors.set(
-                        Direction::East,
-                        self.pane_in_direction_for_pid(pid, pane_id, Direction::East)?
-                            .is_some(),
-                    );
-                }
-                Direction::West | Direction::East => {
-                    neighbors.set(
-                        Direction::North,
-                        self.pane_in_direction_for_pid(pid, pane_id, Direction::North)?
-                            .is_some(),
-                    );
-                    neighbors.set(
-                        Direction::South,
-                        self.pane_in_direction_for_pid(pid, pane_id, Direction::South)?
-                            .is_some(),
-                    );
-                }
-            }
-        }
-        let decision = MoveSurface {
-            pane_count,
-            neighbors,
-            supports_rearrange: true,
-        }
-        .decision_for(dir);
+        let decision = self.move_decision_from_pane_lookup(dir, pid, true)?;
         logging::debug(format!(
             "wezterm: move_decision dir={dir} => {:?}",
             decision
@@ -600,14 +555,7 @@ impl TopologyHandler for WeztermMux {
 
     fn rearrange(&self, dir: Direction, pid: u32) -> Result<()> {
         let pane_id = self.focused_pane_for_pid(pid)?;
-        let target = match dir {
-            Direction::North | Direction::South => self
-                .pane_in_direction_for_pid(pid, pane_id, Direction::West)?
-                .or(self.pane_in_direction_for_pid(pid, pane_id, Direction::East)?),
-            Direction::West | Direction::East => self
-                .pane_in_direction_for_pid(pid, pane_id, Direction::North)?
-                .or(self.pane_in_direction_for_pid(pid, pane_id, Direction::South)?),
-        };
+        let target = self.perpendicular_pane_for_pid(pid, pane_id, dir)?;
         // Fallback: pick any other pane in the same tab.
         let target = match target {
             Some(t) => t,
@@ -668,10 +616,10 @@ impl TopologyHandler for WeztermMux {
             source_pid,
             "source wezterm merge missing pid",
             |source_pid| {
-                Ok(WeztermMuxMergePreparation {
-                    pane_id: self.focused_pane_for_pid(source_pid)?,
-                    target_window_id: None,
-                })
+                Ok(SourcePaneMerge::new(
+                    self.focused_pane_for_pid(source_pid)?,
+                    None::<u64>,
+                ))
             },
         )
     }
@@ -681,8 +629,8 @@ impl TopologyHandler for WeztermMux {
         preparation: MergePreparation,
         target_window_id: Option<u64>,
     ) -> MergePreparation {
-        preparation.map_payload::<WeztermMuxMergePreparation>(|mut preparation| {
-            preparation.target_window_id = target_window_id;
+        preparation.map_payload::<SourcePaneMerge<Option<u64>>>(|mut preparation| {
+            preparation.meta = target_window_id;
             preparation
         })
     }
@@ -695,7 +643,7 @@ impl TopologyHandler for WeztermMux {
         preparation: MergePreparation,
     ) -> Result<()> {
         let (source_pid, target_pid, preparation) = self
-            .resolve_target_focused_merge::<WeztermMuxMergePreparation>(
+            .resolve_target_focused_merge::<SourcePaneMerge<Option<u64>>>(
                 source_pid,
                 target_pid,
                 preparation,
@@ -707,7 +655,7 @@ impl TopologyHandler for WeztermMux {
             source_pid,
             preparation.pane_id,
             target_pid,
-            preparation.target_window_id,
+            preparation.meta,
             dir,
         )
         .context("wezterm merge failed")

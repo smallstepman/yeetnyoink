@@ -20,20 +20,16 @@ fn emacs_eval(expr: &str) -> Result<String> {
     let output = runtime::run_command_output(
         "emacsclient",
         &["--eval", expr],
-        &CommandContext {
-            adapter: ADAPTER_NAME,
-            action: "eval",
-            target: None,
-        },
+        &CommandContext::new(ADAPTER_NAME, "eval"),
     )
     .context("failed to run emacsclient")?;
     if !output.status.success() {
         bail!(
             "emacsclient --eval failed: {}",
-            String::from_utf8_lossy(&output.stderr)
+            runtime::stderr_text(&output)
         );
     }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    Ok(runtime::stdout_text(&output))
 }
 
 /// Find the focused GUI frame's selected window, then run body in that context.

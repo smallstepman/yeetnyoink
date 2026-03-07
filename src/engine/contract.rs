@@ -3,7 +3,7 @@ use std::any::Any;
 use anyhow::{anyhow, Context, Result};
 use serde::de::DeserializeOwned;
 
-use crate::engine::runtime::ProcessId;
+use crate::engine::runtime::{self, ProcessId};
 use crate::engine::topology::{Direction, DirectionalNeighbors, DomainId, MoveSurface};
 
 pub trait ChainResolver {
@@ -36,7 +36,7 @@ pub trait TerminalMultiplexerProvider: TopologyHandler + ChainResolver {
     fn cli_status_for_pid(&self, pid: u32, args: &[&str]) -> Result<()> {
         let output = self.cli_output_for_pid(pid, args)?;
         if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let stderr = runtime::stderr_text(&output);
             return Err(self.command_error_for_pid(pid, args, &stderr));
         }
         Ok(())
@@ -45,10 +45,10 @@ pub trait TerminalMultiplexerProvider: TopologyHandler + ChainResolver {
     fn cli_stdout_for_pid(&self, pid: u32, args: &[&str]) -> Result<String> {
         let output = self.cli_output_for_pid(pid, args)?;
         if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let stderr = runtime::stderr_text(&output);
             return Err(self.command_error_for_pid(pid, args, &stderr));
         }
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        Ok(runtime::stdout_text(&output))
     }
 
     fn cli_json_for_pid<T>(&self, pid: u32, args: &[&str], parse_context: &'static str) -> Result<T>
@@ -104,6 +104,53 @@ pub trait TerminalMultiplexerProvider: TopologyHandler + ChainResolver {
     fn can_focus_from_pane_lookup(&self, dir: Direction, pid: u32) -> Result<bool> {
         let pane_id = self.focused_pane_for_pid(pid)?;
         Ok(self.pane_in_direction_for_pid(pid, pane_id, dir)?.is_some())
+    }
+
+    fn axis_neighbors_exist_from_pane_lookup(&self, pid: u32, dir: Direction) -> Result<bool> {
+        let pane_id = self.focused_pane_for_pid(pid)?;
+        let [first, second] = dir.axis_directions();
+        Ok(self
+            .pane_in_direction_for_pid(pid, pane_id, first)?
+            .is_some()
+            || self
+                .pane_in_direction_for_pid(pid, pane_id, second)?
+                .is_some())
+    }
+
+    fn perpendicular_pane_for_pid(
+        &self,
+        pid: u32,
+        pane_id: u64,
+        dir: Direction,
+    ) -> Result<Option<u64>> {
+        let [first, second] = dir.perpendicular_directions();
+        Ok(self
+            .pane_in_direction_for_pid(pid, pane_id, first)?
+            .or(self.pane_in_direction_for_pid(pid, pane_id, second)?))
+    }
+
+    fn move_decision_from_pane_lookup(
+        &self,
+        dir: Direction,
+        pid: u32,
+        supports_rearrange: bool,
+    ) -> Result<MoveDecision> {
+        let pane_count = self.active_scope_pane_count_for_pid(pid)?;
+        if pane_count <= 1 {
+            return Ok(MoveDecision::Passthrough);
+        }
+        let pane_id = self.focused_pane_for_pid(pid)?;
+        if self.pane_in_direction_for_pid(pid, pane_id, dir)?.is_some() {
+            return Ok(MoveDecision::Internal);
+        }
+        if supports_rearrange
+            && self
+                .perpendicular_pane_for_pid(pid, pane_id, dir)?
+                .is_some()
+        {
+            return Ok(MoveDecision::Rearrange);
+        }
+        Ok(MoveDecision::TearOut)
     }
 
     fn focused_pane_from_snapshots(
@@ -279,6 +326,18 @@ impl MergePreparation {
 impl Default for MergePreparation {
     fn default() -> Self {
         Self::none()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SourcePaneMerge<Meta = ()> {
+    pub pane_id: u64,
+    pub meta: Meta,
+}
+
+impl<Meta> SourcePaneMerge<Meta> {
+    pub fn new(pane_id: u64, meta: Meta) -> Self {
+        Self { pane_id, meta }
     }
 }
 
@@ -682,6 +741,22 @@ mod tests {
             Ok(20)
         }
 
+        fn pane_in_direction_for_pid(
+            &self,
+            _pid: u32,
+            pane_id: u64,
+            dir: Direction,
+        ) -> anyhow::Result<Option<u64>> {
+            if pane_id != 20 {
+                return Ok(None);
+            }
+            Ok(match dir {
+                Direction::West => Some(10),
+                Direction::North => Some(30),
+                Direction::East | Direction::South => None,
+            })
+        }
+
         fn send_text_to_pane(&self, _pid: u32, _pane_id: u64, _text: &str) -> anyhow::Result<()> {
             Ok(())
         }
@@ -718,6 +793,34 @@ mod tests {
         assert_eq!(panes.len(), 2);
         assert!(panes.iter().all(|pane| pane.tab_id == Some(2)));
         assert_eq!(mux.active_foreground_process(1), Some("nvim".to_string()));
+    }
+
+    #[test]
+    fn mux_provider_pane_lookup_helpers_share_axis_and_decision_logic() {
+        let mux = SnapshotMux;
+        assert!(mux
+            .axis_neighbors_exist_from_pane_lookup(1, Direction::West)
+            .expect("axis neighbors"));
+        assert_eq!(
+            mux.perpendicular_pane_for_pid(1, 20, Direction::East)
+                .expect("perpendicular pane"),
+            Some(30)
+        );
+        assert!(matches!(
+            mux.move_decision_from_pane_lookup(Direction::West, 1, false)
+                .expect("internal decision"),
+            MoveDecision::Internal
+        ));
+        assert!(matches!(
+            mux.move_decision_from_pane_lookup(Direction::East, 1, true)
+                .expect("rearrange decision"),
+            MoveDecision::Rearrange
+        ));
+        assert!(matches!(
+            mux.move_decision_from_pane_lookup(Direction::East, 1, false)
+                .expect("tear-out decision"),
+            MoveDecision::TearOut
+        ));
     }
 
     #[test]

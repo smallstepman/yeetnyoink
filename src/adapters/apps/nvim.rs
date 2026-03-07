@@ -72,20 +72,16 @@ impl Nvim {
         let output = runtime::run_command_output(
             "nvim",
             &["--server", server_addr, "--remote-expr", expr],
-            &CommandContext {
-                adapter: "nvim",
-                action: "remote-expr",
-                target: Some(server_addr.to_string()),
-            },
+            &CommandContext::new("nvim", "remote-expr").with_target(server_addr.to_string()),
         )
         .context("failed to run nvim --remote-expr")?;
         if !output.status.success() {
             bail!(
                 "nvim --remote-expr failed: {}",
-                String::from_utf8_lossy(&output.stderr)
+                runtime::stderr_text(&output)
             );
         }
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        Ok(runtime::stdout_text(&output))
     }
 
     fn remote_expr(&self, expr: &str) -> Result<String> {
@@ -96,11 +92,7 @@ impl Nvim {
         runtime::run_command_status(
             "nvim",
             &["--server", server_addr, "--remote-send", keys],
-            &CommandContext {
-                adapter: "nvim",
-                action: "remote-send",
-                target: Some(server_addr.to_string()),
-            },
+            &CommandContext::new("nvim", "remote-send").with_target(server_addr.to_string()),
         )
         .context("failed to run nvim --remote-send")
     }

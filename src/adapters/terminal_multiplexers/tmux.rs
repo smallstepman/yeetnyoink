@@ -3,8 +3,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{bail, Context, Result};
 
 use crate::engine::contract::{
-    AdapterCapabilities, AppAdapter, AppKind, MergeExecutionMode, MergePreparation, TearResult,
-    TerminalMultiplexerProvider, TerminalPaneSnapshot, TopologyHandler,
+    AdapterCapabilities, AppAdapter, AppKind, MergeExecutionMode, MergePreparation,
+    SourcePaneMerge, TearResult, TerminalMultiplexerProvider, TerminalPaneSnapshot,
+    TopologyHandler,
 };
 use crate::engine::runtime::{self, CommandContext, ProcessId};
 use crate::engine::topology::{
@@ -32,11 +33,6 @@ pub(crate) struct TmuxMuxProvider;
 pub(crate) static TMUX_MUX_PROVIDER: TmuxMuxProvider = TmuxMuxProvider;
 
 const DETACHED_SESSION_PREFIX: &str = "yeet-and-yoink-";
-
-struct TmuxMuxMergePreparation {
-    pane_id: u64,
-    session_name: String,
-}
 
 #[derive(Debug, Clone, Copy)]
 struct TmuxPaneGeom {
@@ -87,17 +83,13 @@ impl TmuxSession {
         let output = runtime::run_command_output(
             "tmux",
             &["list-clients", "-F", "#{client_pid}:#{session_name}"],
-            &CommandContext {
-                adapter: "tmux",
-                action: "list-clients",
-                target: Some(client_pid.to_string()),
-            },
+            &CommandContext::new("tmux", "list-clients").with_target(client_pid.to_string()),
         )
         .ok()?;
         if !output.status.success() {
             return None;
         }
-        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stdout = runtime::stdout_text(&output);
         let target = client_pid.to_string();
         for line in stdout.lines() {
             if let Some((pid_str, session)) = line.split_once(':') {
@@ -152,21 +144,18 @@ impl TmuxSession {
         let output = runtime::run_command_output(
             "tmux",
             &["list-clients", "-F", "#{client_pid}:#{pane_id}"],
-            &CommandContext {
-                adapter: "tmux",
-                action: "list-clients",
-                target: Some(self.client_pid.to_string()),
-            },
+            &CommandContext::new("tmux", "list-clients").with_target(self.client_pid.to_string()),
         )
         .context("failed to query tmux clients for focused pane")?;
         if !output.status.success() {
             bail!(
                 "tmux list-clients failed: {}",
-                String::from_utf8_lossy(&output.stderr)
+                runtime::stderr_text(&output)
             );
         }
         let target = self.client_pid.to_string();
-        for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let stdout = runtime::stdout_text(&output);
+        for line in stdout.lines() {
             if let Some((pid_str, pane_str)) = line.split_once(':') {
                 if pid_str == target {
                     return pane_str
@@ -187,20 +176,16 @@ impl TmuxSession {
         let output = runtime::run_command_output(
             "tmux",
             &["display-message", "-t", &pane_ref, "-p", format],
-            &CommandContext {
-                adapter: "tmux",
-                action: "display-message",
-                target: Some(pane_ref.clone()),
-            },
+            &CommandContext::new("tmux", "display-message").with_target(pane_ref.clone()),
         )
         .context("failed to run tmux")?;
         if !output.status.success() {
             bail!(
                 "tmux display-message failed: {}",
-                String::from_utf8_lossy(&output.stderr)
+                runtime::stderr_text(&output)
             );
         }
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        Ok(runtime::stdout_text(&output))
     }
 
     fn query_client_pane(&self, format: &str) -> Result<String> {
@@ -218,21 +203,15 @@ impl TmuxSession {
                 "-F",
                 "#{pane_id}:#{pane_left}:#{pane_top}:#{pane_width}:#{pane_height}",
             ],
-            &CommandContext {
-                adapter: "tmux",
-                action: "list-panes",
-                target: Some(window_ref.to_string()),
-            },
+            &CommandContext::new("tmux", "list-panes").with_target(window_ref.to_string()),
         )
         .context("failed to list tmux panes for window")?;
         if !output.status.success() {
-            bail!(
-                "tmux list-panes failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
+            bail!("tmux list-panes failed: {}", runtime::stderr_text(&output));
         }
         let mut panes = Vec::new();
-        for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let stdout = runtime::stdout_text(&output);
+        for line in stdout.lines() {
             let mut fields = line.split(':');
             let pane_id = fields
                 .next()
@@ -310,11 +289,7 @@ impl TmuxSession {
         runtime::run_command_status(
             "tmux",
             &["select-pane", "-t", &pane_ref, flag],
-            &CommandContext {
-                adapter: "tmux",
-                action: "select-pane",
-                target: Some(pane_ref.clone()),
-            },
+            &CommandContext::new("tmux", "select-pane").with_target(pane_ref.clone()),
         )
         .with_context(|| format!("tmux select-pane {flag} failed"))
     }
@@ -327,11 +302,8 @@ impl TmuxSession {
         runtime::run_command_status(
             "tmux",
             &["swap-pane", "-s", &source_ref, "-t", &target_ref],
-            &CommandContext {
-                adapter: "tmux",
-                action: "swap-pane",
-                target: Some(format!("{source_ref}->{target_ref}")),
-            },
+            &CommandContext::new("tmux", "swap-pane")
+                .with_target(format!("{source_ref}->{target_ref}")),
         )
         .context("tmux swap-pane failed")?;
         // Keep focus on the moved pane so repeated directional moves continue from
@@ -339,11 +311,7 @@ impl TmuxSession {
         runtime::run_command_status(
             "tmux",
             &["select-pane", "-t", &source_ref],
-            &CommandContext {
-                adapter: "tmux",
-                action: "select-pane",
-                target: Some(source_ref.clone()),
-            },
+            &CommandContext::new("tmux", "select-pane").with_target(source_ref.clone()),
         )
         .context("tmux select-pane after swap failed")
     }
@@ -367,11 +335,7 @@ impl TmuxSession {
                 "-t",
                 source_session,
             ],
-            &CommandContext {
-                adapter: "tmux",
-                action: "new-session",
-                target: Some(detached_session.clone()),
-            },
+            &CommandContext::new("tmux", "new-session").with_target(detached_session.clone()),
         )
         .context("tmux new-session failed for tear-out detached client")?;
         Ok(format!("{detached_session}:{window_index}"))
@@ -390,20 +354,13 @@ impl TmuxSession {
                 "-F",
                 "#{session_name}:#{window_index}",
             ],
-            &CommandContext {
-                adapter: "tmux",
-                action: "break-pane",
-                target: Some(pane_ref.clone()),
-            },
+            &CommandContext::new("tmux", "break-pane").with_target(pane_ref.clone()),
         )
         .context("failed to run tmux break-pane")?;
         if !output.status.success() {
-            bail!(
-                "tmux break-pane failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
+            bail!("tmux break-pane failed: {}", runtime::stderr_text(&output));
         }
-        let target = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let target = runtime::stdout_text(&output);
         let attach_target = self.detach_target_for_new_client(&target)?;
         let mut spawn_args: Vec<String> = vec![
             "tmux".into(),
@@ -496,11 +453,7 @@ impl TerminalMultiplexerProvider for TmuxMuxProvider {
                     runtime::run_command_status(
                         "tmux",
                         &["send-keys", "-t", &pane_ref, "-l", line],
-                        &CommandContext {
-                            adapter: "tmux",
-                            action: "send-keys",
-                            target: Some(session.name.clone()),
-                        },
+                        &CommandContext::new("tmux", "send-keys").with_target(session.name.clone()),
                     )
                     .with_context(|| format!("tmux send-keys literal failed for pane {pane_id}"))?;
                 }
@@ -509,11 +462,7 @@ impl TerminalMultiplexerProvider for TmuxMuxProvider {
                     runtime::run_command_status(
                         "tmux",
                         &["send-keys", "-t", &pane_ref, "Enter"],
-                        &CommandContext {
-                            adapter: "tmux",
-                            action: "send-keys",
-                            target: Some(session.name.clone()),
-                        },
+                        &CommandContext::new("tmux", "send-keys").with_target(session.name.clone()),
                     )
                     .with_context(|| format!("tmux send-keys enter failed for pane {pane_id}"))?;
                 }
@@ -566,11 +515,7 @@ impl TerminalMultiplexerProvider for TmuxMuxProvider {
             runtime::run_command_status(
                 "tmux",
                 &arg_refs,
-                &CommandContext {
-                    adapter: "tmux",
-                    action: "join-pane",
-                    target: Some(session.name.clone()),
-                },
+                &CommandContext::new("tmux", "join-pane").with_target(session.name.clone()),
             )
             .context("tmux join-pane failed for merge")
         })
@@ -628,10 +573,7 @@ impl TopologyHandler for TmuxMuxProvider {
                 let session_name = session.query_pane(pane_id, "#{session_name}")?;
                 Ok((pane_id, session_name))
             })?;
-            Ok(TmuxMuxMergePreparation {
-                pane_id,
-                session_name,
-            })
+            Ok(SourcePaneMerge::new(pane_id, session_name))
         })
     }
 
@@ -643,7 +585,7 @@ impl TopologyHandler for TmuxMuxProvider {
         preparation: MergePreparation,
     ) -> Result<()> {
         let (_, target_pid, preparation) = self
-            .resolve_target_focused_merge::<TmuxMuxMergePreparation>(
+            .resolve_target_focused_merge::<SourcePaneMerge<String>>(
                 source_pid,
                 target_pid,
                 preparation,
@@ -660,20 +602,14 @@ impl TopologyHandler for TmuxMuxProvider {
             None,
             dir,
         )?;
-        if preparation
-            .session_name
-            .starts_with(DETACHED_SESSION_PREFIX)
-            && preparation.session_name != target_session_name
+        if preparation.meta.starts_with(DETACHED_SESSION_PREFIX)
+            && preparation.meta != target_session_name
         {
-            let detached_session = preparation.session_name.clone();
+            let detached_session = preparation.meta.clone();
             runtime::run_command_status(
                 "tmux",
                 &["kill-session", "-t", &detached_session],
-                &CommandContext {
-                    adapter: "tmux",
-                    action: "kill-session",
-                    target: Some(detached_session.clone()),
-                },
+                &CommandContext::new("tmux", "kill-session").with_target(detached_session.clone()),
             )
             .context("failed to cleanup detached tmux session after merge")?;
         }

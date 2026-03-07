@@ -53,7 +53,22 @@ mod tests {
     #[test]
     fn declares_explicit_capability_contract() {
         let _guard = env_guard();
-        let old_override = set_env("NIRI_DEEP_CONFIG", None);
+        let root = unique_temp_dir("capabilities");
+        let config_dir = root.join("yeet-and-yoink");
+        fs::create_dir_all(&config_dir).expect("config dir should be created");
+        fs::write(
+            config_dir.join("config.toml"),
+            r#"
+[app.terminal.kitty]
+enabled = true
+mux_backend = "kitty"
+"#,
+        )
+        .expect("config file should be writable");
+        let old_override = set_env(
+            "NIRI_DEEP_CONFIG",
+            Some(config_dir.join("config.toml").to_str().expect("utf-8 path")),
+        );
         crate::config::prepare().expect("config should load");
 
         let app = KittyBackend;
@@ -68,6 +83,7 @@ mod tests {
 
         restore_env("NIRI_DEEP_CONFIG", old_override);
         crate::config::prepare().expect("config should reload");
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

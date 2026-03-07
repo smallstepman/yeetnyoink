@@ -78,6 +78,20 @@ impl Direction {
         }
     }
 
+    pub const fn axis_directions(self) -> [Self; 2] {
+        match self.axis() {
+            SplitAxis::Horizontal => [Self::West, Self::East],
+            SplitAxis::Vertical => [Self::North, Self::South],
+        }
+    }
+
+    pub const fn perpendicular_directions(self) -> [Self; 2] {
+        match self.axis() {
+            SplitAxis::Horizontal => [Self::North, Self::South],
+            SplitAxis::Vertical => [Self::West, Self::East],
+        }
+    }
+
     pub const fn cardinal(self) -> &'static str {
         match self {
             Self::West => "west",
@@ -374,6 +388,23 @@ mod tests {
         assert_eq!(Direction::East.positional(), "right");
         assert_eq!(Direction::North.positional(), "top");
         assert_eq!(Direction::South.positional(), "bottom");
+
+        assert_eq!(
+            Direction::West.axis_directions(),
+            [Direction::West, Direction::East]
+        );
+        assert_eq!(
+            Direction::West.perpendicular_directions(),
+            [Direction::North, Direction::South]
+        );
+        assert_eq!(
+            Direction::North.axis_directions(),
+            [Direction::North, Direction::South]
+        );
+        assert_eq!(
+            Direction::North.perpendicular_directions(),
+            [Direction::West, Direction::East]
+        );
 
         assert_eq!(Direction::North.relational(), "above");
         assert_eq!(Direction::South.relational(), "below");

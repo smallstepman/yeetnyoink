@@ -24,6 +24,21 @@ pub struct CommandContext {
     pub target: Option<String>,
 }
 
+impl CommandContext {
+    pub fn new(adapter: &'static str, action: &'static str) -> Self {
+        Self {
+            adapter,
+            action,
+            target: None,
+        }
+    }
+
+    pub fn with_target(mut self, target: impl Into<String>) -> Self {
+        self.target = Some(target.into());
+        self
+    }
+}
+
 fn command_identity(program: &str, args: &[&str], context: &CommandContext) -> String {
     let rendered_args = if args.is_empty() {
         String::new()
@@ -54,13 +69,21 @@ pub fn run_command_output(
     })
 }
 
+pub fn stdout_text(output: &Output) -> String {
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+pub fn stderr_text(output: &Output) -> String {
+    String::from_utf8_lossy(&output.stderr).trim().to_string()
+}
+
 pub fn run_command_status(program: &str, args: &[&str], context: &CommandContext) -> Result<()> {
     let output = run_command_output(program, args, context)?;
     if output.status.success() {
         return Ok(());
     }
 
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let stderr = stderr_text(&output);
     let identity = command_identity(program, args, context);
     if stderr.is_empty() {
         Err(anyhow!("{} failed with status {}", identity, output.status))
@@ -192,7 +215,23 @@ pub fn parse_stat_tpgid(stat: &str) -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
-    use super::{process_cmdline_args, process_environ_var, process_tree_pids};
+    use std::process::Output;
+
+    use super::{
+        process_cmdline_args, process_environ_var, process_tree_pids, stderr_text, stdout_text,
+        CommandContext,
+    };
+
+    #[cfg(unix)]
+    use std::os::unix::process::ExitStatusExt;
+
+    #[test]
+    fn command_context_builder_sets_target() {
+        let context = CommandContext::new("tmux", "list-panes").with_target("%1");
+        assert_eq!(context.adapter, "tmux");
+        assert_eq!(context.action, "list-panes");
+        assert_eq!(context.target.as_deref(), Some("%1"));
+    }
 
     #[test]
     fn process_tree_pids_rejects_zero_pid() {
@@ -210,5 +249,17 @@ mod tests {
         if let Ok(path) = std::env::var("PATH") {
             assert_eq!(process_environ_var(std::process::id(), "PATH"), Some(path));
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn output_text_helpers_trim_output() {
+        let output = Output {
+            status: std::process::ExitStatus::from_raw(0),
+            stdout: b" hello \n".to_vec(),
+            stderr: b" error \n".to_vec(),
+        };
+        assert_eq!(stdout_text(&output), "hello");
+        assert_eq!(stderr_text(&output), "error");
     }
 }

@@ -4,7 +4,7 @@ use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 
 use crate::engine::contract::{
-    AdapterCapabilities, MergeExecutionMode, MergePreparation, TearResult,
+    AdapterCapabilities, MergeExecutionMode, MergePreparation, SourcePaneMerge, TearResult,
     TerminalMultiplexerProvider, TerminalPaneSnapshot, TopologyHandler,
 };
 use crate::engine::runtime::{self, ProcessId};
@@ -52,11 +52,6 @@ struct KittyForegroundProcess {
 pub struct KittyMux;
 
 pub(crate) static KITTY_MUX_PROVIDER: KittyMux = KittyMux;
-
-#[derive(Debug, Clone, Copy)]
-struct KittyMuxMergePreparation {
-    pane_id: u64,
-}
 
 impl KittyPane {
     fn foreground_process_name(&self) -> Option<String> {
@@ -222,27 +217,13 @@ Original error: {stderr}"
         }
     }
 
-    fn axis_neighbors_exist(&self, pid: u32, dir: Direction) -> Result<bool> {
-        let pane_id = self.focused_pane_for_pid(pid)?;
-        let axis = match dir {
-            Direction::West | Direction::East => [Direction::West, Direction::East],
-            Direction::North | Direction::South => [Direction::North, Direction::South],
-        };
-        Ok(self
-            .pane_in_direction_for_pid(pid, pane_id, axis[0])?
-            .is_some()
-            || self
-                .pane_in_direction_for_pid(pid, pane_id, axis[1])?
-                .is_some())
-    }
-
     fn try_focus_neighbor(&self, pid: u32, dir: Direction) -> Result<bool> {
         let matcher = format!("neighbor:{}", dir.positional());
         let output = self.cli_output_for_pid(pid, &["focus-window", "--match", &matcher])?;
         if output.status.success() {
             return Ok(true);
         }
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        let stderr = runtime::stderr_text(&output);
         if self.no_match(&stderr) {
             return Ok(false);
         }
@@ -420,7 +401,15 @@ impl TopologyHandler for KittyMux {
         if self.window_count(pid)? <= 1 {
             return Ok(false);
         }
-        self.axis_neighbors_exist(pid, dir)
+        self.axis_neighbors_exist_from_pane_lookup(pid, dir)
+    }
+
+    fn move_decision(
+        &self,
+        dir: Direction,
+        pid: u32,
+    ) -> Result<crate::engine::contract::MoveDecision> {
+        self.move_decision_from_pane_lookup(dir, pid, false)
     }
 
     fn focus(&self, dir: Direction, pid: u32) -> Result<()> {
@@ -476,9 +465,10 @@ impl TopologyHandler for KittyMux {
 
     fn prepare_merge(&self, source_pid: Option<ProcessId>) -> Result<MergePreparation> {
         self.prepare_merge_payload(source_pid, "source kitty merge missing pid", |source_pid| {
-            Ok(KittyMuxMergePreparation {
-                pane_id: self.focused_pane_for_pid(source_pid)?,
-            })
+            Ok(SourcePaneMerge::new(
+                self.focused_pane_for_pid(source_pid)?,
+                (),
+            ))
         })
     }
 
@@ -490,7 +480,7 @@ impl TopologyHandler for KittyMux {
         preparation: MergePreparation,
     ) -> Result<()> {
         let (source_pid, target_pid, preparation) = self
-            .resolve_target_focused_merge::<KittyMuxMergePreparation>(
+            .resolve_target_focused_merge::<SourcePaneMerge<()>>(
                 source_pid,
                 target_pid,
                 preparation,

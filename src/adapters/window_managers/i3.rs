@@ -19,27 +19,11 @@ impl I3Adapter {
     }
 
     fn command_output(action: &'static str, args: &[&str]) -> Result<std::process::Output> {
-        runtime::run_command_output(
-            "i3-msg",
-            args,
-            &CommandContext {
-                adapter: Self::NAME,
-                action,
-                target: None,
-            },
-        )
+        runtime::run_command_output("i3-msg", args, &CommandContext::new(Self::NAME, action))
     }
 
     fn command_status(action: &'static str, args: &[&str]) -> Result<()> {
-        runtime::run_command_status(
-            "i3-msg",
-            args,
-            &CommandContext {
-                adapter: Self::NAME,
-                action,
-                target: None,
-            },
-        )
+        runtime::run_command_status("i3-msg", args, &CommandContext::new(Self::NAME, action))
     }
 
     fn direction_name(direction: Direction) -> &'static str {
@@ -56,7 +40,7 @@ impl I3Adapter {
         if !output.status.success() {
             bail!(
                 "i3-msg -t get_tree failed: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
+                runtime::stderr_text(&output)
             );
         }
         serde_json::from_slice(&output.stdout).context("failed to parse i3 tree json")

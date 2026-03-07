@@ -8,6 +8,7 @@ use crate::adapters::apps::AppAdapter;
 use crate::engine::contract::{
     AdapterCapabilities, AppKind, MoveDecision, TearResult, TopologyHandler,
 };
+use crate::engine::runtime;
 use crate::engine::topology::Direction;
 use crate::logging;
 
@@ -74,14 +75,14 @@ impl Librefox {
             .context("failed to read firefox bridge response")?;
 
         if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let stderr = runtime::stderr_text(&output);
             if stderr.is_empty() {
                 bail!("firefox bridge exited with status {}", output.status);
             }
             bail!("firefox bridge failed: {stderr}");
         }
 
-        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let stdout = runtime::stdout_text(&output);
         if stdout.is_empty() {
             return Ok(Value::Null);
         }

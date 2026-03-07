@@ -5,8 +5,8 @@ use std::sync::{Mutex, OnceLock};
 use anyhow::{bail, Context, Result};
 
 use crate::engine::contract::{
-    AdapterCapabilities, MergeExecutionMode, MergePreparation, MoveDecision, TearResult,
-    TerminalMultiplexerProvider, TerminalPaneSnapshot, TopologyHandler,
+    AdapterCapabilities, MergeExecutionMode, MergePreparation, MoveDecision, SourcePaneMerge,
+    TearResult, TerminalMultiplexerProvider, TerminalPaneSnapshot, TopologyHandler,
 };
 use crate::engine::runtime::{self, ProcessId};
 use crate::engine::topology::{Direction, DirectionalNeighbors};
@@ -16,11 +16,6 @@ use crate::logging;
 struct ZellijLayoutSnapshot {
     pane_count: u32,
     focused_pane_id: u64,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct ZellijMergePreparation {
-    source_pane_id: u64,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -718,7 +713,7 @@ impl ZellijMuxProvider {
             let Some(output) = output else {
                 break;
             };
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let stderr = runtime::stderr_text(&output);
             if Self::session_required_prompt(&stderr) {
                 bail!(
                     "zellij session is required for pane query plugin; unable to resolve session for pid {}",
@@ -728,7 +723,7 @@ impl ZellijMuxProvider {
             if !output.status.success() {
                 bail!("zellij pane query plugin command failed: {}", stderr);
             }
-            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stdout = runtime::stdout_text(&output);
             if let Some(pane_id) = Self::parse_pipe_query_pane_id(&stdout) {
                 if Self::is_terminal_pane_id(&pane_id) {
                     return Ok(Some(pane_id));
@@ -838,7 +833,7 @@ impl ZellijMuxProvider {
             ));
             return Ok(());
         };
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stderr = runtime::stderr_text(&output);
         if Self::session_required_prompt(&stderr) {
             bail!(
                 "zellij session is required for break plugin; unable to resolve session for pid {}",
@@ -885,7 +880,7 @@ impl ZellijMuxProvider {
             ));
             return Ok(());
         };
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stderr = runtime::stderr_text(&output);
         if Self::session_required_prompt(&stderr) {
             bail!(
                 "zellij session is required for merge plugin; unable to resolve session for pid {}",
@@ -994,7 +989,7 @@ impl ZellijMuxProvider {
         if output.status.success() {
             return Ok(true);
         }
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        let stderr = runtime::stderr_text(&output);
         if Self::no_neighbor(&stderr) {
             return Ok(false);
         }
@@ -1038,7 +1033,7 @@ impl TerminalMultiplexerProvider for ZellijMuxProvider {
 
     fn cli_stdout_for_pid(&self, pid: u32, args: &[&str]) -> Result<String> {
         let output = self.cli_output_for_pid(pid, args)?;
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stderr = runtime::stderr_text(&output);
         if Self::session_required_prompt(&stderr) {
             bail!(
                 "zellij session is required for {:?}; unable to resolve session for pid {}",
@@ -1049,7 +1044,7 @@ impl TerminalMultiplexerProvider for ZellijMuxProvider {
         if !output.status.success() {
             bail!("terminal multiplexer command {:?} failed: {}", args, stderr);
         }
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        Ok(runtime::stdout_text(&output))
     }
 
     fn capabilities(&self) -> AdapterCapabilities {
@@ -1156,13 +1151,7 @@ impl TopologyHandler for ZellijMuxProvider {
     }
 
     fn move_decision(&self, dir: Direction, pid: u32) -> Result<MoveDecision> {
-        if self.window_count(pid)? <= 1 {
-            return Ok(MoveDecision::Passthrough);
-        }
-        if self.can_focus(dir, pid)? {
-            return Ok(MoveDecision::Internal);
-        }
-        Ok(MoveDecision::TearOut)
+        self.move_decision_from_pane_lookup(dir, pid, false)
     }
 
     fn focus(&self, dir: Direction, pid: u32) -> Result<()> {
@@ -1281,9 +1270,7 @@ impl TopologyHandler for ZellijMuxProvider {
                     .focused_pane_id_for_pid(source_pid)?
                     .and_then(|pane_id| Self::pane_id_number(&pane_id))
                     .context("source zellij merge missing pane id")?;
-                Ok(ZellijMergePreparation {
-                    source_pane_id: pane_id,
-                })
+                Ok(SourcePaneMerge::new(pane_id, ()))
             },
         )
     }
@@ -1296,7 +1283,7 @@ impl TopologyHandler for ZellijMuxProvider {
         preparation: MergePreparation,
     ) -> Result<()> {
         let (source_pid, target_pid, preparation) = self
-            .resolve_target_focused_merge::<ZellijMergePreparation>(
+            .resolve_target_focused_merge::<SourcePaneMerge<()>>(
                 source_pid,
                 target_pid,
                 preparation,
@@ -1306,7 +1293,7 @@ impl TopologyHandler for ZellijMuxProvider {
             )?;
         self.merge_source_pane_into_focused_target(
             source_pid,
-            preparation.source_pane_id,
+            preparation.pane_id,
             target_pid,
             None,
             dir,
