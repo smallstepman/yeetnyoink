@@ -16,4 +16,8 @@ anyhow = "1"
 toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-chrome = "0.7"
+tracing-flame = "0.2"
 etcetera = "0.8"
+tungstenite = { version = "0.24", default-features = false, features = ["handshake"] }
+inferno = "0.11"

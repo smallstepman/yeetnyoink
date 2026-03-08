@@ -950,11 +950,38 @@ impl TerminalMultiplexerProvider for ZellijMuxProvider {
         self.probe_neighbor(pid, dir)
     }
 
-    fn send_text_to_pane(&self, _pid: u32, _pane_id: u64, _text: &str) -> Result<()> {
-        Err(crate::engine::contract::unsupported_operation(
-            "zellij",
-            "send_text_to_pane",
-        ))
+    fn send_text_to_pane(&self, pid: u32, pane_id: u64, text: &str) -> Result<()> {
+        let focused_pane = self.focused_pane_for_pid(pid)?;
+        if focused_pane != pane_id {
+            let mut focused_target = false;
+            for direction in Direction::ALL {
+                if self.probe_neighbor(pid, direction)? == Some(pane_id) {
+                    self.focus(direction, pid)?;
+                    focused_target = true;
+                    break;
+                }
+            }
+            if !focused_target {
+                bail!(
+                    "zellij can only write to the focused pane or an adjacent pane; requested pane {} but focused pane is {}",
+                    pane_id,
+                    focused_pane
+                );
+            }
+        }
+
+        let has_trailing_newline = text.ends_with('\n');
+        let lines: Vec<&str> = text.split('\n').collect();
+        for (index, line) in lines.iter().enumerate() {
+            if !line.is_empty() {
+                self.cli_stdout_for_pid(pid, &["action", "write-chars", line])?;
+            }
+            let is_last = index + 1 == lines.len();
+            if !is_last || has_trailing_newline {
+                self.cli_stdout_for_pid(pid, &["action", "write", "13"])?;
+            }
+        }
+        Ok(())
     }
 
     fn mux_attach_args(&self, target: String) -> Option<Vec<String>> {
@@ -1338,6 +1365,69 @@ exit "$status"
         let provider = ZellijMuxProvider;
         assert_eq!(provider.focused_pane_for_pid(0).expect("focused pane"), 1);
         assert_eq!(provider.window_count(0).expect("window_count"), 2);
+    }
+
+    #[test]
+    fn send_text_to_pane_writes_chars_and_enter_to_focused_pane() {
+        let _guard = env_guard();
+        let harness = ZellijHarness::new();
+        let pid = 9301;
+        ZellijMuxProvider::store_session_name(pid, "nvim-zellij-test");
+
+        harness.set_response(
+            "--session nvim-zellij-test action dump-layout",
+            0,
+            r#"
+            layout {
+              pane split_direction="vertical" focus=true
+              pane split_direction="vertical"
+            }
+            "#,
+            "",
+        );
+        harness.set_response(
+            "--session nvim-zellij-test action write-chars echo hello",
+            0,
+            "",
+            "",
+        );
+        harness.set_response("--session nvim-zellij-test action write 13", 0, "", "");
+
+        let provider = ZellijMuxProvider;
+        provider
+            .send_text_to_pane(pid, 1, "echo hello\n")
+            .expect("send_text_to_pane should succeed");
+
+        let log = harness.command_log();
+        assert!(log.contains("--session nvim-zellij-test action write-chars echo hello"));
+        assert!(log.contains("--session nvim-zellij-test action write 13"));
+    }
+
+    #[test]
+    fn send_text_to_pane_errors_when_target_pane_cannot_be_focused() {
+        let _guard = env_guard();
+        let harness = ZellijHarness::new();
+        let pid = 9302;
+        ZellijMuxProvider::store_session_name(pid, "nvim-zellij-test");
+
+        harness.set_response(
+            "--session nvim-zellij-test action dump-layout",
+            0,
+            r#"
+            layout {
+              pane split_direction="vertical" focus=true
+              pane split_direction="vertical"
+            }
+            "#,
+            "",
+        );
+
+        let provider = ZellijMuxProvider;
+        let err = provider
+            .send_text_to_pane(pid, 2, "echo hello\n")
+            .expect_err("send_text_to_pane should reject unreachable pane");
+        assert!(format!("{err:#}").contains("focused pane or an adjacent pane"));
+        assert!(!harness.command_log().contains("action write-chars"));
     }
 
     #[test]

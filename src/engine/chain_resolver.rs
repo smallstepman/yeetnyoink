@@ -198,6 +198,7 @@ fn resolve_tmux_for_root(
 
 fn resolve_terminal_chain(terminal_pid: u32, host: &TerminalHostSpec) -> Vec<Box<dyn AppAdapter>> {
     let mut chain: Vec<Box<dyn AppAdapter>> = Vec::new();
+    let mux_backend = crate::config::mux_policy_for(host.aliases).backend;
 
     let fg_hint = crate::adapters::terminal_multiplexers::active_foreground_process(
         host.aliases,
@@ -265,7 +266,7 @@ fn resolve_terminal_chain(terminal_pid: u32, host: &TerminalHostSpec) -> Vec<Box
             ));
             if let Some(tmux) = found_tmux {
                 if let Some(nvim_pid) = tmux.nvim_in_current_pane() {
-                    if let Some(nvim) = Nvim::for_pid(nvim_pid) {
+                    if let Some(nvim) = Nvim::for_pid(nvim_pid, mux_backend) {
                         chain.push(apps::bind_policy(Box::new(nvim)));
                     }
                 }
@@ -290,7 +291,7 @@ fn resolve_terminal_chain(terminal_pid: u32, host: &TerminalHostSpec) -> Vec<Box
             ));
             if let Some(tmux) = found_tmux {
                 if let Some(nvim_pid) = tmux.nvim_in_current_pane() {
-                    if let Some(nvim) = Nvim::for_pid(nvim_pid) {
+                    if let Some(nvim) = Nvim::for_pid(nvim_pid, mux_backend) {
                         chain.push(apps::bind_policy(Box::new(nvim)));
                     }
                 }
@@ -304,7 +305,7 @@ fn resolve_terminal_chain(terminal_pid: u32, host: &TerminalHostSpec) -> Vec<Box
                 search_pid, nvim_pids
             ));
             if let Some(&nvim_pid) = nvim_pids.first() {
-                if let Some(nvim) = Nvim::for_pid(nvim_pid) {
+                if let Some(nvim) = Nvim::for_pid(nvim_pid, mux_backend) {
                     chain.push(apps::bind_policy(Box::new(nvim)));
                 }
             }
@@ -319,7 +320,7 @@ fn resolve_terminal_chain(terminal_pid: u32, host: &TerminalHostSpec) -> Vec<Box
             ));
             if let Some(tmux) = found_tmux {
                 if let Some(nvim_pid) = tmux.nvim_in_current_pane() {
-                    if let Some(nvim) = Nvim::for_pid(nvim_pid) {
+                    if let Some(nvim) = Nvim::for_pid(nvim_pid, mux_backend) {
                         chain.push(apps::bind_policy(Box::new(nvim)));
                     }
                 }
@@ -347,6 +348,13 @@ fn domain_id_for_app_kind(kind: AppKind) -> DomainId {
 
 impl ChainResolver for RuntimeChainResolver {
     fn resolve_chain(&self, app_id: &str, pid: u32, title: &str) -> Vec<Box<dyn AppAdapter>> {
+        let _span = tracing::debug_span!(
+            "chain_resolver.resolve_chain",
+            app_id = app_id,
+            pid = pid,
+            title = title
+        )
+        .entered();
         logging::debug(format!(
             "resolve_chain: app_id={} pid={} title={}",
             app_id, pid, title

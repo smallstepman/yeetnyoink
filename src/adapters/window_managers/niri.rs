@@ -22,6 +22,7 @@ pub struct Niri {
 
 impl Niri {
     pub fn connect() -> Result<Self> {
+        let _span = tracing::debug_span!("niri.connect").entered();
         logging::debug("niri: connecting to IPC socket");
         let socket = Socket::connect().context("failed to connect to niri IPC socket")?;
         logging::debug("niri: IPC socket connected");
@@ -29,6 +30,7 @@ impl Niri {
     }
 
     fn send_action(&mut self, action: Action) -> Result<()> {
+        let _span = tracing::debug_span!("niri.send_action", action = ?action).entered();
         logging::debug(format!("niri: action request = {:?}", action));
         let reply = self
             .socket
@@ -45,6 +47,7 @@ impl Niri {
     }
 
     pub fn focused_window(&mut self) -> Result<Window> {
+        let _span = tracing::debug_span!("niri.focused_window").entered();
         logging::debug("niri: requesting focused window");
         let reply = self
             .socket
@@ -89,6 +92,7 @@ impl Niri {
     }
 
     pub fn focus_direction(&mut self, dir: Direction) -> Result<()> {
+        let _span = tracing::debug_span!("niri.focus_direction", ?dir).entered();
         let action = match dir {
             Direction::West => Action::FocusColumnLeft {},
             Direction::East => Action::FocusColumnRight {},

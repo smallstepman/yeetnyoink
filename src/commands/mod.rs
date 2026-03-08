@@ -12,16 +12,24 @@ use crate::engine::topology::Direction;
 
 /// Shared runner for simple action commands (focus, move).
 pub(crate) fn run_action(kind: ActionKind, dir: Direction) -> Result<()> {
+    let _span = tracing::debug_span!("commands.run_action", ?kind, ?dir).entered();
     let mut wm = connect_selected()?;
     let mut orchestrator = Orchestrator::default();
-    for domain in runtime_domains_for_window_manager(&mut wm)? {
+    let domains = {
+        let _span = tracing::debug_span!("commands.load_domains").entered();
+        runtime_domains_for_window_manager(&mut wm)?
+    };
+    for domain in domains {
         orchestrator.register_domain(domain);
     }
-    orchestrator.execute(
-        &mut wm,
-        ActionRequest {
-            kind,
-            direction: dir,
-        },
-    )
+    {
+        let _span = tracing::debug_span!("commands.execute_action").entered();
+        orchestrator.execute(
+            &mut wm,
+            ActionRequest {
+                kind,
+                direction: dir,
+            },
+        )
+    }
 }

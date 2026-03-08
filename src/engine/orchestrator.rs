@@ -87,6 +87,7 @@ impl Orchestrator {
     where
         W: WindowManagerAdapter,
     {
+        let _span = tracing::debug_span!("orchestrator.execute_focus", ?dir).entered();
         let fallback_dir = dir.into();
         if self.attempt_focused_app_focus(wm, fallback_dir)? {
             return Ok(());
@@ -98,6 +99,7 @@ impl Orchestrator {
     where
         W: WindowManagerAdapter,
     {
+        let _span = tracing::debug_span!("orchestrator.attempt_focused_app_focus", ?dir).entered();
         let (app_id, title, source_pid) = wm.with_focused_window(|window| {
             Ok((
                 window.app_id().unwrap_or("").to_string(),

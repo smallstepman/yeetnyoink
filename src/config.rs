@@ -384,6 +384,9 @@ pub struct EditorAppConfig {
     pub movement: PaneMoveConfig,
 
     #[serde(default)]
+    pub manage_terminal: bool,
+
+    #[serde(default)]
     pub tear_off_scope: EditorTearOffScope,
 }
 
@@ -773,6 +776,26 @@ pub fn mux_policy_for(aliases: &[&str]) -> MuxPolicy {
     mux_policy_from(&read_config(), aliases)
 }
 
+fn editor_tear_off_scope_from(cfg: &Config, aliases: &[&str]) -> EditorTearOffScope {
+    profile_by_aliases(&cfg.app.editor, aliases)
+        .map(|profile| profile.tear_off_scope)
+        .unwrap_or_default()
+}
+
+pub fn editor_tear_off_scope_for(aliases: &[&str]) -> EditorTearOffScope {
+    editor_tear_off_scope_from(&read_config(), aliases)
+}
+
+fn editor_manage_terminal_from(cfg: &Config, aliases: &[&str]) -> bool {
+    profile_by_aliases(&cfg.app.editor, aliases)
+        .map(|profile| profile.manage_terminal)
+        .unwrap_or(false)
+}
+
+pub fn editor_manage_terminal_for(aliases: &[&str]) -> bool {
+    editor_manage_terminal_from(&read_config(), aliases)
+}
+
 fn check_allowed(cfg: &InternalPaneDirectionConfig, direction: Direction) -> bool {
     cfg.enabled
         && cfg
@@ -874,5 +897,35 @@ enabled = true
 
         let wezterm_policy = mux_policy_from(&parsed, &["wezterm", "terminal"]);
         assert_eq!(wezterm_policy.backend, TerminalMuxBackend::Wezterm);
+    }
+
+    #[test]
+    fn editor_tear_off_scope_follows_matching_alias() {
+        let sample = r#"
+[app.editor.vscode]
+enabled = true
+tear_off_scope = "window"
+"#;
+        let parsed: Config = toml::from_str(sample).expect("sample config should parse");
+        assert_eq!(
+            editor_tear_off_scope_from(&parsed, &["vscode"]),
+            EditorTearOffScope::Window
+        );
+        assert_eq!(
+            editor_tear_off_scope_from(&parsed, &["emacs"]),
+            EditorTearOffScope::Buffer
+        );
+    }
+
+    #[test]
+    fn editor_manage_terminal_follows_matching_alias() {
+        let sample = r#"
+[app.editor.vscode]
+enabled = true
+manage_terminal = true
+"#;
+        let parsed: Config = toml::from_str(sample).expect("sample config should parse");
+        assert!(editor_manage_terminal_from(&parsed, &["vscode"]));
+        assert!(!editor_manage_terminal_from(&parsed, &["emacs"]));
     }
 }

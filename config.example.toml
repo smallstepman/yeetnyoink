@@ -109,16 +109,16 @@ mux_backend = "tmux" | "zellij" | none
 mux_backend = "tmux" | "zellij" 
 
 [app.editor.emacs]
-# default: "emacs_buffer", .... self explanatory hopefully xD
-move.docking.tear_off.scope = "emacs_buffer" | "emacs_window" | "emacs_workspace"
+# default: "buffer"
+tear_off_scope = "buffer" | "window" | "workspace"
 
 [app.editor.vscode]
-# default: "vscode_buffer", .... self explanatory hopefully xD
-move.docking.tear_off.scope = "vscode_buffer" | "vscode_editor_group" 
+# default: "buffer"
+tear_off_scope = "buffer" | "window" | "workspace"
 
 [app.editor.neovim]
-# default: "neovim_buffer", .... self explanatory hopefully xD
-move.docking.tear_off.scope = "neovim_buffer" | "neovim_pane" 
+# default: "buffer"
+tear_off_scope = "buffer" | "window" | "workspace"
 
 
 ###

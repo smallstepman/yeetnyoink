@@ -351,7 +351,7 @@ Together, `winlayout()` + `getwininfo()` give you roughly the same capabilities 
 
 ## VS Code
 
-For VS Code, the extension API exposes **editor groups** and **tabs**, but *not* the full 2D grid layout or split tree.
+For VS Code, the extension API exposes **editor groups** and **tabs**, but *not* the full 2D grid layout or split tree. If you can execute arbitrary commands inside VS Code (for example through `vscode-remote-control`), there is also an **internal** command surface with extra layout access.
 
 ### 1. Tab groups (editor groups) and tabs
 
@@ -372,9 +372,20 @@ You can also inspect:
 - `vscode.window.visibleTextEditors` for the editors visible in each group.[32]
 - `TextEditor.viewColumn` (One, Two, Three, …) for a coarse “column index” per editor.[33]
 
-### 2. What you cannot get: true grid topology
+### 2. Internal command workaround: partial layout tree
 
-There is currently no official API to retrieve the *grid layout structure* (how groups are nested, which splits are vertical vs horizontal, etc.):
+Through command execution rather than the public extension API, VS Code exposes internal commands such as:
+
+- `vscode.getEditorLayout`
+- `vscode.setEditorLayout`
+
+`vscode.getEditorLayout` returns the editor-group split tree (orientation + nested groups), which is enough to count groups and reconstruct the coarse split topology. However, it still does **not** report which group is currently active, so directional edge detection remains incomplete without an additional custom command or extension-side state export.
+
+In practice, a remote-control-only integration can approximate active-group routing by persisting per-window focus history, narrowing the set of possible active leaves after successful directional focus, and resetting that state when the layout signature changes. That is good enough to support editor-edge transitions into workbench surfaces like the sidebar or terminal and to make tear-out/merge-back decisions less WM-centric, but exact first-press edge detection is still unavailable.
+
+### 3. What you still cannot get cleanly
+
+There is currently no official API to retrieve the *grid layout structure* (how groups are nested, which splits are vertical vs horizontal, etc.) through the stable extension API:
 
 - There is a long-standing feature request to expose the editor layout, analogous to `vscode.setEditorLayout`, but for reading instead of writing.[34]
 - Recent questions and discussions in 2025 still state that you cannot get the full group structure, nesting, or splitting topology via the extension API.[35][36]
@@ -383,7 +394,9 @@ So in VS Code you can:
 
 - Know which groups exist and which tabs are in each group.
 - Know an approximate left-to-right ordering via `viewColumn`.
+- Query the internal split tree if you have a command bridge to invoke `vscode.getEditorLayout`.
 - But you **cannot** reconstruct the exact 2D topology the way you can in Emacs/Neovim/tmux.
+- And you still cannot reliably identify the active group from the public API or the internal layout response alone.
 
 ***
 
@@ -395,7 +408,7 @@ So in VS Code you can:
 - **Kitty:** `kitty @ ls --output-format json` for OS window → tab → pane tree and `--match neighbor:<dir>` to walk adjacency; layout type/geometry isn’t fully exposed.[16][14][17]
 - **iTerm2:** Use Python API (App → Window → Tab → Session) or AppleScript; you get a tab/sessions hierarchy and per-session sizing via `preferred_size`, but not a direct BSP tree.[20][21][22]
 - **Neovim:** `winlayout()` for the row/col/leaf tree, `getwininfo()` for window rectangles (winrow/wincol/width/height).[27][29][28]
-- **VS Code:** Only high-level tab groups and tabs via `vscode.window.tabGroups.all` and `visibleTextEditors`; there is currently no API to read the full editor grid topology.[31][36][30]
+- **VS Code:** The stable extension API only exposes high-level tab groups/tabs, but the internal command `vscode.getEditorLayout` can reveal the split tree when invoked through a command bridge such as `vscode-remote-control`; active-group identity still is not exposed cleanly.[31][36][30]
 
 If you want, the next step could be: pick one of these (e.g. tmux or Neovim) and sketch a concrete algorithm for turning their native representation into an explicit graph of panes + neighbor/edge relations.
 

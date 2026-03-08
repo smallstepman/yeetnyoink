@@ -497,6 +497,7 @@ fn preferred_window_manager_name() -> Option<String> {
 }
 
 pub fn connect_selected() -> Result<SelectedWindowManager> {
+    let _span = tracing::debug_span!("window_managers.connect_selected").entered();
     let preferred = preferred_window_manager_name();
 
     if let Some(preferred) = preferred.as_deref() {
