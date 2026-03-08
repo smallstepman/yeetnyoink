@@ -1,14 +1,54 @@
-I need to computationally solve in rust the problem of focusing and moving the panes. 
+**yeet-and-yoink** is a geometry-first window/pane orchestration system that provides seamless navigation across heterogeneous tiling environments. It unifies focus, move, and resize operations across:
 
-Here is detailed problem description: I need to manage panes inside tiled apps (tmux, emacs, vscode, neovim, wezterm etc) and integrate them with different window managers (which may be using different tiling schemes (master-slave, or srcolling columnar, or bsp, or grid or whatever)). 
-I'm looking to solve this problem completely, therefore I'd like to have an algorith that creates a map of of layout of nested tiles and be able to manage calculate what happens if id like to for example execute `move west` while focusing left-edgemost neovim buffer inside neovim workspace, inside vsplit wezterm tab which is a terminal app window managed by i3 tiling window manager which also has its workspaces - i need to be able to understand where the tearoff buffer should appear (should it be new wezterm split, or should it be new i3-managed window), similarly, we need to solve the problems of:
-- merging window back into the app 
-- moving the window across the WM space 
-- changing focus between apps/internal tiles
+- **Window Managers** (niri, i3, yabai, aerospace)
+- **Terminal Emulators** (wezterm, kitty, foot, alacritty, ghostty, iTerm2)
+- **Terminal Multiplexers** (tmux, zellij, wezterm mux, kitty native)
+- **Editors** (neovim, emacs, vscode)
+- **Browsers** (firefox, chrome)
 
-The end goal is to have: TopologyQuery + UserConfig + Capabilities = Action,
-where the implementation of Action (for each app or wm) is as minimal and as clean
-as they can be.
+Rather than hardcoding behavior, the system queries the current state to understand the topology (the spatial layout of windows/panes), applies policies read from user config + hardcoded per-adapter capabilities, and selects the appropriate action dynamically.
+
+```
+┌───────────────────────────────────────────────────────────────┐
+│                        CLI Layer                              │
+│  (src/main.rs)                                                │
+│  - Parses subcommands: focus, move, resize, focus-or-cycle    │
+│                                                               │
+│                     Commands Layer                            │
+│  (src/commands/)                                              │
+│  - Validates inputs                                           │
+│  - Delegates to orchestrator                                  │
+└────────────────────┬──────────────────────────────────────────┘
+                     │
+┌────────────────────▼──────────────────────────────────────────┐
+│                     Engine Layer                              │
+│  (src/engine/)                                                │
+│  - orchestrator.rs: Decision-making and routing               │
+│  - topology.rs: Geometry solver and neighbor finding          │
+│  - domain.rs: Domain/adapter contracts                        │
+│  - contract.rs: ChainResolver and core traits                 │
+│  - chain_resolver.rs: Terminal/app chain assembly             │
+│  - runtime.rs: Runtime state management                       │
+└────────────────────┬──────────────────────────────────────────┘
+                     │
+┌────────────────────▼──────────────────────────────────────────┐
+│                    Adapters Layer                             │
+│  (src/adapters/)                                              │
+│  ├─ apps/         - Terminal hosts & editors                  │
+│  ├─ terminal_multiplexers/ - e.g. tmux, zellij                │
+│  └─ window_managers/ - WM integrations (e.g. niri, i3, yabai) │
+└───────────────────────────────────────────────────────────────┘
+```
+
+Further Reading:
+- `src/adapters/README.md`: How apps/MUXs/WMs expose their layout
+- `docs/plans/`: Design documents for major features
+
+
+
+
+
+
 
 The role of this file is to describe common mistakes and confusion points that agents might encounter as they work in this project. If you ever encounter something in the project that surprises you, please alert the developer working with you and indicate that this is the case in the `plugins/yeet-and-yoink/AGENTS.md` file to help prevent future agents from having the same issue. 
 
@@ -89,4 +129,7 @@ The role of this file is to describe common mistakes and confusion points that a
 - Surprise encountered: the *intended* VS Code topology semantics in this project are not “move panes/groups around”; they are “focus editor groups, but move the active tab between groups.” For this adapter, internal directional move should therefore use `moveEditorTo{Left,Right,Above,Below}Group`, while tear-off scope decides whether out-of-app movement uses `moveEditorToNewWindow` (buffer/tab) or `moveEditorGroupToNewWindow` (editor group). If you see conflicting advice elsewhere, prefer the project-specific semantics over the generic “pane movement” interpretation.
 - Surprise encountered: `vscode-remote-control` special-cases `vscode.open`/`vscode.openFolder` by converting a string first argument into `vscode.Uri.file(...)`, which makes target-focused VS Code merge viable without a custom extension. However, it still does not return active editor identity, so buffer-level merge preparation needs an out-of-band capture path (currently `copyFilePath` + clipboard read/restore) rather than expecting a websocket response payload.
 - Surprise encountered: VS Code still exposes no direct command to list the tabs in the active editor group, so window-scope merge preparation has to *approximate* group capture by iterating `workbench.action.openEditorAtIndex` and sampling `copyFilePath` from the clipboard. This is good enough for normal file-backed tabs, but identical consecutive tabs are still ambiguous; if group merge drops/repeats a duplicate tab, inspect the `capture_active_group_paths` heuristic first.
+- Surprise encountered: `copyFilePath` can silently no-op for terminal/non-file tabs and leave the clipboard unchanged, so naive “run command, then read clipboard” capture can return a stale previous file path. Write a unique probe token to the clipboard first, and treat an unchanged probe as “no file-backed editor exposed” before deciding how VS Code merge prep should behave.
+- Surprise encountered: VS Code terminal support is much flatter than editor-group support: the built-in command surface has useful actions (`workbench.action.terminal.focusPrevious/focusNext`, `...moveIntoNewWindow`, `...moveToTerminalPanel`) but still no bridge-visible terminal layout/count query. Keep terminal instance management opt-in via config and treat it as best-effort linear terminal handling rather than true pane-topology reconstruction.
 - Surprise encountered: `tracing-chrome`/`tracing-flame` layer types are inferred against the *current* subscriber stack shape, so prebuilding or boxing them too early (especially with mixed fmt writer types) leads to type-mismatch explosions. Build profiling layers in the same branch/order as the final subscriber composition instead of trying to stash `Registry`-typed layers for later.
+- Surprise encountered: `src/adapters/terminal_multiplexers/zellij.rs` previously treated `send_text_to_pane` as unsupported, but current zellij CLI actually exposes `zellij action write-chars` plus `zellij action write 13` for focused-pane input. For Neovim smart-splits tear-out, zellij can launch the new `nvim --listen ...` command as long as the split leaves the target pane focused (or the adapter explicitly verifies/follows focus before writing).

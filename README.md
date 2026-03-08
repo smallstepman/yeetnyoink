@@ -62,10 +62,3 @@ Current built-in WM adapters:
 - `i3`
 
 Adapter selection is driven by `wm.enabled_integration` (or auto-detection when not overridden).
-
-## Notes
-
-- Legacy planner/context/executor and benchmark-command code paths were removed; runtime command
-  dispatch is orchestrator-only.
-- WezTerm mux bridge control is config-driven (`app.terminal.wezterm.*`);
-  env-var-only bridge toggles are no longer part of the runtime contract.
