@@ -1,5 +1,4 @@
 pub mod adapters;
-pub mod browser_native;
 pub mod commands;
 pub mod config;
 pub mod engine;

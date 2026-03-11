@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "Yeet and Yoink Chromium Bridge",
+  "version": "0.1.0",
+  "description": "Expose Chromium-family tab control to yeet-and-yoink via native messaging.",
+  "permissions": [
+    "nativeMessaging",
+    "tabs",
+    "alarms"
+  ],
+  "background": {
+    "service_worker": "service_worker.js"
+  },
+  "minimum_chrome_version": "109",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAvdW0QsWSfUKZmrT4R9T3N00FLWSvT4H55s2exjf+Kcv0q67l80D/ApXFU9ZSJWX6PZ5fQppRQF/JLBMOKugiYPMkDlGY3PhD4NOZ/VPf3XHJcJdfk86ueckRBB67wZfDTjRVZI41TlYVWc6QbT6+vR7YtQC/r0YSRvNnnpM1PSS4xyQtzbbgG0bZDyTguPIWyyEevPPmi+JOIV01aIVmVC43Q11ztuikQFigBDd3AaO2zwUC7hDpYDHmLco/g/5ngcuk1wdqyrgH8r/2y1p6nxKuNttRE693hk0YYeQLd0iCtssiwxRJIah0m38QqJGLODCGsEI3E/WK9BS1NFCtCQIDAQAB"
+}

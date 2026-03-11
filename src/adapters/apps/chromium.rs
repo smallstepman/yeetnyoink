@@ -1,17 +1,44 @@
 use anyhow::{Context, Result};
 
 use crate::adapters::apps::AppAdapter;
-use crate::browser_native::{self, BrowserTabState};
 use crate::engine::contract::{
     AdapterCapabilities, AppKind, MergeExecutionMode, MergePreparation, MoveDecision, TearResult,
     TopologyHandler,
 };
 use crate::engine::topology::Direction;
 
-const ADAPTER_NAME: &str = "librefox";
-const ADAPTER_ALIASES: &[&str] = &["librefox", "firefox", "librewolf"];
+use super::librewolf::native_bridge::{self, BrowserTabState, NativeBrowserDescriptor};
 
-pub struct Librefox;
+pub const ADAPTER_NAME: &str = "chromium";
+pub const ADAPTER_ALIASES: &[&str] = &["chromium", "chrome", "brave", "brave-browser"];
+pub const APP_IDS: &[&str] = &[
+    "brave-browser",
+    "Brave Browser",
+    "com.brave.Browser",
+    "brave-browser-beta",
+    "brave-browser-nightly",
+    "chromium",
+    "Chromium",
+    "org.chromium.Chromium",
+    "google-chrome",
+    "Google Chrome",
+    "com.google.Chrome",
+    "google-chrome-beta",
+    "google-chrome-dev",
+];
+pub const CHROMIUM_EXTENSION_ID: &str = "oigofebnnajpegmncnciacecfhlokkbp";
+pub const CHROMIUM_EXTENSION_ORIGIN: &str = "chrome-extension://oigofebnnajpegmncnciacecfhlokkbp/";
+pub const CHROMIUM_NATIVE_HOST_NAME: &str = "com.yeet_and_yoink.chromium_bridge";
+pub const CHROMIUM_NATIVE_SOCKET_ENV: &str = "NIRI_DEEP_CHROMIUM_NATIVE_SOCKET";
+
+const NATIVE_BRIDGE: NativeBrowserDescriptor = NativeBrowserDescriptor {
+    socket_env: CHROMIUM_NATIVE_SOCKET_ENV,
+    socket_basename: "chromium-bridge.sock",
+    unavailable_browser_hint:
+        "Install/enable the yeet-and-yoink Chromium browser extension and keep Brave/Chromium running.",
+};
+
+pub struct Chromium;
 
 #[derive(Debug, Clone, Copy)]
 struct BrowserMergePreparation {
@@ -52,13 +79,17 @@ fn move_target_index(state: BrowserTabState, dir: Direction) -> Option<usize> {
     }
 }
 
-impl Librefox {
+impl Chromium {
     fn tab_state(&self) -> Result<BrowserTabState> {
-        Ok(browser_native::tab_state()?)
+        Ok(native_bridge::tab_state(&NATIVE_BRIDGE)?)
     }
 }
 
-impl AppAdapter for Librefox {
+pub fn run_native_host() -> Result<()> {
+    native_bridge::run_native_host(&NATIVE_BRIDGE)
+}
+
+impl AppAdapter for Chromium {
     fn adapter_name(&self) -> &'static str {
         ADAPTER_NAME
     }
@@ -84,7 +115,7 @@ impl AppAdapter for Librefox {
     }
 }
 
-impl TopologyHandler for Librefox {
+impl TopologyHandler for Chromium {
     fn can_focus(&self, dir: Direction, _pid: u32) -> Result<bool> {
         Ok(focus_target_index(self.tab_state()?, dir).is_some())
     }
@@ -112,18 +143,18 @@ impl TopologyHandler for Librefox {
         let state = self.tab_state()?;
         focus_target_index(state, dir)
             .with_context(|| format!("{ADAPTER_NAME} cannot focus {dir} inside the tab strip"))?;
-        Ok(browser_native::focus(dir)?)
+        Ok(native_bridge::focus(&NATIVE_BRIDGE, dir)?)
     }
 
     fn move_internal(&self, dir: Direction, _pid: u32) -> Result<()> {
         let state = self.tab_state()?;
         move_target_index(state, dir)
             .with_context(|| format!("{ADAPTER_NAME} cannot move the current tab {dir}"))?;
-        Ok(browser_native::move_tab(dir)?)
+        Ok(native_bridge::move_tab(&NATIVE_BRIDGE, dir)?)
     }
 
     fn move_out(&self, _dir: Direction, _pid: u32) -> Result<TearResult> {
-        browser_native::tear_out()?;
+        native_bridge::tear_out(&NATIVE_BRIDGE)?;
         Ok(TearResult {
             spawn_command: None,
         })
@@ -159,8 +190,9 @@ impl TopologyHandler for Librefox {
     ) -> Result<()> {
         let preparation = preparation
             .into_payload::<BrowserMergePreparation>()
-            .context("librefox merge requires source browser window and tab ids")?;
-        browser_native::merge_tab_into_focused_window(
+            .context("chromium merge requires source browser window and tab ids")?;
+        native_bridge::merge_tab_into_focused_window(
+            &NATIVE_BRIDGE,
             dir,
             preparation.source_window_id,
             preparation.source_tab_id,
@@ -171,8 +203,10 @@ impl TopologyHandler for Librefox {
 
 #[cfg(test)]
 mod tests {
-    use super::{Librefox, MergeExecutionMode, MoveDecision, TopologyHandler, ADAPTER_NAME};
-    use crate::browser_native::FIREFOX_NATIVE_SOCKET_ENV;
+    use super::{
+        Chromium, MergeExecutionMode, MoveDecision, TopologyHandler, ADAPTER_ALIASES, ADAPTER_NAME,
+        CHROMIUM_NATIVE_SOCKET_ENV,
+    };
     use crate::engine::contract::AppAdapter;
     use crate::engine::topology::Direction;
     use serde_json::{json, Value};
@@ -200,7 +234,7 @@ mod tests {
     impl NativeHarness {
         fn new(responses: Vec<Value>) -> Self {
             let socket_path = std::env::temp_dir().join(format!(
-                "yny-firefox-bridge-{}-{}.sock",
+                "yny-chromium-bridge-{}-{}.sock",
                 std::process::id(),
                 SystemTime::now()
                     .duration_since(UNIX_EPOCH)
@@ -232,8 +266,8 @@ mod tests {
                 }
             });
 
-            let old_socket = std::env::var_os(FIREFOX_NATIVE_SOCKET_ENV);
-            std::env::set_var(FIREFOX_NATIVE_SOCKET_ENV, &socket_path);
+            let old_socket = std::env::var_os(CHROMIUM_NATIVE_SOCKET_ENV);
+            std::env::set_var(CHROMIUM_NATIVE_SOCKET_ENV, &socket_path);
 
             Self {
                 socket_path,
@@ -259,9 +293,9 @@ mod tests {
             }
             let _ = std::fs::remove_file(&self.socket_path);
             if let Some(value) = &self.old_socket {
-                std::env::set_var(FIREFOX_NATIVE_SOCKET_ENV, value);
+                std::env::set_var(CHROMIUM_NATIVE_SOCKET_ENV, value);
             } else {
-                std::env::remove_var(FIREFOX_NATIVE_SOCKET_ENV);
+                std::env::remove_var(CHROMIUM_NATIVE_SOCKET_ENV);
             }
             assert!(
                 self.queue.lock().expect("queue mutex poisoned").is_empty(),
@@ -304,7 +338,7 @@ mod tests {
 
     #[test]
     fn declares_explicit_capability_contract() {
-        let app = Librefox;
+        let app = Chromium;
         let caps = AppAdapter::capabilities(&app);
         assert!(caps.probe);
         assert!(caps.focus);
@@ -314,111 +348,11 @@ mod tests {
         assert!(caps.merge);
         assert!(!caps.rearrange);
         assert_eq!(app.adapter_name(), ADAPTER_NAME);
-        assert_eq!(
-            app.config_aliases(),
-            Some(&["librefox", "firefox", "librewolf"][..])
-        );
+        assert_eq!(app.config_aliases(), Some(ADAPTER_ALIASES));
     }
 
     #[test]
-    fn can_focus_uses_active_tab_index_via_native_bridge() {
-        let _guard = env_guard();
-        let harness = NativeHarness::new(vec![
-            json!({
-                "ok": true,
-                "state": {
-                    "activeTabIndex": 0,
-                    "tabCount": 3,
-                    "pinnedTabCount": 0,
-                    "activeTabPinned": false
-                }
-            }),
-            json!({
-                "ok": true,
-                "state": {
-                    "activeTabIndex": 1,
-                    "tabCount": 3,
-                    "pinnedTabCount": 0,
-                    "activeTabPinned": false
-                }
-            }),
-        ]);
-        let app = Librefox;
-
-        assert!(!app
-            .can_focus(Direction::West, 0)
-            .expect("west focus probe should succeed"));
-        assert!(app
-            .can_focus(Direction::East, 0)
-            .expect("east focus probe should succeed"));
-        assert_eq!(
-            harness.requests(),
-            vec![
-                json!({ "command": "get_tab_state" }),
-                json!({ "command": "get_tab_state" }),
-            ]
-        );
-    }
-
-    #[test]
-    fn window_count_comes_from_native_bridge_state() {
-        let _guard = env_guard();
-        let _harness = NativeHarness::new(vec![json!({
-            "ok": true,
-            "state": {
-                "activeTabIndex": 1,
-                "tabCount": 4,
-                "pinnedTabCount": 1,
-                "activeTabPinned": false
-            }
-        })]);
-        let app = Librefox;
-
-        assert_eq!(app.window_count(0).expect("window_count should succeed"), 4);
-    }
-
-    #[test]
-    fn move_decision_tears_out_at_pinned_boundary() {
-        let _guard = env_guard();
-        let _harness = NativeHarness::new(vec![json!({
-            "ok": true,
-            "state": {
-                "activeTabIndex": 2,
-                "tabCount": 5,
-                "pinnedTabCount": 2,
-                "activeTabPinned": false
-            }
-        })]);
-        let app = Librefox;
-
-        let decision = app
-            .move_decision(Direction::West, 0)
-            .expect("move_decision should succeed");
-        assert!(matches!(decision, MoveDecision::TearOut));
-    }
-
-    #[test]
-    fn move_decision_tears_out_vertically_when_multiple_tabs_exist() {
-        let _guard = env_guard();
-        let _harness = NativeHarness::new(vec![json!({
-            "ok": true,
-            "state": {
-                "activeTabIndex": 1,
-                "tabCount": 3,
-                "pinnedTabCount": 0,
-                "activeTabPinned": false
-            }
-        })]);
-        let app = Librefox;
-
-        let decision = app
-            .move_decision(Direction::North, 0)
-            .expect("vertical move_decision should succeed");
-        assert!(matches!(decision, MoveDecision::TearOut));
-    }
-
-    #[test]
-    fn focus_moves_to_adjacent_tab_via_native_bridge() {
+    fn move_internal_uses_chromium_bridge_socket() {
         let _guard = env_guard();
         let harness = NativeHarness::new(vec![
             json!({
@@ -432,41 +366,10 @@ mod tests {
             }),
             json!({ "ok": true }),
         ]);
-        let app = Librefox;
-
-        app.focus(Direction::East, 0)
-            .expect("focus east should succeed through native bridge");
-        assert_eq!(
-            harness.requests(),
-            vec![
-                json!({ "command": "get_tab_state" }),
-                json!({
-                    "command": "focus",
-                    "direction": "East",
-                }),
-            ]
-        );
-    }
-
-    #[test]
-    fn move_internal_moves_current_tab_via_native_bridge() {
-        let _guard = env_guard();
-        let harness = NativeHarness::new(vec![
-            json!({
-                "ok": true,
-                "state": {
-                    "activeTabIndex": 2,
-                    "tabCount": 5,
-                    "pinnedTabCount": 1,
-                    "activeTabPinned": false
-                }
-            }),
-            json!({ "ok": true }),
-        ]);
-        let app = Librefox;
+        let app = Chromium;
 
         app.move_internal(Direction::East, 0)
-            .expect("move east should succeed through native bridge");
+            .expect("move east should succeed through chromium bridge");
         assert_eq!(
             harness.requests(),
             vec![
@@ -477,19 +380,6 @@ mod tests {
                 }),
             ]
         );
-    }
-
-    #[test]
-    fn tear_out_returns_no_spawn_command() {
-        let _guard = env_guard();
-        let harness = NativeHarness::new(vec![json!({ "ok": true })]);
-        let app = Librefox;
-
-        let result = app
-            .move_out(Direction::East, 0)
-            .expect("move_out should succeed through native bridge");
-        assert!(result.spawn_command.is_none());
-        assert_eq!(harness.requests(), vec![json!({ "command": "tear_out" })]);
     }
 
     #[test]
@@ -509,7 +399,7 @@ mod tests {
             }),
             json!({ "ok": true }),
         ]);
-        let app = Librefox;
+        let app = Chromium;
 
         assert!(matches!(
             TopologyHandler::merge_execution_mode(&app),
@@ -532,5 +422,24 @@ mod tests {
                 }),
             ]
         );
+    }
+
+    #[test]
+    fn vertical_move_decision_tears_out() {
+        let _guard = env_guard();
+        let _harness = NativeHarness::new(vec![json!({
+            "ok": true,
+            "state": {
+                "activeTabIndex": 1,
+                "tabCount": 3,
+                "pinnedTabCount": 0,
+                "activeTabPinned": false
+            }
+        })]);
+        let app = Chromium;
+        let decision = app
+            .move_decision(Direction::South, 0)
+            .expect("vertical move_decision should succeed");
+        assert!(matches!(decision, MoveDecision::TearOut));
     }
 }

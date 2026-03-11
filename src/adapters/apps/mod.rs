@@ -158,11 +158,12 @@ macro_rules! impl_terminal_host_backend {
 pub(crate) use impl_terminal_host_backend;
 
 pub mod alacritty;
+pub mod chromium;
 pub mod emacs;
 pub mod foot;
 pub mod ghostty;
 pub mod kitty;
-pub mod librefox;
+pub mod librewolf;
 pub mod nvim;
 pub mod vscode;
 pub mod wezterm;
@@ -421,8 +422,8 @@ mod resolve_chain_tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     use crate::adapters::apps::{
-        alacritty, emacs, foot, ghostty, kitty, librefox::Librefox, nvim::Nvim, vscode::Vscode,
-        wezterm, TopologyHandler,
+        alacritty, chromium::Chromium, emacs, foot, ghostty, kitty, librewolf::Librewolf,
+        nvim::Nvim, vscode::Vscode, wezterm, TopologyHandler,
     };
     use crate::adapters::terminal_multiplexers::tmux::Tmux;
 
@@ -473,7 +474,8 @@ mod resolve_chain_tests {
         assert_topology_contracts::<wezterm::WeztermBackend>();
         assert_topology_contracts::<Tmux>();
         assert_topology_contracts::<Nvim>();
-        assert_topology_contracts::<Librefox>();
+        assert_topology_contracts::<Chromium>();
+        assert_topology_contracts::<Librewolf>();
         assert_topology_contracts::<Vscode>();
     }
 

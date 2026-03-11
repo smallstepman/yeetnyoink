@@ -1,6 +1,8 @@
 use crate::adapters::apps::{
-    self, alacritty, emacs, foot, ghostty, kitty,
-    librefox::Librefox,
+    self, alacritty,
+    chromium::{self, Chromium},
+    emacs, foot, ghostty, kitty,
+    librewolf::{self, Librewolf},
     nvim::{self, Nvim},
     vscode::Vscode,
     wezterm, AppAdapter, AppKind,
@@ -33,8 +35,12 @@ fn build_editor() -> Box<dyn AppAdapter> {
     apps::bind_policy(Box::new(emacs::EmacsBackend))
 }
 
-fn build_librefox() -> Box<dyn AppAdapter> {
-    apps::bind_policy(Box::new(Librefox))
+fn build_librewolf() -> Box<dyn AppAdapter> {
+    apps::bind_policy(Box::new(Librewolf))
+}
+
+fn build_chromium() -> Box<dyn AppAdapter> {
+    apps::bind_policy(Box::new(Chromium))
 }
 
 fn build_vscode() -> Box<dyn AppAdapter> {
@@ -110,11 +116,18 @@ const DIRECT_ADAPTERS: &[DirectAdapterSpec] = &[
         build: build_editor,
     },
     DirectAdapterSpec {
-        name: "librefox",
-        aliases: &["librefox", "firefox", "librewolf"],
-        app_ids: &["librewolf", "LibreWolf", "firefox", "Firefox"],
+        name: librewolf::ADAPTER_NAME,
+        aliases: librewolf::ADAPTER_ALIASES,
+        app_ids: librewolf::APP_IDS,
         section: AppSection::Browser,
-        build: build_librefox,
+        build: build_librewolf,
+    },
+    DirectAdapterSpec {
+        name: chromium::ADAPTER_NAME,
+        aliases: chromium::ADAPTER_ALIASES,
+        app_ids: chromium::APP_IDS,
+        section: AppSection::Browser,
+        build: build_chromium,
     },
     DirectAdapterSpec {
         name: "vscode",
@@ -682,7 +695,7 @@ enabled = true
     }
 
     #[test]
-    fn librewolf_browser_profile_enables_librefox_direct_adapter() {
+    fn librewolf_browser_profile_enables_librewolf_direct_adapter() {
         let _guard = env_guard();
         let root = unique_temp_dir("librewolf-direct-adapter");
         let config_dir = root.join("yeet-and-yoink");
@@ -703,7 +716,36 @@ enabled = true
 
         let chain = runtime_chain_resolver().resolve_chain("librewolf", 0, "LibreWolf");
         assert_eq!(chain.len(), 1);
-        assert_eq!(chain[0].adapter_name(), "librefox");
+        assert_eq!(chain[0].adapter_name(), "librewolf");
+
+        restore_env("NIRI_DEEP_CONFIG", old_override);
+        crate::config::prepare().expect("config should reload");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn brave_browser_profile_enables_chromium_direct_adapter() {
+        let _guard = env_guard();
+        let root = unique_temp_dir("brave-direct-adapter");
+        let config_dir = root.join("yeet-and-yoink");
+        fs::create_dir_all(&config_dir).expect("config dir should be created");
+        fs::write(
+            config_dir.join("config.toml"),
+            r#"
+[app.browser.brave]
+enabled = true
+"#,
+        )
+        .expect("config file should be writable");
+        let old_override = set_env(
+            "NIRI_DEEP_CONFIG",
+            Some(config_dir.join("config.toml").to_str().expect("utf-8 path")),
+        );
+        crate::config::prepare().expect("config should load");
+
+        let chain = runtime_chain_resolver().resolve_chain("brave-browser", 0, "Brave Browser");
+        assert_eq!(chain.len(), 1);
+        assert_eq!(chain[0].adapter_name(), "chromium");
 
         restore_env("NIRI_DEEP_CONFIG", old_override);
         crate::config::prepare().expect("config should reload");

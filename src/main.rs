@@ -1,3 +1,4 @@
+use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use yeet_and_yoink::commands;
@@ -7,6 +8,8 @@ use yeet_and_yoink::config;
 use yeet_and_yoink::engine::topology::Direction;
 use yeet_and_yoink::logging;
 use yeet_and_yoink::profiling::ProfileConfig;
+
+const BROWSER_HOST_MODE_ENV: &str = "NIRI_DEEP_BROWSER_HOST";
 
 #[derive(Parser)]
 #[command(
@@ -67,7 +70,67 @@ impl Cmd {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BrowserHostMode {
+    Firefox,
+    Chromium,
+}
+
+impl BrowserHostMode {
+    fn from_env() -> Result<Option<Self>> {
+        match std::env::var(BROWSER_HOST_MODE_ENV) {
+            Ok(value) => Ok(Some(Self::parse(&value)?)),
+            Err(std::env::VarError::NotPresent) => Ok(None),
+            Err(std::env::VarError::NotUnicode(_)) => {
+                bail!("{BROWSER_HOST_MODE_ENV} must be valid UTF-8")
+            }
+        }
+    }
+
+    fn parse(value: &str) -> Result<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "firefox" | "librewolf" => Ok(Self::Firefox),
+            "chromium" | "chrome" | "brave" => Ok(Self::Chromium),
+            other => bail!(
+                "unsupported {BROWSER_HOST_MODE_ENV} value {other:?}; expected firefox or chromium"
+            ),
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Firefox => "Firefox",
+            Self::Chromium => "Chromium",
+        }
+    }
+
+    fn run(self) -> Result<()> {
+        match self {
+            Self::Firefox => yeet_and_yoink::adapters::apps::librewolf::run_native_host(),
+            Self::Chromium => yeet_and_yoink::adapters::apps::chromium::run_native_host(),
+        }
+    }
+}
+
+fn maybe_run_browser_host() -> Result<bool> {
+    let Some(mode) = BrowserHostMode::from_env()? else {
+        return Ok(false);
+    };
+    mode.run()
+        .with_context(|| format!("{} browser native host failed", mode.label()))?;
+    Ok(true)
+}
+
 fn main() {
+    match maybe_run_browser_host() {
+        Ok(true) => return,
+        Ok(false) => {}
+        Err(err) => {
+            eprintln!("yeet-and-yoink: {err:#}");
+            std::process::exit(1);
+        }
+    }
+
     let cli = Cli::parse();
     let argv = std::env::args().collect::<Vec<_>>();
     let mut logging_session = match logging::init(
@@ -118,5 +181,39 @@ fn main() {
     if let Err(profile_err) = logging_session.finish() {
         eprintln!("yeet-and-yoink: {profile_err:#}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BrowserHostMode;
+
+    #[test]
+    fn browser_host_mode_parses_firefox_aliases() {
+        assert_eq!(
+            BrowserHostMode::parse("firefox").expect("firefox alias should parse"),
+            BrowserHostMode::Firefox
+        );
+        assert_eq!(
+            BrowserHostMode::parse("LibreWolf").expect("librewolf alias should parse"),
+            BrowserHostMode::Firefox
+        );
+    }
+
+    #[test]
+    fn browser_host_mode_parses_chromium_aliases() {
+        assert_eq!(
+            BrowserHostMode::parse("chromium").expect("chromium alias should parse"),
+            BrowserHostMode::Chromium
+        );
+        assert_eq!(
+            BrowserHostMode::parse("Brave").expect("brave alias should parse"),
+            BrowserHostMode::Chromium
+        );
+    }
+
+    #[test]
+    fn browser_host_mode_rejects_unknown_values() {
+        assert!(BrowserHostMode::parse("safari").is_err());
     }
 }

@@ -1,15 +1,58 @@
-const HOST_NAME = "com.yeet_and_yoink.firefox_bridge";
-const RECONNECT_DELAY_MS = 1000;
+const HOST_NAME = "com.yeet_and_yoink.chromium_bridge";
+const RECONNECT_DELAY_MINUTES = 1 / 60;
+const RECONNECT_ALARM = "yny-native-reconnect";
 
 let nativePort = null;
-let reconnectTimer = null;
 
 function log(message, error) {
   if (error) {
-    console.error(`[yny-browser-bridge] ${message}`, error);
+    console.error(`[yny-chromium-bridge] ${message}`, error);
   } else {
-    console.log(`[yny-browser-bridge] ${message}`);
+    console.log(`[yny-chromium-bridge] ${message}`);
   }
+}
+
+function chromeCall(invoke) {
+  return new Promise((resolve, reject) => {
+    invoke((result) => {
+      const lastError = chrome.runtime.lastError;
+      if (lastError) {
+        reject(new Error(lastError.message));
+      } else {
+        resolve(result);
+      }
+    });
+  });
+}
+
+function getLastFocusedWindow(queryOptions) {
+  return chromeCall((done) => chrome.windows.getLastFocused(queryOptions, done));
+}
+
+function getTab(tabId) {
+  return chromeCall((done) => chrome.tabs.get(tabId, done));
+}
+
+function updateTab(tabId, properties) {
+  return chromeCall((done) => chrome.tabs.update(tabId, properties, done));
+}
+
+function moveTab(tabId, properties) {
+  return chromeCall((done) => chrome.tabs.move(tabId, properties, done));
+}
+
+function createWindow(properties) {
+  return chromeCall((done) => chrome.windows.create(properties, done));
+}
+
+function clearReconnectAlarm() {
+  return chromeCall((done) => chrome.alarms.clear(RECONNECT_ALARM, done)).catch(() => {});
+}
+
+function scheduleReconnect() {
+  return chrome.alarms.create(RECONNECT_ALARM, {
+    delayInMinutes: RECONNECT_DELAY_MINUTES
+  });
 }
 
 function normalizeDirection(rawDirection) {
@@ -41,7 +84,7 @@ function normalizeMergeDirection(rawDirection) {
 }
 
 async function focusedWindowState() {
-  const browserWindow = await browser.windows.getLastFocused({
+  const browserWindow = await getLastFocusedWindow({
     populate: true,
     windowTypes: ["normal"]
   });
@@ -126,7 +169,7 @@ async function handleCommand(message) {
       if (!targetTab) {
         throw new Error(`tab index ${targetIndex} does not exist`);
       }
-      await browser.tabs.update(targetTab.id, { active: true });
+      await updateTab(targetTab.id, { active: true });
       return {};
     }
     case "move_tab": {
@@ -135,28 +178,28 @@ async function handleCommand(message) {
       if (targetIndex === null) {
         throw new Error(`cannot move the current tab ${direction}`);
       }
-      await browser.tabs.move(state.activeTab.id, {
+      await moveTab(state.activeTab.id, {
         windowId: state.window.id,
         index: targetIndex
       });
-      await browser.tabs.update(state.activeTab.id, { active: true });
+      await updateTab(state.activeTab.id, { active: true });
       return {};
     }
     case "tear_out":
-      await browser.windows.create({ tabId: state.activeTab.id });
+      await createWindow({ tabId: state.activeTab.id });
       return {};
     case "merge_tab": {
       const direction = normalizeMergeDirection(message.direction);
       if (state.window.id === message.source_window_id) {
         throw new Error("source and target browser windows are identical");
       }
-      const sourceTab = await browser.tabs.get(message.source_tab_id);
+      const sourceTab = await getTab(message.source_tab_id);
       const targetIndex = mergeTargetIndex(state, sourceTab, direction);
-      await browser.tabs.move(sourceTab.id, {
+      await moveTab(sourceTab.id, {
         windowId: state.window.id,
         index: targetIndex
       });
-      await browser.tabs.update(sourceTab.id, { active: true });
+      await updateTab(sourceTab.id, { active: true });
       return {};
     }
     default:
@@ -164,7 +207,7 @@ async function handleCommand(message) {
   }
 }
 
-async function sendResponse(payload) {
+function sendResponse(payload) {
   if (!nativePort) {
     return;
   }
@@ -178,13 +221,13 @@ async function sendResponse(payload) {
 async function onNativeMessage(message) {
   try {
     const payload = await handleCommand(message);
-    await sendResponse({
+    sendResponse({
       id: message.id,
       ok: true,
       ...payload
     });
   } catch (error) {
-    await sendResponse({
+    sendResponse({
       id: message.id,
       ok: false,
       error: error && error.message ? error.message : String(error)
@@ -192,26 +235,18 @@ async function onNativeMessage(message) {
   }
 }
 
-function scheduleReconnect() {
-  if (reconnectTimer !== null) {
-    return;
-  }
-  reconnectTimer = setTimeout(() => {
-    reconnectTimer = null;
-    connectNative();
-  }, RECONNECT_DELAY_MS);
-}
-
-function connectNative() {
+async function connectNative() {
   if (nativePort) {
     return;
   }
 
+  await clearReconnectAlarm();
+
   try {
-    nativePort = browser.runtime.connectNative(HOST_NAME);
+    nativePort = chrome.runtime.connectNative(HOST_NAME);
   } catch (error) {
     log("failed to connect to native host", error);
-    scheduleReconnect();
+    await scheduleReconnect();
     return;
   }
 
@@ -219,17 +254,29 @@ function connectNative() {
     void onNativeMessage(message);
   });
   nativePort.onDisconnect.addListener(() => {
-    const lastError = browser.runtime.lastError;
+    const lastError = chrome.runtime.lastError;
     if (lastError) {
       log(`native host disconnected: ${lastError.message}`);
     } else {
       log("native host disconnected");
     }
     nativePort = null;
-    scheduleReconnect();
+    void scheduleReconnect();
   });
 }
 
-browser.runtime.onStartup.addListener(connectNative);
-browser.runtime.onInstalled.addListener(connectNative);
-connectNative();
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === RECONNECT_ALARM) {
+    void connectNative();
+  }
+});
+
+chrome.runtime.onStartup.addListener(() => {
+  void connectNative();
+});
+
+chrome.runtime.onInstalled.addListener(() => {
+  void connectNative();
+});
+
+void connectNative();
