@@ -1,5 +1,10 @@
 # yeet-and-yoink
 
+<p align="center">
+  <img src=".github/image.png" width="500" title="hover text">
+</p>
+
+
 `yeet-and-yoink` routes `focus`, `move`, and `resize` through a geometry-first orchestrator with
 domain plugins (WM / terminal / editor), plus a transfer pipeline for cross-domain moves.
 
