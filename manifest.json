@@ -1,0 +1,22 @@
+{
+  "manifest_version": 2,
+  "name": "Yeet and Yoink Browser Bridge",
+  "version": "0.1.0",
+  "description": "Expose Firefox-family tab control to yeet-and-yoink via native messaging.",
+  "permissions": [
+    "nativeMessaging",
+    "tabs"
+  ],
+  "background": {
+    "scripts": [
+      "background.js"
+    ],
+    "persistent": true
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "browser-bridge@yeet-and-yoink.dev",
+      "strict_min_version": "109.0"
+    }
+  }
+}
