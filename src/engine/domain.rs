@@ -1111,11 +1111,24 @@ mod configured_window_manager_tests {
 
     #[test]
     fn runtime_domains_uses_wm_domain_factory_when_present() {
-        let mut wm = fake_wm_with_domain_factory(fake_domain("wm-test"));
+        let mut wm = fake_wm_with_domain_factory("wm-test");
 
         let domains = runtime_domains_for_window_manager(&mut wm).unwrap();
 
         assert!(domains
+            .iter()
+            .any(|domain| domain.domain_name() == "wm-test"));
+    }
+
+    #[test]
+    fn runtime_domains_recreates_wm_domain_on_subsequent_calls() {
+        let mut wm = fake_wm_with_domain_factory("wm-test");
+
+        let first = runtime_domains_for_window_manager(&mut wm).unwrap();
+        let second = runtime_domains_for_window_manager(&mut wm).unwrap();
+
+        assert!(first.iter().any(|domain| domain.domain_name() == "wm-test"));
+        assert!(second
             .iter()
             .any(|domain| domain.domain_name() == "wm-test"));
     }
@@ -1129,9 +1142,9 @@ mod configured_window_manager_tests {
         assert!(domains.iter().any(|domain| domain.domain_name() == "fake"));
     }
 
-    fn fake_wm_with_domain_factory(domain: Box<dyn ErasedDomain>) -> ConfiguredWindowManager {
+    fn fake_wm_with_domain_factory(name: &'static str) -> ConfiguredWindowManager {
         let mut features = WindowManagerFeatures::default();
-        features.domain_factory = Some(Box::new(FakeDomainFactory::new(domain)));
+        features.domain_factory = Some(Box::new(FakeDomainFactory::new(name)));
         ConfiguredWindowManager::new(Box::new(FakeSession), features)
     }
 
@@ -1142,19 +1155,13 @@ mod configured_window_manager_tests {
         )
     }
 
-    fn fake_domain(name: &'static str) -> Box<dyn ErasedDomain> {
-        Box::new(FakeRuntimeDomain::new(name))
-    }
-
     struct FakeDomainFactory {
-        domain: std::sync::Mutex<Option<Box<dyn ErasedDomain>>>,
+        name: &'static str,
     }
 
     impl FakeDomainFactory {
-        fn new(domain: Box<dyn ErasedDomain>) -> Self {
-            Self {
-                domain: std::sync::Mutex::new(Some(domain)),
-            }
+        fn new(name: &'static str) -> Self {
+            Self { name }
         }
     }
 
@@ -1163,11 +1170,7 @@ mod configured_window_manager_tests {
             &self,
             _domain_id: crate::engine::topology::DomainId,
         ) -> Result<Box<dyn ErasedDomain>> {
-            self.domain
-                .lock()
-                .expect("fake domain factory mutex should not be poisoned")
-                .take()
-                .ok_or_else(|| anyhow::anyhow!("fake domain factory already consumed"))
+            Ok(Box::new(FakeRuntimeDomain::new(self.name)))
         }
     }
 
