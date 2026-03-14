@@ -455,81 +455,10 @@ pub fn connect_selected() -> Result<ConfiguredWindowManager> {
 #[cfg(test)]
 mod tests {
     use super::{
-        plan_resize, plan_tear_out, validate_declared_capabilities, CapabilitySupport,
-        ConfiguredWindowManager, DirectionalCapability, PrimitiveWindowManagerCapabilities,
-        WindowManagerCapabilities, WindowManagerCapabilityDescriptor, WindowManagerSpec,
+        ConfiguredWindowManager, WindowManagerSpec,
     };
     use crate::config::WmBackend;
-    use crate::engine::topology::Direction;
     use anyhow::Result;
-
-    #[cfg(target_os = "linux")]
-    use super::NiriAdapter;
-    #[cfg(target_os = "macos")]
-    use crate::adapters::window_managers::yabai::YabaiAdapter;
-
-    struct InvalidComposedCapabilities;
-
-    impl WindowManagerCapabilityDescriptor for InvalidComposedCapabilities {
-        const NAME: &'static str = "invalid";
-        const CAPABILITIES: WindowManagerCapabilities = WindowManagerCapabilities {
-            primitives: PrimitiveWindowManagerCapabilities {
-                tear_out_right: true,
-                move_column: false,
-                consume_into_column_and_move: false,
-                set_window_width: true,
-                set_window_height: true,
-            },
-            tear_out: DirectionalCapability {
-                west: CapabilitySupport::Composed,
-                east: CapabilitySupport::Native,
-                north: CapabilitySupport::Unsupported,
-                south: CapabilitySupport::Unsupported,
-            },
-            resize: DirectionalCapability::uniform(CapabilitySupport::Unsupported),
-        };
-    }
-
-    #[test]
-    fn declared_capabilities_fail_validation_when_composed_primitives_missing() {
-        let error = validate_declared_capabilities::<InvalidComposedCapabilities>()
-            .expect_err("invalid composed capabilities should fail validation");
-        assert!(error
-            .to_string()
-            .contains("invalid capabilities for adapter"));
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn niri_capabilities_are_valid() {
-        validate_declared_capabilities::<NiriAdapter>()
-            .expect("niri capability descriptor should be valid");
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn yabai_capabilities_are_valid() {
-        validate_declared_capabilities::<YabaiAdapter>()
-            .expect("yabai capability descriptor should be valid");
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn tear_out_and_resize_plans_resolve_native_composed_and_unsupported() {
-        let capabilities = NiriAdapter::CAPABILITIES;
-        assert_eq!(
-            plan_tear_out(capabilities, Direction::East),
-            CapabilitySupport::Native
-        );
-        assert_eq!(
-            plan_tear_out(capabilities, Direction::North),
-            CapabilitySupport::Composed
-        );
-        assert_eq!(
-            plan_resize(capabilities, Direction::West),
-            CapabilitySupport::Native
-        );
-    }
 
     #[test]
     fn built_in_connectors_are_typed_as_configured_window_managers() {
@@ -587,21 +516,5 @@ mod tests {
         fn connect(&self) -> Result<ConfiguredWindowManager> {
             Err(anyhow::anyhow!("{} connection failed", self.name()))
         }
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn yabai_tear_out_and_resize_plans() {
-        let capabilities = YabaiAdapter::CAPABILITIES;
-        // Yabai doesn't support tear-out
-        assert_eq!(
-            plan_tear_out(capabilities, Direction::East),
-            CapabilitySupport::Unsupported
-        );
-        // Yabai has native resize
-        assert_eq!(
-            plan_resize(capabilities, Direction::West),
-            CapabilitySupport::Native
-        );
     }
 }
