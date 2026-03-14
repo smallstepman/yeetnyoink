@@ -1,6 +1,6 @@
 #[cfg(target_os = "linux")]
 pub mod i3;
-#[cfg(target_os = "linux")]
+#[cfg(any(test, target_os = "linux"))]
 pub mod niri;
 #[cfg(target_os = "macos")]
 pub mod paneru;
@@ -13,8 +13,10 @@ use anyhow::{anyhow, Context, Result};
 use crate::adapters::window_managers::i3::I3_SPEC;
 #[cfg(target_os = "linux")]
 use crate::adapters::window_managers::i3::{I3Adapter, I3FocusedWindow};
+#[cfg(any(test, target_os = "linux"))]
+use crate::adapters::window_managers::niri::Niri;
 #[cfg(target_os = "linux")]
-use crate::adapters::window_managers::niri::{Niri, NIRI_SPEC};
+use crate::adapters::window_managers::niri::NIRI_SPEC;
 #[cfg(target_os = "macos")]
 use crate::adapters::window_managers::paneru::{PaneruAdapter, PaneruFocusedWindow, PANERU_SPEC};
 #[cfg(target_os = "macos")]
@@ -597,28 +599,40 @@ impl<T> WindowManagerAdapter for T where
 // Linux: Niri adapter
 // ---------------------------------------------------------------------------
 
-#[cfg(target_os = "linux")]
+#[cfg(any(test, target_os = "linux"))]
 pub struct NiriAdapter {
-    pub(crate) inner: Niri,
+    pub(crate) inner: std::sync::Arc<std::sync::Mutex<Niri>>,
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(test, target_os = "linux"))]
 impl NiriAdapter {
     pub fn connect() -> Result<Self> {
         validate_declared_capabilities::<Self>()?;
-        Ok(Self {
-            inner: Niri::connect()?,
-        })
+        Ok(Self::from_shared(std::sync::Arc::new(
+            std::sync::Mutex::new(Niri::connect()?),
+        )))
+    }
+
+    pub(crate) fn from_shared(inner: std::sync::Arc<std::sync::Mutex<Niri>>) -> Self {
+        Self { inner }
+    }
+
+    fn with_inner<R>(&self, f: impl FnOnce(&mut Niri) -> Result<R>) -> Result<R> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| anyhow!("niri adapter mutex should not be poisoned"))?;
+        f(&mut inner)
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(test, target_os = "linux"))]
 #[derive(Clone, Copy)]
 pub struct NiriFocusedWindow<'a> {
     inner: &'a niri_ipc::Window,
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(test, target_os = "linux"))]
 impl FocusedWindowView for NiriFocusedWindow<'_> {
     fn id(&self) -> u64 {
         self.inner.id
@@ -648,7 +662,7 @@ impl FocusedWindowView for NiriFocusedWindow<'_> {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(test, target_os = "linux"))]
 impl WindowManagerCapabilityDescriptor for NiriAdapter {
     const NAME: &'static str = "niri";
     const CAPABILITIES: WindowManagerCapabilities = WindowManagerCapabilities {
@@ -674,7 +688,7 @@ impl WindowManagerCapabilityDescriptor for NiriAdapter {
     };
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(test, target_os = "linux"))]
 impl WindowManagerIntrospection for NiriAdapter {
     type FocusedWindow<'a>
         = NiriFocusedWindow<'a>
@@ -685,14 +699,13 @@ impl WindowManagerIntrospection for NiriAdapter {
         &mut self,
         visit: impl for<'a> FnOnce(Self::FocusedWindow<'a>) -> Result<R>,
     ) -> Result<R> {
-        let window = self.inner.focused_window()?;
+        let window = self.with_inner(|inner| inner.focused_window())?;
         visit(NiriFocusedWindow { inner: &window })
     }
 
     fn windows(&mut self) -> Result<Vec<WindowRecord>> {
         Ok(self
-            .inner
-            .windows()?
+            .with_inner(|inner| inner.windows())?
             .into_iter()
             .map(|window| WindowRecord {
                 id: window.id,
@@ -713,18 +726,18 @@ impl WindowManagerIntrospection for NiriAdapter {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(test, target_os = "linux"))]
 impl WindowManagerExecution for NiriAdapter {
     fn focus_direction(&mut self, direction: Direction) -> Result<()> {
-        self.inner.focus_direction(direction)
+        self.with_inner(|inner| inner.focus_direction(direction))
     }
 
     fn move_direction(&mut self, direction: Direction) -> Result<()> {
-        self.inner.move_direction(direction)
+        self.with_inner(|inner| inner.move_direction(direction))
     }
 
     fn move_column(&mut self, direction: Direction) -> Result<()> {
-        self.inner.move_column(direction)
+        self.with_inner(|inner| inner.move_column(direction))
     }
 
     fn consume_into_column_and_move(
@@ -732,25 +745,25 @@ impl WindowManagerExecution for NiriAdapter {
         direction: Direction,
         original_tile_index: usize,
     ) -> Result<()> {
-        self.inner
-            .consume_into_column_and_move(direction, original_tile_index)
+        self.with_inner(|inner| inner.consume_into_column_and_move(direction, original_tile_index))
     }
 
     fn resize_with_intent(&mut self, intent: ResizeIntent) -> Result<()> {
-        self.inner
-            .resize_window(intent.direction, intent.grow(), intent.step.abs().max(1))
+        self.with_inner(|inner| {
+            inner.resize_window(intent.direction, intent.grow(), intent.step.abs().max(1))
+        })
     }
 
     fn spawn(&mut self, command: Vec<String>) -> Result<()> {
-        self.inner.spawn(command)
+        self.with_inner(|inner| inner.spawn(command))
     }
 
     fn focus_window_by_id(&mut self, id: u64) -> Result<()> {
-        self.inner.focus_window_by_id(id)
+        self.with_inner(|inner| inner.focus_window_by_id(id))
     }
 
     fn close_window_by_id(&mut self, id: u64) -> Result<()> {
-        self.inner.close_window_by_id(id)
+        self.with_inner(|inner| inner.close_window_by_id(id))
     }
 }
 

@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, bail, Context, Result};
 use niri_ipc::socket::Socket;
@@ -10,7 +11,8 @@ use std::any::TypeId;
 
 use crate::adapters::window_managers::{
     ConfiguredWindowManager, NiriAdapter, WindowCycleProvider, WindowCycleRequest,
-    WindowManagerDomainFactory, WindowManagerFeatures, WindowManagerSpec,
+    WindowManagerCapabilityDescriptor, WindowManagerDomainFactory, WindowManagerExecution,
+    WindowManagerFeatures, WindowManagerIntrospection, WindowManagerSpec,
 };
 use crate::config::WmBackend;
 use crate::engine::domain::PaneState;
@@ -54,11 +56,12 @@ impl WindowManagerSpec for NiriSpec {
     }
 
     fn connect(&self) -> Result<ConfiguredWindowManager> {
+        let shared = Arc::new(Mutex::new(Niri::connect()?));
         let mut features = WindowManagerFeatures::default();
         features.domain_factory = Some(Box::new(NiriDomainFactory));
-        features.window_cycle = Some(Box::new(NiriAdapter::connect()?));
+        features.window_cycle = Some(Box::new(NiriAdapter::from_shared(shared.clone())));
         Ok(ConfiguredWindowManager::new(
-            Box::new(NiriAdapter::connect()?),
+            Box::new(NiriAdapter::from_shared(shared)),
             features,
         ))
     }
@@ -272,10 +275,10 @@ impl WindowCycleProvider for NiriAdapter {
                 .spawn
                 .as_ref()
                 .context("--new requires --spawn '<command>'")?;
-            return self.inner.spawn_sh(spawn.clone());
+            return self.with_inner(|inner| inner.spawn_sh(spawn.clone()));
         }
 
-        let windows = self.inner.windows()?;
+        let windows = self.with_inner(|inner| inner.windows())?;
         let focused_id = windows
             .iter()
             .find(|window| window.is_focused)
@@ -291,7 +294,7 @@ impl WindowCycleProvider for NiriAdapter {
 
         if matches.is_empty() {
             if let Some(spawn) = request.spawn.as_ref() {
-                return self.inner.spawn_sh(spawn.clone());
+                return self.with_inner(|inner| inner.spawn_sh(spawn.clone()));
             }
             bail!("no matching windows found and no --spawn provided");
         }
@@ -304,11 +307,11 @@ impl WindowCycleProvider for NiriAdapter {
         let target = matches[target_idx].clone();
 
         if request.summon {
-            summon_or_return(&mut self.inner, &target, &windows)?;
+            self.with_inner(|inner| summon_or_return(inner, &target, &windows))?;
             return Ok(());
         }
 
-        self.inner.focus_window_by_id(target.id)
+        self.with_inner(|inner| inner.focus_window_by_id(target.id))
     }
 }
 
@@ -337,7 +340,55 @@ fn focus_sort_key(window: &Window) -> (u64, u32, u64) {
     (secs, nanos, window.id)
 }
 
-fn summon_or_return(niri: &mut Niri, target: &Window, all_windows: &[Window]) -> Result<()> {
+trait NiriSession {
+    fn workspaces(&mut self) -> Result<Vec<Workspace>>;
+    fn move_window_to_workspace(
+        &mut self,
+        window_id: u64,
+        reference: WorkspaceReferenceArg,
+        focus: bool,
+    ) -> Result<()>;
+    fn move_window_to_monitor(&mut self, id: u64, output: String) -> Result<()>;
+    fn focus_window_by_id(&mut self, id: u64) -> Result<()>;
+}
+
+impl NiriSession for Niri {
+    fn workspaces(&mut self) -> Result<Vec<Workspace>> {
+        Self::workspaces(self)
+    }
+
+    fn move_window_to_workspace(
+        &mut self,
+        window_id: u64,
+        reference: WorkspaceReferenceArg,
+        focus: bool,
+    ) -> Result<()> {
+        Self::move_window_to_workspace(self, window_id, reference, focus)
+    }
+
+    fn move_window_to_monitor(&mut self, id: u64, output: String) -> Result<()> {
+        Self::move_window_to_monitor(self, id, output)
+    }
+
+    fn focus_window_by_id(&mut self, id: u64) -> Result<()> {
+        Self::focus_window_by_id(self, id)
+    }
+}
+
+fn retain_live_summon_windows(state: &mut SummonState, all_windows: &[Window]) -> bool {
+    let live_window_ids: HashSet<u64> = all_windows.iter().map(|window| window.id).collect();
+    let before = state.windows.len();
+    state
+        .windows
+        .retain(|window_id, _| live_window_ids.contains(window_id));
+    state.windows.len() != before
+}
+
+fn summon_or_return(
+    niri: &mut impl NiriSession,
+    target: &Window,
+    all_windows: &[Window],
+) -> Result<()> {
     let workspaces = niri.workspaces()?;
     let focused_workspace = workspaces
         .iter()
@@ -350,11 +401,7 @@ fn summon_or_return(niri: &mut Niri, target: &Window, all_windows: &[Window]) ->
         .map(|workspace| (workspace.id, workspace))
         .collect();
     let mut state = load_summon_state()?;
-
-    let live_window_ids: HashSet<u64> = all_windows.iter().map(|window| window.id).collect();
-    state
-        .windows
-        .retain(|window_id, _| live_window_ids.contains(window_id));
+    let mut state_dirty = retain_live_summon_windows(&mut state, all_windows);
 
     if target.is_focused {
         if let Some(origin) = state.windows.remove(&target.id) {
@@ -372,16 +419,17 @@ fn summon_or_return(niri: &mut Niri, target: &Window, all_windows: &[Window]) ->
     }
 
     if target.workspace_id != Some(focused_workspace.id) {
-        state.windows.entry(target.id).or_insert_with(|| {
-            let origin_output = target
-                .workspace_id
-                .and_then(|workspace_id| workspaces_by_id.get(&workspace_id))
-                .and_then(|workspace| workspace.output.clone());
-            SummonOrigin {
+        let origin_output = target
+            .workspace_id
+            .and_then(|workspace_id| workspaces_by_id.get(&workspace_id))
+            .and_then(|workspace| workspace.output.clone());
+        if let std::collections::hash_map::Entry::Vacant(entry) = state.windows.entry(target.id) {
+            entry.insert(SummonOrigin {
                 workspace_id: target.workspace_id.unwrap_or(focused_workspace.id),
                 output: origin_output,
-            }
-        });
+            });
+            state_dirty = true;
+        }
 
         niri.move_window_to_workspace(
             target.id,
@@ -391,6 +439,9 @@ fn summon_or_return(niri: &mut Niri, target: &Window, all_windows: &[Window]) ->
         if let Some(output) = focused_workspace.output.clone() {
             niri.move_window_to_monitor(target.id, output)?;
         }
+    }
+
+    if state_dirty {
         save_summon_state(&state)?;
     }
 
@@ -428,6 +479,133 @@ fn save_summon_state(state: &SummonState) -> Result<()> {
     fs::write(&path, serialized)
         .with_context(|| format!("failed to write summon state file: {}", path.display()))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anyhow::Result;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[derive(Default)]
+    struct FakeNiri {
+        workspaces: Vec<Workspace>,
+        actions: Vec<String>,
+    }
+
+    impl NiriSession for FakeNiri {
+        fn workspaces(&mut self) -> Result<Vec<Workspace>> {
+            Ok(self.workspaces.clone())
+        }
+
+        fn move_window_to_workspace(
+            &mut self,
+            window_id: u64,
+            reference: WorkspaceReferenceArg,
+            focus: bool,
+        ) -> Result<()> {
+            self.actions.push(format!(
+                "move_window_to_workspace:{window_id}:{reference:?}:{focus}"
+            ));
+            Ok(())
+        }
+
+        fn move_window_to_monitor(&mut self, id: u64, output: String) -> Result<()> {
+            self.actions
+                .push(format!("move_window_to_monitor:{id}:{output}"));
+            Ok(())
+        }
+
+        fn focus_window_by_id(&mut self, id: u64) -> Result<()> {
+            self.actions.push(format!("focus_window_by_id:{id}"));
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn summon_or_return_persists_dead_entry_cleanup_when_target_has_no_origin() {
+        let temp_dir = unique_temp_dir();
+        let original_runtime_dir = std::env::var_os("XDG_RUNTIME_DIR");
+        std::env::set_var("XDG_RUNTIME_DIR", &temp_dir);
+
+        let result = (|| -> Result<()> {
+            save_summon_state(&SummonState {
+                windows: HashMap::from([(
+                    99,
+                    SummonOrigin {
+                        workspace_id: 7,
+                        output: Some("HDMI-A-1".to_string()),
+                    },
+                )]),
+            })?;
+
+            let mut fake = FakeNiri {
+                workspaces: vec![workspace(1, true, Some("eDP-1"))],
+                actions: Vec::new(),
+            };
+            let target = window(42, Some(1), true);
+
+            summon_or_return(&mut fake, &target, std::slice::from_ref(&target))?;
+
+            let state = load_summon_state()?;
+            assert!(state.windows.is_empty());
+            assert_eq!(fake.actions, vec!["focus_window_by_id:42"]);
+            Ok(())
+        })();
+
+        match original_runtime_dir {
+            Some(value) => std::env::set_var("XDG_RUNTIME_DIR", value),
+            None => std::env::remove_var("XDG_RUNTIME_DIR"),
+        }
+
+        let _ = fs::remove_dir_all(&temp_dir);
+
+        result.expect("summon state cleanup should be persisted");
+    }
+
+    fn unique_temp_dir() -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be after unix epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("yeet-and-yoink-niri-test-{unique}"));
+        fs::create_dir_all(&path).expect("temp dir should be created");
+        path
+    }
+
+    fn window(id: u64, workspace_id: Option<u64>, is_focused: bool) -> Window {
+        Window {
+            id,
+            title: Some(format!("window-{id}")),
+            app_id: Some("test.app".to_string()),
+            pid: Some(1234),
+            workspace_id,
+            is_focused,
+            is_floating: false,
+            is_urgent: false,
+            layout: niri_ipc::WindowLayout {
+                pos_in_scrolling_layout: Some((1, 1)),
+                tile_size: (100.0, 100.0),
+                window_size: (100, 100),
+                tile_pos_in_workspace_view: Some((0.0, 0.0)),
+                window_offset_in_tile: (0.0, 0.0),
+            },
+            focus_timestamp: None,
+        }
+    }
+
+    fn workspace(id: u64, is_focused: bool, output: Option<&str>) -> Workspace {
+        Workspace {
+            id,
+            idx: 1,
+            name: None,
+            output: output.map(str::to_string),
+            is_urgent: false,
+            is_active: is_focused,
+            is_focused,
+            active_window_id: None,
+        }
+    }
 }
 
 pub struct NiriDomainPlugin {
