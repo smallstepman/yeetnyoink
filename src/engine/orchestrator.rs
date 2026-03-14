@@ -8,7 +8,7 @@ use crate::adapters::window_managers::{
     WindowRecord,
 };
 use crate::engine::contract::{
-    AppAdapter, AppKind, ChainResolver, MergeExecutionMode, MoveDecision, TopologyHandler,
+    AppAdapter, AppKind, MergeExecutionMode, MoveDecision, TopologyHandler,
 };
 use crate::engine::domain::ErasedDomain;
 use crate::engine::domain::{domain_id_for_window, encode_native_window_ref};
@@ -134,9 +134,7 @@ impl Orchestrator {
             return Ok(false);
         };
 
-        for app in crate::engine::chain_resolver::runtime_chain_resolver()
-            .resolve_chain(&app_id, owner_pid, &title)
-        {
+        for app in crate::engine::chain_resolver::resolve_app_chain(&app_id, owner_pid, &title) {
             if !app.capabilities().focus {
                 continue;
             }
@@ -226,8 +224,7 @@ impl Orchestrator {
             return Ok(false);
         };
 
-        let chain = crate::engine::chain_resolver::runtime_chain_resolver()
-            .resolve_chain(&app_id, owner_pid, &title);
+        let chain = crate::engine::chain_resolver::resolve_app_chain(&app_id, owner_pid, &title);
         for (index, app) in chain.iter().enumerate() {
             let adapter_name = app.adapter_name();
             let decision = TopologyHandler::move_decision(app.as_ref(), dir, owner_pid)
@@ -610,8 +607,7 @@ impl Orchestrator {
                 let _ = wm.focus_window_by_id(source_window_id);
                 continue;
             }
-            let target_app = crate::engine::chain_resolver::runtime_chain_resolver()
-                .resolve_chain(app_id, owner_pid, title)
+            let target_app = crate::engine::chain_resolver::resolve_app_chain(app_id, owner_pid, title)
                 .into_iter()
                 .find(|candidate| candidate.adapter_name() == adapter_name);
             if target_app.is_some() {
@@ -644,12 +640,11 @@ impl Orchestrator {
         window: &WindowRecord,
     ) -> Option<Box<dyn AppAdapter>> {
         let owner_pid = window.pid.map(ProcessId::get).unwrap_or(0);
-        crate::engine::chain_resolver::runtime_chain_resolver()
-            .resolve_chain(
-                window.app_id.as_deref().unwrap_or_default(),
-                owner_pid,
-                window.title.as_deref().unwrap_or_default(),
-            )
+        crate::engine::chain_resolver::resolve_app_chain(
+            window.app_id.as_deref().unwrap_or_default(),
+            owner_pid,
+            window.title.as_deref().unwrap_or_default(),
+        )
             .into_iter()
             .find(|adapter| adapter.adapter_name() == adapter_name)
     }
@@ -918,9 +913,7 @@ impl Orchestrator {
             return Ok(false);
         };
 
-        for app in crate::engine::chain_resolver::runtime_chain_resolver()
-            .resolve_chain(&app_id, owner_pid, &title)
-        {
+        for app in crate::engine::chain_resolver::resolve_app_chain(&app_id, owner_pid, &title) {
             if !app.capabilities().resize_internal {
                 continue;
             }

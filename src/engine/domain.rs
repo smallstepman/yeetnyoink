@@ -7,7 +7,7 @@ use anyhow::{anyhow, Context, Result};
 
 use crate::adapters::window_managers::ConfiguredWindowManager;
 use crate::engine::contract::{
-    AppAdapter, AppKind, ChainResolver, MergePreparation, TopologyHandler as AppTopologyHandler,
+    AppAdapter, AppKind, MergePreparation, TopologyHandler as AppTopologyHandler,
 };
 use crate::engine::runtime::ProcessId;
 use crate::engine::topology::{Direction, DomainId, LeafId, Rect};
@@ -598,13 +598,12 @@ pub fn domain_id_for_window(
     pid: Option<ProcessId>,
     title: Option<&str>,
 ) -> DomainId {
-    crate::engine::chain_resolver::runtime_chain_resolver().domain_id_for_window(app_id, pid, title)
+    crate::engine::chain_resolver::resolve_window_domain_id(app_id, pid, title)
 }
 
 pub fn runtime_domains_for_window_manager(
     wm: &mut ConfiguredWindowManager,
 ) -> Result<Vec<Box<dyn ErasedDomain>>> {
-    let resolver = crate::engine::chain_resolver::runtime_chain_resolver();
     let mut domains: Vec<Box<dyn ErasedDomain>> = Vec::new();
 
     if let Some(factory) = wm.domain_factory() {
@@ -616,7 +615,7 @@ pub fn runtime_domains_for_window_manager(
         )));
     }
 
-    for adapter in resolver.default_domain_adapters() {
+    for adapter in crate::engine::chain_resolver::default_app_domain_adapters() {
         let domain_id = domain_id_for_app_kind(adapter.kind());
         domains.push(Box::new(AppDomainPlugin::new(domain_id, adapter)));
     }
@@ -627,7 +626,7 @@ pub fn runtime_domains_for_window_manager(
     let pid = focused.pid;
     let owner_pid = pid.map(ProcessId::get).unwrap_or(0);
     let mut overridden = HashSet::new();
-    for adapter in resolver.resolve_chain(&app_id, owner_pid, &title) {
+    for adapter in crate::engine::chain_resolver::resolve_app_chain(&app_id, owner_pid, &title) {
         let domain_id = domain_id_for_app_kind(adapter.kind());
         if overridden.insert(domain_id) {
             domains.push(Box::new(AppDomainPlugin::new(domain_id, adapter)));
@@ -641,6 +640,7 @@ pub fn runtime_domains_for_window_manager(
 mod tests {
     use super::{decode_native_window_ref, domain_id_for_window, encode_native_window_ref};
     use crate::adapters::apps::{alacritty, foot, ghostty, kitty, wezterm};
+    use crate::engine::chain_resolver::resolve_window_domain_id;
     use crate::engine::runtime::ProcessId;
 
     #[test]
@@ -677,7 +677,7 @@ enabled = true
         crate::config::prepare_with_path(Some(&config_dir.join("config.toml")))
             .expect("config should load");
 
-        let domain = domain_id_for_window(Some(wezterm::APP_IDS[0]), None, Some("term"));
+        let domain = resolve_window_domain_id(Some(wezterm::APP_IDS[0]), None, Some("term"));
         assert_eq!(domain, super::TERMINAL_DOMAIN_ID);
 
         crate::config::install(old_config);

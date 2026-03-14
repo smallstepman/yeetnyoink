@@ -651,8 +651,7 @@ where
         pid: Option<ProcessId>,
         title: Option<&str>,
     ) -> DomainId {
-        crate::engine::chain_resolver::runtime_chain_resolver()
-            .domain_id_for_window(app_id, pid, title)
+        crate::engine::chain_resolver::resolve_window_domain_id(app_id, pid, title)
     }
 }
 

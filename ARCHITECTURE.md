@@ -117,10 +117,19 @@ Config discovery order:
 
 ### 5. Chain Resolver (`src/engine/chain_resolver.rs`)
 
-Responsible for building the **adapter chain** for a given window:
-- Detects if window is a terminal host → Assembles terminal + mux adapters
-- Detects editors directly
-- Applies config overrides
+The engine owns policy binding and chain/domain resolution for a given window while
+consuming raw adapter catalog/build data from `src/adapters/apps/`.
+
+Engine resolver helpers expose the behavior the rest of the engine uses:
+- `resolve_app_chain(app_id, pid, title)` builds the adapter chain
+- `default_app_domain_adapters()` returns the default domain adapters used to seed topology
+- `resolve_window_domain_id(app_id, pid, title)` maps a window to an engine domain id
+
+That resolver flow:
+- Detects if the window is a terminal host → assembles terminal + mux adapters
+- Detects direct app/editor adapters
+- Binds engine policy wrappers around catalog-provided adapters
+- Applies config overrides before returning engine-owned adapters
 
 Example chains:
 - WezTerm window → `[wezterm_backend, wezterm_mux]`

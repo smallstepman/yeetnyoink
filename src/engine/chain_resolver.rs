@@ -28,6 +28,14 @@ pub fn default_app_domain_adapters() -> Vec<Box<dyn AppAdapter>> {
     runtime_chain_resolver().default_domain_adapters()
 }
 
+pub fn resolve_window_domain_id(
+    app_id: Option<&str>,
+    pid: Option<ProcessId>,
+    title: Option<&str>,
+) -> DomainId {
+    runtime_chain_resolver().domain_id_for_window(app_id, pid, title)
+}
+
 fn preferred_terminal_adapter_name() -> Option<String> {
     crate::config::app_adapter_override().and_then(|raw| {
         let normalized = raw.trim().to_ascii_lowercase();
