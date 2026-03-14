@@ -4,8 +4,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 
 use crate::adapters::window_managers::{
-    plan_tear_out, CapabilitySupport, FocusedWindowView, ResizeIntent, ResizeKind,
-    WindowManagerAdapter, WindowRecord,
+    plan_tear_out, CapabilitySupport, ResizeIntent, ResizeKind, WindowManagerSession, WindowRecord,
 };
 use crate::engine::contract::{
     AppAdapter, AppKind, ChainResolver, MergeExecutionMode, MoveDecision, TopologyHandler,
@@ -72,20 +71,34 @@ impl Orchestrator {
 
     pub fn execute<W>(&mut self, wm: &mut W, request: ActionRequest) -> Result<()>
     where
-        W: WindowManagerAdapter,
+        W: WindowManagerSession + ?Sized,
+    {
+        self.execute_session(wm, request)
+    }
+
+    fn execute_session<W>(&mut self, wm: &mut W, request: ActionRequest) -> Result<()>
+    where
+        W: WindowManagerSession + ?Sized,
     {
         match request.kind {
-            ActionKind::Focus => self.execute_focus(wm, request.direction),
-            ActionKind::Move => self.execute_move(wm, request.direction),
+            ActionKind::Focus => self.execute_focus_session(wm, request.direction),
+            ActionKind::Move => self.execute_move_session(wm, request.direction),
             ActionKind::Resize { grow, step } => {
-                self.execute_resize(wm, request.direction, grow, step)
+                self.execute_resize_session(wm, request.direction, grow, step)
             }
         }
     }
 
     pub fn execute_focus<W>(&mut self, wm: &mut W, dir: Direction) -> Result<()>
     where
-        W: WindowManagerAdapter,
+        W: WindowManagerSession + ?Sized,
+    {
+        self.execute_focus_session(wm, dir)
+    }
+
+    fn execute_focus_session<W>(&mut self, wm: &mut W, dir: Direction) -> Result<()>
+    where
+        W: WindowManagerSession + ?Sized,
     {
         let _span = tracing::debug_span!("orchestrator.execute_focus", ?dir).entered();
         let fallback_dir = dir.into();
@@ -97,16 +110,13 @@ impl Orchestrator {
 
     fn attempt_focused_app_focus<W>(&mut self, wm: &mut W, dir: Direction) -> Result<bool>
     where
-        W: WindowManagerAdapter,
+        W: WindowManagerSession + ?Sized,
     {
         let _span = tracing::debug_span!("orchestrator.attempt_focused_app_focus", ?dir).entered();
-        let (app_id, title, source_pid) = wm.with_focused_window(|window| {
-            Ok((
-                window.app_id().unwrap_or("").to_string(),
-                window.title().unwrap_or("").to_string(),
-                window.pid(),
-            ))
-        })?;
+        let focused = wm.focused_window()?;
+        let app_id = focused.app_id.unwrap_or_default();
+        let title = focused.title.unwrap_or_default();
+        let source_pid = focused.pid;
         let owner_pid = source_pid.map(ProcessId::get);
         let Some(owner_pid) = owner_pid else {
             return Ok(false);
@@ -134,7 +144,14 @@ impl Orchestrator {
 
     pub fn execute_move<W>(&mut self, wm: &mut W, dir: Direction) -> Result<()>
     where
-        W: WindowManagerAdapter,
+        W: WindowManagerSession + ?Sized,
+    {
+        self.execute_move_session(wm, dir)
+    }
+
+    fn execute_move_session<W>(&mut self, wm: &mut W, dir: Direction) -> Result<()>
+    where
+        W: WindowManagerSession + ?Sized,
     {
         let fallback_dir = dir.into();
         if self.attempt_focused_app_move(wm, fallback_dir)? {
@@ -185,18 +202,14 @@ impl Orchestrator {
 
     fn attempt_focused_app_move<W>(&mut self, wm: &mut W, dir: Direction) -> Result<bool>
     where
-        W: WindowManagerAdapter,
+        W: WindowManagerSession + ?Sized,
     {
-        let (source_window_id, source_tile_index, app_id, title, source_pid) = wm
-            .with_focused_window(|window| {
-                Ok((
-                    window.id(),
-                    window.original_tile_index(),
-                    window.app_id().unwrap_or("").to_string(),
-                    window.title().unwrap_or("").to_string(),
-                    window.pid(),
-                ))
-            })?;
+        let focused = wm.focused_window()?;
+        let source_window_id = focused.id;
+        let source_tile_index = focused.original_tile_index;
+        let app_id = focused.app_id.unwrap_or_default();
+        let title = focused.title.unwrap_or_default();
+        let source_pid = focused.pid;
         let owner_pid = source_pid.map(ProcessId::get);
         let Some(owner_pid) = owner_pid else {
             return Ok(false);
@@ -297,7 +310,7 @@ impl Orchestrator {
         decision_label: &str,
     ) -> Result<()>
     where
-        W: WindowManagerAdapter,
+        W: WindowManagerSession + ?Sized,
     {
         let adapter_name = app.adapter_name();
         let pre_window_ids: BTreeSet<u64> = match wm.windows() {
@@ -359,7 +372,7 @@ impl Orchestrator {
         source_app_id: &str,
     ) -> Result<Option<u64>>
     where
-        W: WindowManagerAdapter,
+        W: WindowManagerSession + ?Sized,
     {
         let target_window_id = self.wait_for_tearout_window_id(
             wm,
@@ -386,7 +399,7 @@ impl Orchestrator {
         source_app_id: &str,
     ) -> Result<Option<u64>>
     where
-        W: WindowManagerAdapter,
+        W: WindowManagerSession + ?Sized,
     {
         const ATTEMPTS: usize = 25;
         const DELAY: Duration = Duration::from_millis(40);
@@ -478,13 +491,13 @@ impl Orchestrator {
         target_window_id: Option<u64>,
     ) -> Result<()>
     where
-        W: WindowManagerAdapter,
+        W: WindowManagerSession + ?Sized,
     {
         if let Some(target_window_id) = target_window_id.filter(|id| *id != source_window_id) {
             wm.focus_window_by_id(target_window_id)?;
         }
 
-        let focused_window_id = wm.with_focused_window(|window| Ok(window.id()))?;
+        let focused_window_id = wm.focused_window()?.id;
         if focused_window_id == source_window_id {
             return Ok(());
         }
@@ -503,17 +516,16 @@ impl Orchestrator {
 
     fn focused_window_record<W>(wm: &mut W) -> Result<WindowRecord>
     where
-        W: WindowManagerAdapter,
+        W: WindowManagerSession + ?Sized,
     {
-        wm.with_focused_window(|window| {
-            Ok(WindowRecord {
-                id: window.id(),
-                app_id: window.app_id().map(|value| value.to_string()),
-                title: window.title().map(|value| value.to_string()),
-                pid: window.pid(),
-                is_focused: true,
-                original_tile_index: window.original_tile_index(),
-            })
+        let window = wm.focused_window()?;
+        Ok(WindowRecord {
+            id: window.id,
+            app_id: window.app_id,
+            title: window.title,
+            pid: window.pid,
+            is_focused: true,
+            original_tile_index: window.original_tile_index,
         })
     }
 
@@ -525,7 +537,7 @@ impl Orchestrator {
         focus_mode: DirectionalProbeFocusMode,
     ) -> Result<Option<WindowRecord>>
     where
-        W: WindowManagerAdapter,
+        W: WindowManagerSession + ?Sized,
     {
         if let Err(err) = wm.focus_direction(dir) {
             logging::debug(format!(
@@ -564,7 +576,7 @@ impl Orchestrator {
         focus_mode: DirectionalProbeFocusMode,
     ) -> Result<Option<WindowRecord>>
     where
-        W: WindowManagerAdapter,
+        W: WindowManagerSession + ?Sized,
     {
         let Some(target_window) =
             self.probe_directional_target(wm, dir, source_window_id, focus_mode)?
@@ -592,7 +604,7 @@ impl Orchestrator {
         adapter_name: &str,
     ) -> Result<Option<Box<dyn AppAdapter>>>
     where
-        W: WindowManagerAdapter,
+        W: WindowManagerSession + ?Sized,
     {
         for outer in outer_chain {
             if !outer.capabilities().focus
@@ -601,7 +613,7 @@ impl Orchestrator {
                 continue;
             }
             TopologyHandler::focus(outer.as_ref(), dir, owner_pid)?;
-            let focused_window_id = wm.with_focused_window(|window| Ok(window.id()))?;
+            let focused_window_id = wm.focused_window()?.id;
             if focused_window_id != source_window_id {
                 let _ = wm.focus_window_by_id(source_window_id);
                 continue;
@@ -685,7 +697,7 @@ impl Orchestrator {
         source_pid: Option<ProcessId>,
     ) -> Result<bool>
     where
-        W: WindowManagerAdapter,
+        W: WindowManagerSession + ?Sized,
     {
         if !app.capabilities().merge {
             return Ok(false);
@@ -852,7 +864,7 @@ impl Orchestrator {
         target_window_id: u64,
         adapter_name: &str,
     ) where
-        W: WindowManagerAdapter,
+        W: WindowManagerSession + ?Sized,
     {
         if source_window_id == target_window_id {
             return;
@@ -879,7 +891,20 @@ impl Orchestrator {
         step: i32,
     ) -> Result<()>
     where
-        W: WindowManagerAdapter,
+        W: WindowManagerSession + ?Sized,
+    {
+        self.execute_resize_session(wm, dir, grow, step)
+    }
+
+    fn execute_resize_session<W>(
+        &mut self,
+        wm: &mut W,
+        dir: Direction,
+        grow: bool,
+        step: i32,
+    ) -> Result<()>
+    where
+        W: WindowManagerSession + ?Sized,
     {
         if self.attempt_focused_app_resize(wm, dir, grow, step.max(1))? {
             return Ok(());
@@ -904,15 +929,12 @@ impl Orchestrator {
         step: i32,
     ) -> Result<bool>
     where
-        W: WindowManagerAdapter,
+        W: WindowManagerSession + ?Sized,
     {
-        let (app_id, title, source_pid) = wm.with_focused_window(|window| {
-            Ok((
-                window.app_id().unwrap_or("").to_string(),
-                window.title().unwrap_or("").to_string(),
-                window.pid(),
-            ))
-        })?;
+        let focused = wm.focused_window()?;
+        let app_id = focused.app_id.unwrap_or_default();
+        let title = focused.title.unwrap_or_default();
+        let source_pid = focused.pid;
         let owner_pid = source_pid.map(ProcessId::get);
         let Some(owner_pid) = owner_pid else {
             return Ok(false);
@@ -1050,13 +1072,15 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::Mutex;
 
     use anyhow::{anyhow, Result};
 
     use super::{ActionKind, ActionRequest, Orchestrator};
     use crate::adapters::window_managers::{
-        FocusedWindowView, WindowManagerCapabilities, WindowManagerExecution,
-        WindowManagerIntrospection, WindowManagerMetadata, WindowRecord,
+        ConfiguredWindowManager, FocusedWindowRecord, FocusedWindowView, WindowManagerCapabilities,
+        WindowManagerExecution, WindowManagerFeatures, WindowManagerIntrospection,
+        WindowManagerMetadata, WindowManagerSession, WindowRecord,
     };
     use crate::engine::domain::PaneState;
     use crate::engine::domain::{DomainLeafSnapshot, DomainSnapshot, ErasedDomain};
@@ -1084,6 +1108,82 @@ mod tests {
 
     fn restore_config(old: crate::config::Config) {
         crate::config::install(old);
+    }
+
+    struct SessionState {
+        focus_calls: Vec<Direction>,
+    }
+
+    struct RecordingSession {
+        state: Arc<Mutex<SessionState>>,
+    }
+
+    impl WindowManagerSession for RecordingSession {
+        fn adapter_name(&self) -> &'static str {
+            "fake"
+        }
+
+        fn capabilities(&self) -> WindowManagerCapabilities {
+            WindowManagerCapabilities::none()
+        }
+
+        fn focused_window(&mut self) -> Result<FocusedWindowRecord> {
+            Ok(FocusedWindowRecord {
+                id: 77,
+                app_id: Some("fake-app".into()),
+                title: Some("fake-title".into()),
+                pid: None,
+                original_tile_index: 1,
+            })
+        }
+
+        fn windows(&mut self) -> Result<Vec<WindowRecord>> {
+            Ok(Vec::new())
+        }
+
+        fn focus_direction(&mut self, direction: Direction) -> Result<()> {
+            self.state
+                .lock()
+                .expect("session state mutex should not be poisoned")
+                .focus_calls
+                .push(direction);
+            Ok(())
+        }
+
+        fn move_direction(&mut self, _direction: Direction) -> Result<()> {
+            Ok(())
+        }
+
+        fn move_column(&mut self, _direction: Direction) -> Result<()> {
+            Ok(())
+        }
+
+        fn consume_into_column_and_move(
+            &mut self,
+            _direction: Direction,
+            _original_tile_index: usize,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn resize_with_intent(
+            &mut self,
+            _intent: crate::adapters::window_managers::ResizeIntent,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn spawn(&mut self, _command: Vec<String>) -> Result<()> {
+            Ok(())
+        }
+
+        fn focus_window_by_id(&mut self, _id: u64) -> Result<()> {
+            Ok(())
+        }
+
+        fn close_window_by_id(&mut self, _id: u64) -> Result<()> {
+            Ok(())
+        }
     }
 
     #[test]
@@ -1129,6 +1229,38 @@ mod tests {
         assert_eq!(
             orchestrator.route(&source, &cross),
             super::RoutingDecision::CrossDomain
+        );
+    }
+
+    #[test]
+    fn execute_accepts_configured_window_manager_handle() {
+        let state = Arc::new(Mutex::new(SessionState {
+            focus_calls: Vec::new(),
+        }));
+        let mut wm = ConfiguredWindowManager::new(
+            Box::new(RecordingSession {
+                state: state.clone(),
+            }),
+            WindowManagerFeatures::default(),
+        );
+        let mut orchestrator = Orchestrator::default();
+
+        orchestrator
+            .execute(
+                &mut wm,
+                ActionRequest {
+                    kind: ActionKind::Focus,
+                    direction: Direction::West,
+                },
+            )
+            .expect("configured window manager should execute orchestrator actions");
+
+        assert_eq!(
+            state
+                .lock()
+                .expect("session state mutex should not be poisoned")
+                .focus_calls,
+            vec![Direction::West]
         );
     }
 
@@ -1450,7 +1582,7 @@ enabled = true
         };
 
         orchestrator
-            .execute(
+            .execute_session(
                 &mut wm,
                 ActionRequest {
                     kind: ActionKind::Move,
@@ -1546,7 +1678,7 @@ enabled = true
         };
 
         orchestrator
-            .execute(
+            .execute_session(
                 &mut wm,
                 ActionRequest {
                     kind: ActionKind::Move,
@@ -1623,7 +1755,7 @@ enabled = true
         };
 
         orchestrator
-            .execute(
+            .execute_session(
                 &mut wm,
                 ActionRequest {
                     kind: ActionKind::Move,

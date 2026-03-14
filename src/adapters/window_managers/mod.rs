@@ -249,6 +249,12 @@ pub trait WindowManagerSession: Send {
     fn windows(&mut self) -> Result<Vec<WindowRecord>>;
     fn focus_direction(&mut self, direction: Direction) -> Result<()>;
     fn move_direction(&mut self, direction: Direction) -> Result<()>;
+    fn move_column(&mut self, direction: Direction) -> Result<()>;
+    fn consume_into_column_and_move(
+        &mut self,
+        direction: Direction,
+        original_tile_index: usize,
+    ) -> Result<()>;
     fn resize_with_intent(&mut self, intent: ResizeIntent) -> Result<()>;
     fn spawn(&mut self, command: Vec<String>) -> Result<()>;
     fn focus_window_by_id(&mut self, id: u64) -> Result<()>;
@@ -281,6 +287,18 @@ where
 
     fn move_direction(&mut self, direction: Direction) -> Result<()> {
         WindowManagerExecution::move_direction(self, direction)
+    }
+
+    fn move_column(&mut self, direction: Direction) -> Result<()> {
+        WindowManagerExecution::move_column(self, direction)
+    }
+
+    fn consume_into_column_and_move(
+        &mut self,
+        direction: Direction,
+        original_tile_index: usize,
+    ) -> Result<()> {
+        WindowManagerExecution::consume_into_column_and_move(self, direction, original_tile_index)
     }
 
     fn resize_with_intent(&mut self, intent: ResizeIntent) -> Result<()> {
@@ -347,6 +365,19 @@ impl ConfiguredWindowManager {
         self.core.move_direction(direction)
     }
 
+    pub fn move_column(&mut self, direction: Direction) -> Result<()> {
+        self.core.move_column(direction)
+    }
+
+    pub fn consume_into_column_and_move(
+        &mut self,
+        direction: Direction,
+        original_tile_index: usize,
+    ) -> Result<()> {
+        self.core
+            .consume_into_column_and_move(direction, original_tile_index)
+    }
+
     pub fn resize_with_intent(&mut self, intent: ResizeIntent) -> Result<()> {
         self.core.resize_with_intent(intent)
     }
@@ -373,6 +404,60 @@ impl ConfiguredWindowManager {
 
     pub fn tear_out_composer(&self) -> Option<&dyn WindowTearOutComposer> {
         self.features.tear_out_composer.as_deref()
+    }
+}
+
+impl WindowManagerSession for ConfiguredWindowManager {
+    fn adapter_name(&self) -> &'static str {
+        ConfiguredWindowManager::adapter_name(self)
+    }
+
+    fn capabilities(&self) -> WindowManagerCapabilities {
+        ConfiguredWindowManager::capabilities(self)
+    }
+
+    fn focused_window(&mut self) -> Result<FocusedWindowRecord> {
+        ConfiguredWindowManager::focused_window(self)
+    }
+
+    fn windows(&mut self) -> Result<Vec<WindowRecord>> {
+        ConfiguredWindowManager::windows(self)
+    }
+
+    fn focus_direction(&mut self, direction: Direction) -> Result<()> {
+        ConfiguredWindowManager::focus_direction(self, direction)
+    }
+
+    fn move_direction(&mut self, direction: Direction) -> Result<()> {
+        ConfiguredWindowManager::move_direction(self, direction)
+    }
+
+    fn move_column(&mut self, direction: Direction) -> Result<()> {
+        ConfiguredWindowManager::move_column(self, direction)
+    }
+
+    fn consume_into_column_and_move(
+        &mut self,
+        direction: Direction,
+        original_tile_index: usize,
+    ) -> Result<()> {
+        ConfiguredWindowManager::consume_into_column_and_move(self, direction, original_tile_index)
+    }
+
+    fn resize_with_intent(&mut self, intent: ResizeIntent) -> Result<()> {
+        ConfiguredWindowManager::resize_with_intent(self, intent)
+    }
+
+    fn spawn(&mut self, command: Vec<String>) -> Result<()> {
+        ConfiguredWindowManager::spawn(self, command)
+    }
+
+    fn focus_window_by_id(&mut self, id: u64) -> Result<()> {
+        ConfiguredWindowManager::focus_window_by_id(self, id)
+    }
+
+    fn close_window_by_id(&mut self, id: u64) -> Result<()> {
+        ConfiguredWindowManager::close_window_by_id(self, id)
     }
 }
 
@@ -619,15 +704,18 @@ pub struct WindowManagerRegistration {
     pub priority: u8,
     pub detector: fn() -> bool,
     pub capabilities: WindowManagerCapabilities,
-    pub connect: fn() -> Result<SelectedWindowManager>,
+    pub connect: fn() -> Result<ConfiguredWindowManager>,
 }
 
 fn detect_niri() -> bool {
     std::env::var_os("NIRI_SOCKET").is_some() || std::env::var_os("WAYLAND_DISPLAY").is_some()
 }
 
-fn connect_niri() -> Result<SelectedWindowManager> {
-    Ok(SelectedWindowManager::Niri(NiriAdapter::connect()?))
+fn connect_niri() -> Result<ConfiguredWindowManager> {
+    Ok(ConfiguredWindowManager::new(
+        Box::new(NiriAdapter::connect()?),
+        WindowManagerFeatures::default(),
+    ))
 }
 
 fn detect_i3() -> bool {
@@ -641,8 +729,11 @@ fn detect_i3() -> bool {
             .unwrap_or(false)
 }
 
-fn connect_i3() -> Result<SelectedWindowManager> {
-    Ok(SelectedWindowManager::I3(I3Adapter::connect()?))
+fn connect_i3() -> Result<ConfiguredWindowManager> {
+    Ok(ConfiguredWindowManager::new(
+        Box::new(I3Adapter::connect()?),
+        WindowManagerFeatures::default(),
+    ))
 }
 
 const REGISTRY: &[WindowManagerRegistration] = &[
@@ -673,7 +764,7 @@ fn preferred_window_manager_name() -> Option<String> {
     })
 }
 
-pub fn connect_selected() -> Result<SelectedWindowManager> {
+pub fn connect_selected() -> Result<ConfiguredWindowManager> {
     let _span = tracing::debug_span!("window_managers.connect_selected").entered();
     let preferred = preferred_window_manager_name();
 
@@ -826,20 +917,16 @@ impl WindowManagerExecution for SelectedWindowManager {
         original_tile_index: usize,
     ) -> Result<()> {
         match self {
-            Self::Niri(inner) => {
-                WindowManagerExecution::consume_into_column_and_move(
-                    inner,
-                    direction,
-                    original_tile_index,
-                )
-            }
-            Self::I3(inner) => {
-                WindowManagerExecution::consume_into_column_and_move(
-                    inner,
-                    direction,
-                    original_tile_index,
-                )
-            }
+            Self::Niri(inner) => WindowManagerExecution::consume_into_column_and_move(
+                inner,
+                direction,
+                original_tile_index,
+            ),
+            Self::I3(inner) => WindowManagerExecution::consume_into_column_and_move(
+                inner,
+                direction,
+                original_tile_index,
+            ),
         }
     }
 
@@ -881,8 +968,8 @@ mod tests {
         WindowManagerCapabilities, WindowManagerCapabilityDescriptor, WindowManagerFeatures,
         WindowManagerSession,
     };
-    use anyhow::Result;
     use crate::engine::topology::Direction;
+    use anyhow::Result;
     use std::sync::{Arc, Mutex};
 
     struct InvalidComposedCapabilities;
@@ -955,6 +1042,15 @@ mod tests {
         assert!(wm.domain_factory().is_none());
     }
 
+    #[test]
+    fn built_in_connectors_are_typed_as_configured_window_managers() {
+        fn assert_connector(_connect: fn() -> Result<ConfiguredWindowManager>) {}
+
+        assert_connector(super::connect_niri);
+        assert_connector(super::connect_i3);
+        let _ = super::connect_selected as fn() -> Result<ConfiguredWindowManager>;
+    }
+
     fn fake_configured_wm() -> TestConfiguredWindowManager {
         let calls = Arc::new(Mutex::new(Vec::new()));
         TestConfiguredWindowManager::new(
@@ -987,7 +1083,10 @@ mod tests {
         }
 
         fn take_calls(&mut self) -> Vec<String> {
-            let mut calls = self.calls.lock().expect("calls mutex should not be poisoned");
+            let mut calls = self
+                .calls
+                .lock()
+                .expect("calls mutex should not be poisoned");
             std::mem::take(&mut *calls)
         }
     }
@@ -1052,6 +1151,18 @@ mod tests {
         }
 
         fn move_direction(&mut self, _direction: Direction) -> Result<()> {
+            Ok(())
+        }
+
+        fn move_column(&mut self, _direction: Direction) -> Result<()> {
+            Ok(())
+        }
+
+        fn consume_into_column_and_move(
+            &mut self,
+            _direction: Direction,
+            _original_tile_index: usize,
+        ) -> Result<()> {
             Ok(())
         }
 

@@ -6,7 +6,7 @@ use anyhow::Result as AnyResult;
 use anyhow::{anyhow, Context, Result};
 
 use crate::adapters::window_managers::niri::NiriDomainPlugin;
-use crate::adapters::window_managers::{FocusedWindowView, WindowManagerAdapter};
+use crate::adapters::window_managers::ConfiguredWindowManager;
 use crate::engine::contract::{
     AppAdapter, AppKind, ChainResolver, MergePreparation, TopologyHandler as AppTopologyHandler,
 };
@@ -606,10 +606,9 @@ pub fn domain_id_for_window(
     crate::engine::chain_resolver::runtime_chain_resolver().domain_id_for_window(app_id, pid, title)
 }
 
-pub fn runtime_domains_for_window_manager<W>(wm: &mut W) -> Result<Vec<Box<dyn ErasedDomain>>>
-where
-    W: WindowManagerAdapter,
-{
+pub fn runtime_domains_for_window_manager(
+    wm: &mut ConfiguredWindowManager,
+) -> Result<Vec<Box<dyn ErasedDomain>>> {
     let resolver = crate::engine::chain_resolver::runtime_chain_resolver();
     let mut domains: Vec<Box<dyn ErasedDomain>> = Vec::new();
     match wm.adapter_name() {
@@ -628,13 +627,10 @@ where
         domains.push(Box::new(AppDomainPlugin::new(domain_id, adapter)));
     }
 
-    let (app_id, title, pid) = wm.with_focused_window(|window| {
-        Ok((
-            window.app_id().unwrap_or("").to_string(),
-            window.title().unwrap_or("").to_string(),
-            window.pid(),
-        ))
-    })?;
+    let focused = wm.focused_window()?;
+    let app_id = focused.app_id.unwrap_or_default();
+    let title = focused.title.unwrap_or_default();
+    let pid = focused.pid;
     let owner_pid = pid.map(ProcessId::get).unwrap_or(0);
     let mut overridden = HashSet::new();
     for adapter in resolver.resolve_chain(&app_id, owner_pid, &title) {
@@ -1022,5 +1018,95 @@ mod transfer_tests {
             Some(TypeId::of::<TargetPayload>())
         );
         assert!(domain.snapshot_reads > 0);
+    }
+}
+
+#[cfg(test)]
+mod configured_window_manager_tests {
+    use anyhow::Result;
+
+    use super::{runtime_domains_for_window_manager, WM_DOMAIN_ID};
+    use crate::adapters::window_managers::{
+        ConfiguredWindowManager, FocusedWindowRecord, WindowManagerCapabilities,
+        WindowManagerFeatures, WindowManagerSession, WindowRecord,
+    };
+
+    struct FakeSession;
+
+    impl WindowManagerSession for FakeSession {
+        fn adapter_name(&self) -> &'static str {
+            "fake"
+        }
+
+        fn capabilities(&self) -> WindowManagerCapabilities {
+            WindowManagerCapabilities::none()
+        }
+
+        fn focused_window(&mut self) -> Result<FocusedWindowRecord> {
+            Ok(FocusedWindowRecord {
+                id: 1,
+                app_id: Some("fake-app".into()),
+                title: Some("fake-title".into()),
+                pid: None,
+                original_tile_index: 1,
+            })
+        }
+
+        fn windows(&mut self) -> Result<Vec<WindowRecord>> {
+            Ok(Vec::new())
+        }
+
+        fn focus_direction(
+            &mut self,
+            _direction: crate::engine::topology::Direction,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn move_direction(&mut self, _direction: crate::engine::topology::Direction) -> Result<()> {
+            Ok(())
+        }
+
+        fn move_column(&mut self, _direction: crate::engine::topology::Direction) -> Result<()> {
+            Ok(())
+        }
+
+        fn consume_into_column_and_move(
+            &mut self,
+            _direction: crate::engine::topology::Direction,
+            _original_tile_index: usize,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn resize_with_intent(
+            &mut self,
+            _intent: crate::adapters::window_managers::ResizeIntent,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn spawn(&mut self, _command: Vec<String>) -> Result<()> {
+            Ok(())
+        }
+
+        fn focus_window_by_id(&mut self, _id: u64) -> Result<()> {
+            Ok(())
+        }
+
+        fn close_window_by_id(&mut self, _id: u64) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn runtime_domains_accept_configured_window_manager_handle() {
+        let mut wm =
+            ConfiguredWindowManager::new(Box::new(FakeSession), WindowManagerFeatures::default());
+
+        let domains = runtime_domains_for_window_manager(&mut wm)
+            .expect("configured window manager should load runtime domains");
+
+        assert_eq!(domains[0].domain_id(), WM_DOMAIN_ID);
     }
 }
