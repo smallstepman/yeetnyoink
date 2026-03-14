@@ -11,8 +11,8 @@ use std::any::TypeId;
 
 use crate::adapters::window_managers::{
     ConfiguredWindowManager, NiriAdapter, WindowCycleProvider, WindowCycleRequest,
-    WindowManagerCapabilityDescriptor, WindowManagerDomainFactory, WindowManagerExecution,
-    WindowManagerFeatures, WindowManagerIntrospection, WindowManagerSpec,
+    WindowManagerCapabilityDescriptor, WindowManagerDomainFactory, WindowManagerFeatures,
+    WindowManagerSession, WindowManagerSpec,
 };
 use crate::config::WmBackend;
 use crate::engine::domain::PaneState;
@@ -60,6 +60,7 @@ impl WindowManagerSpec for NiriSpec {
         let mut features = WindowManagerFeatures::default();
         features.domain_factory = Some(Box::new(NiriDomainFactory));
         features.window_cycle = Some(Box::new(NiriAdapter::from_shared(shared.clone())));
+        features.tear_out_composer = Some(Box::new(NiriAdapter::from_shared(shared.clone())));
         Ok(ConfiguredWindowManager::new(
             Box::new(NiriAdapter::from_shared(shared)),
             features,

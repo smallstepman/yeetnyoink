@@ -167,18 +167,6 @@ mod tests {
             Ok(())
         }
 
-        fn move_column(&mut self, _direction: Direction) -> Result<()> {
-            Ok(())
-        }
-
-        fn consume_into_column_and_move(
-            &mut self,
-            _direction: Direction,
-            _original_tile_index: usize,
-        ) -> Result<()> {
-            Ok(())
-        }
-
         fn resize_with_intent(
             &mut self,
             _intent: crate::adapters::window_managers::ResizeIntent,

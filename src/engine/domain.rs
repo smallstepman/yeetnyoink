@@ -1067,18 +1067,6 @@ mod configured_window_manager_tests {
             Ok(())
         }
 
-        fn move_column(&mut self, _direction: crate::engine::topology::Direction) -> Result<()> {
-            Ok(())
-        }
-
-        fn consume_into_column_and_move(
-            &mut self,
-            _direction: crate::engine::topology::Direction,
-            _original_tile_index: usize,
-        ) -> Result<()> {
-            Ok(())
-        }
-
         fn resize_with_intent(
             &mut self,
             _intent: crate::adapters::window_managers::ResizeIntent,
@@ -1199,18 +1187,6 @@ mod configured_window_manager_tests {
 
         fn move_direction(&mut self, direction: crate::engine::topology::Direction) -> Result<()> {
             FakeSession.move_direction(direction)
-        }
-
-        fn move_column(&mut self, direction: crate::engine::topology::Direction) -> Result<()> {
-            FakeSession.move_column(direction)
-        }
-
-        fn consume_into_column_and_move(
-            &mut self,
-            direction: crate::engine::topology::Direction,
-            original_tile_index: usize,
-        ) -> Result<()> {
-            FakeSession.consume_into_column_and_move(direction, original_tile_index)
         }
 
         fn resize_with_intent(

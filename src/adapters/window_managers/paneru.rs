@@ -8,9 +8,9 @@ use anyhow::{bail, Context, Result};
 
 use crate::adapters::window_managers::{
     validate_declared_capabilities, CapabilitySupport, ConfiguredWindowManager,
-    DirectionalCapability, FocusedWindowView, PrimitiveWindowManagerCapabilities, ResizeIntent,
-    WindowManagerCapabilities, WindowManagerCapabilityDescriptor, WindowManagerExecution,
-    WindowManagerFeatures, WindowManagerIntrospection, WindowManagerSpec, WindowRecord,
+    DirectionalCapability, FocusedWindowRecord, PrimitiveWindowManagerCapabilities, ResizeIntent,
+    WindowManagerCapabilities, WindowManagerCapabilityDescriptor, WindowManagerFeatures,
+    WindowManagerSession, WindowManagerSpec, WindowRecord,
 };
 use crate::config::WmBackend;
 use crate::engine::runtime::{self, CommandContext, ProcessId};
@@ -85,34 +85,6 @@ fn non_empty(value: String) -> Option<String> {
     }
 }
 
-#[derive(Clone, Copy)]
-pub struct PaneruFocusedWindow<'a> {
-    inner: &'a PaneruWindowData,
-}
-
-impl FocusedWindowView for PaneruFocusedWindow<'_> {
-    fn id(&self) -> u64 {
-        self.inner.id
-    }
-
-    fn app_id(&self) -> Option<&str> {
-        self.inner.app_id.as_deref()
-    }
-
-    fn title(&self) -> Option<&str> {
-        self.inner.title.as_deref()
-    }
-
-    fn pid(&self) -> Option<ProcessId> {
-        self.inner.pid
-    }
-
-    fn original_tile_index(&self) -> usize {
-        // Paneru uses a horizontal strip, windows don't have a traditional tile index
-        1
-    }
-}
-
 impl WindowManagerCapabilityDescriptor for PaneruAdapter {
     const NAME: &'static str = "paneru";
     const CAPABILITIES: WindowManagerCapabilities = WindowManagerCapabilities {
@@ -144,20 +116,26 @@ impl WindowManagerCapabilityDescriptor for PaneruAdapter {
     };
 }
 
-impl WindowManagerIntrospection for PaneruAdapter {
-    type FocusedWindow<'a>
-        = PaneruFocusedWindow<'a>
-    where
-        Self: 'a;
+impl WindowManagerSession for PaneruAdapter {
+    fn adapter_name(&self) -> &'static str {
+        Self::NAME
+    }
 
-    fn with_focused_window<R>(
-        &mut self,
-        visit: impl for<'a> FnOnce(Self::FocusedWindow<'a>) -> Result<R>,
-    ) -> Result<R> {
+    fn capabilities(&self) -> WindowManagerCapabilities {
+        Self::CAPABILITIES
+    }
+
+    fn focused_window(&mut self) -> Result<FocusedWindowRecord> {
         // Paneru doesn't expose focused window query via CLI
         // We need to use macOS accessibility APIs or frontmost app detection
         let frontmost = get_frontmost_window()?;
-        visit(PaneruFocusedWindow { inner: &frontmost })
+        Ok(FocusedWindowRecord {
+            id: frontmost.id,
+            app_id: frontmost.app_id,
+            title: frontmost.title,
+            pid: frontmost.pid,
+            original_tile_index: 1,
+        })
     }
 
     fn windows(&mut self) -> Result<Vec<WindowRecord>> {
@@ -166,9 +144,7 @@ impl WindowManagerIntrospection for PaneruAdapter {
         logging::debug("paneru: window list query not supported via CLI");
         Ok(vec![])
     }
-}
 
-impl WindowManagerExecution for PaneruAdapter {
     fn focus_direction(&mut self, direction: Direction) -> Result<()> {
         Self::send_cmd_status("focus", &["window", "focus", Self::direction_name(direction)])
     }
@@ -176,26 +152,6 @@ impl WindowManagerExecution for PaneruAdapter {
     fn move_direction(&mut self, direction: Direction) -> Result<()> {
         // In paneru, swap exchanges positions with neighbor
         Self::send_cmd_status("move", &["window", "swap", Self::direction_name(direction)])
-    }
-
-    fn move_column(&mut self, direction: Direction) -> Result<()> {
-        // Paneru doesn't have columns, just swap windows
-        self.move_direction(direction)
-    }
-
-    fn consume_into_column_and_move(
-        &mut self,
-        direction: Direction,
-        _original_tile_index: usize,
-    ) -> Result<()> {
-        // For north/south, can stack windows; otherwise just swap
-        match direction {
-            Direction::North | Direction::South => {
-                // Use stack command to consume into vertical stack
-                Self::send_cmd_status("stack", &["window", "stack"])
-            }
-            _ => self.move_direction(direction),
-        }
     }
 
     fn resize_with_intent(&mut self, intent: ResizeIntent) -> Result<()> {

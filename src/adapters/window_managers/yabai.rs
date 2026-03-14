@@ -8,9 +8,9 @@ use serde::Deserialize;
 
 use crate::adapters::window_managers::{
     validate_declared_capabilities, CapabilitySupport, ConfiguredWindowManager,
-    DirectionalCapability, FocusedWindowView, PrimitiveWindowManagerCapabilities, ResizeIntent,
-    WindowManagerCapabilities, WindowManagerCapabilityDescriptor, WindowManagerExecution,
-    WindowManagerFeatures, WindowManagerIntrospection, WindowManagerSpec, WindowRecord,
+    DirectionalCapability, FocusedWindowRecord, PrimitiveWindowManagerCapabilities, ResizeIntent,
+    WindowManagerCapabilities, WindowManagerCapabilityDescriptor, WindowManagerFeatures,
+    WindowManagerSession, WindowManagerSpec, WindowRecord,
 };
 use crate::config::WmBackend;
 use crate::engine::runtime::{self, CommandContext, ProcessId};
@@ -159,34 +159,6 @@ fn non_empty(value: String) -> Option<String> {
     }
 }
 
-#[derive(Clone, Copy)]
-pub struct YabaiFocusedWindow<'a> {
-    inner: &'a YabaiWindowData,
-}
-
-impl FocusedWindowView for YabaiFocusedWindow<'_> {
-    fn id(&self) -> u64 {
-        self.inner.id
-    }
-
-    fn app_id(&self) -> Option<&str> {
-        self.inner.app_id.as_deref()
-    }
-
-    fn title(&self) -> Option<&str> {
-        self.inner.title.as_deref()
-    }
-
-    fn pid(&self) -> Option<ProcessId> {
-        self.inner.pid
-    }
-
-    fn original_tile_index(&self) -> usize {
-        // Yabai doesn't have a direct tile index concept like Niri
-        1
-    }
-}
-
 impl WindowManagerCapabilityDescriptor for YabaiAdapter {
     const NAME: &'static str = "yabai";
     const CAPABILITIES: WindowManagerCapabilities = WindowManagerCapabilities {
@@ -207,18 +179,24 @@ impl WindowManagerCapabilityDescriptor for YabaiAdapter {
     };
 }
 
-impl WindowManagerIntrospection for YabaiAdapter {
-    type FocusedWindow<'a>
-        = YabaiFocusedWindow<'a>
-    where
-        Self: 'a;
+impl WindowManagerSession for YabaiAdapter {
+    fn adapter_name(&self) -> &'static str {
+        Self::NAME
+    }
 
-    fn with_focused_window<R>(
-        &mut self,
-        visit: impl for<'a> FnOnce(Self::FocusedWindow<'a>) -> Result<R>,
-    ) -> Result<R> {
+    fn capabilities(&self) -> WindowManagerCapabilities {
+        Self::CAPABILITIES
+    }
+
+    fn focused_window(&mut self) -> Result<FocusedWindowRecord> {
         let focused = self.focused_window_data()?;
-        visit(YabaiFocusedWindow { inner: &focused })
+        Ok(FocusedWindowRecord {
+            id: focused.id,
+            app_id: focused.app_id,
+            title: focused.title,
+            pid: focused.pid,
+            original_tile_index: 1,
+        })
     }
 
     fn windows(&mut self) -> Result<Vec<WindowRecord>> {
@@ -238,9 +216,7 @@ impl WindowManagerIntrospection for YabaiAdapter {
             })
             .collect())
     }
-}
 
-impl WindowManagerExecution for YabaiAdapter {
     fn focus_direction(&mut self, direction: Direction) -> Result<()> {
         Self::command_status("focus", &["window", "--focus", Self::direction_name(direction)])
     }
@@ -250,20 +226,6 @@ impl WindowManagerExecution for YabaiAdapter {
         // --warp moves the window to the position (like i3 move)
         // Using --swap for consistency with tiling behavior
         Self::command_status("move", &["window", "--swap", Self::direction_name(direction)])
-    }
-
-    fn move_column(&mut self, direction: Direction) -> Result<()> {
-        // Yabai doesn't have columns like niri, just move the window
-        self.move_direction(direction)
-    }
-
-    fn consume_into_column_and_move(
-        &mut self,
-        direction: Direction,
-        _original_tile_index: usize,
-    ) -> Result<()> {
-        // Yabai doesn't have the column concept, just move
-        self.move_direction(direction)
     }
 
     fn resize_with_intent(&mut self, intent: ResizeIntent) -> Result<()> {

@@ -25,12 +25,12 @@ pub fn run(dir: Direction, mode: ResizeMode) -> Result<()> {
     }
     orchestrator.execute(
         &mut wm,
-        ActionRequest {
-            kind: ActionKind::Resize {
+        ActionRequest::new(
+            ActionKind::Resize {
                 grow,
                 step: DEFAULT_RESIZE_STEP,
             },
-            direction: dir,
-        },
+            dir,
+        ),
     )
 }

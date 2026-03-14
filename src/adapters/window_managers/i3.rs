@@ -3,9 +3,9 @@ use serde::Deserialize;
 
 use crate::adapters::window_managers::{
     validate_declared_capabilities, CapabilitySupport, ConfiguredWindowManager,
-    DirectionalCapability, FocusedWindowView, PrimitiveWindowManagerCapabilities, ResizeIntent,
-    WindowManagerCapabilities, WindowManagerCapabilityDescriptor, WindowManagerExecution,
-    WindowManagerFeatures, WindowManagerIntrospection, WindowManagerSpec, WindowRecord,
+    DirectionalCapability, FocusedWindowRecord, PrimitiveWindowManagerCapabilities, ResizeIntent,
+    WindowManagerCapabilities, WindowManagerCapabilityDescriptor, WindowManagerFeatures,
+    WindowManagerSession, WindowManagerSpec, WindowRecord,
 };
 use crate::config::WmBackend;
 use crate::engine::runtime::{self, CommandContext, ProcessId};
@@ -131,33 +131,6 @@ impl I3WindowData {
     }
 }
 
-#[derive(Clone, Copy)]
-pub struct I3FocusedWindow<'a> {
-    inner: &'a I3WindowData,
-}
-
-impl FocusedWindowView for I3FocusedWindow<'_> {
-    fn id(&self) -> u64 {
-        self.inner.id
-    }
-
-    fn app_id(&self) -> Option<&str> {
-        self.inner.app_id.as_deref()
-    }
-
-    fn title(&self) -> Option<&str> {
-        self.inner.title.as_deref()
-    }
-
-    fn pid(&self) -> Option<ProcessId> {
-        self.inner.pid
-    }
-
-    fn original_tile_index(&self) -> usize {
-        1
-    }
-}
-
 impl WindowManagerCapabilityDescriptor for I3Adapter {
     const NAME: &'static str = "i3";
     const CAPABILITIES: WindowManagerCapabilities = WindowManagerCapabilities {
@@ -173,18 +146,24 @@ impl WindowManagerCapabilityDescriptor for I3Adapter {
     };
 }
 
-impl WindowManagerIntrospection for I3Adapter {
-    type FocusedWindow<'a>
-        = I3FocusedWindow<'a>
-    where
-        Self: 'a;
+impl WindowManagerSession for I3Adapter {
+    fn adapter_name(&self) -> &'static str {
+        Self::NAME
+    }
 
-    fn with_focused_window<R>(
-        &mut self,
-        visit: impl for<'a> FnOnce(Self::FocusedWindow<'a>) -> Result<R>,
-    ) -> Result<R> {
+    fn capabilities(&self) -> WindowManagerCapabilities {
+        Self::CAPABILITIES
+    }
+
+    fn focused_window(&mut self) -> Result<FocusedWindowRecord> {
         let focused = self.focused_window_data()?;
-        visit(I3FocusedWindow { inner: &focused })
+        Ok(FocusedWindowRecord {
+            id: focused.id,
+            app_id: focused.app_id,
+            title: focused.title,
+            pid: focused.pid,
+            original_tile_index: 1,
+        })
     }
 
     fn windows(&mut self) -> Result<Vec<WindowRecord>> {
@@ -201,27 +180,13 @@ impl WindowManagerIntrospection for I3Adapter {
             })
             .collect())
     }
-}
 
-impl WindowManagerExecution for I3Adapter {
     fn focus_direction(&mut self, direction: Direction) -> Result<()> {
         Self::command_status("focus", &["focus", Self::direction_name(direction)])
     }
 
     fn move_direction(&mut self, direction: Direction) -> Result<()> {
         Self::command_status("move", &["move", Self::direction_name(direction)])
-    }
-
-    fn move_column(&mut self, direction: Direction) -> Result<()> {
-        self.move_direction(direction)
-    }
-
-    fn consume_into_column_and_move(
-        &mut self,
-        direction: Direction,
-        _original_tile_index: usize,
-    ) -> Result<()> {
-        self.move_direction(direction)
     }
 
     fn resize_with_intent(&mut self, intent: ResizeIntent) -> Result<()> {

@@ -25,12 +25,6 @@ pub(crate) fn run_action(kind: ActionKind, dir: Direction) -> Result<()> {
     }
     {
         let _span = tracing::debug_span!("commands.execute_action").entered();
-        orchestrator.execute(
-            &mut wm,
-            ActionRequest {
-                kind,
-                direction: dir,
-            },
-        )
+        orchestrator.execute(&mut wm, ActionRequest::new(kind, dir))
     }
 }

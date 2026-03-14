@@ -4,7 +4,8 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 
 use crate::adapters::window_managers::{
-    plan_tear_out, CapabilitySupport, ResizeIntent, ResizeKind, WindowManagerSession, WindowRecord,
+    plan_tear_out, CapabilitySupport, ConfiguredWindowManager, ResizeIntent, ResizeKind,
+    WindowManagerSession, WindowRecord,
 };
 use crate::engine::contract::{
     AppAdapter, AppKind, ChainResolver, MergeExecutionMode, MoveDecision, TopologyHandler,
@@ -28,6 +29,12 @@ pub enum ActionKind {
 pub struct ActionRequest {
     pub kind: ActionKind,
     pub direction: Direction,
+}
+
+impl ActionRequest {
+    pub const fn new(kind: ActionKind, direction: Direction) -> Self {
+        Self { kind, direction }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,6 +62,24 @@ enum DirectionalProbeFocusMode {
     KeepTarget,
 }
 
+pub trait RuntimeWindowManager: WindowManagerSession {
+    fn compose_tear_out(&mut self, direction: Direction, source_tile_index: usize) -> Result<()>;
+}
+
+impl RuntimeWindowManager for ConfiguredWindowManager {
+    fn compose_tear_out(&mut self, direction: Direction, source_tile_index: usize) -> Result<()> {
+        let adapter_name = self.adapter_name();
+        self.tear_out_composer_mut()
+            .with_context(|| {
+                format!(
+                    "configured wm '{}' is missing a tear-out composer for {direction}",
+                    adapter_name
+                )
+            })?
+            .compose_tear_out(direction, source_tile_index)
+    }
+}
+
 impl Default for Orchestrator {
     fn default() -> Self {
         Self {
@@ -71,14 +96,14 @@ impl Orchestrator {
 
     pub fn execute<W>(&mut self, wm: &mut W, request: ActionRequest) -> Result<()>
     where
-        W: WindowManagerSession + ?Sized,
+        W: RuntimeWindowManager + ?Sized,
     {
         self.execute_session(wm, request)
     }
 
     fn execute_session<W>(&mut self, wm: &mut W, request: ActionRequest) -> Result<()>
     where
-        W: WindowManagerSession + ?Sized,
+        W: RuntimeWindowManager + ?Sized,
     {
         match request.kind {
             ActionKind::Focus => self.execute_focus_session(wm, request.direction),
@@ -91,14 +116,14 @@ impl Orchestrator {
 
     pub fn execute_focus<W>(&mut self, wm: &mut W, dir: Direction) -> Result<()>
     where
-        W: WindowManagerSession + ?Sized,
+        W: RuntimeWindowManager + ?Sized,
     {
         self.execute_focus_session(wm, dir)
     }
 
     fn execute_focus_session<W>(&mut self, wm: &mut W, dir: Direction) -> Result<()>
     where
-        W: WindowManagerSession + ?Sized,
+        W: RuntimeWindowManager + ?Sized,
     {
         let _span = tracing::debug_span!("orchestrator.execute_focus", ?dir).entered();
         let fallback_dir = dir.into();
@@ -110,7 +135,7 @@ impl Orchestrator {
 
     fn attempt_focused_app_focus<W>(&mut self, wm: &mut W, dir: Direction) -> Result<bool>
     where
-        W: WindowManagerSession + ?Sized,
+        W: RuntimeWindowManager + ?Sized,
     {
         let _span = tracing::debug_span!("orchestrator.attempt_focused_app_focus", ?dir).entered();
         let focused = wm.focused_window()?;
@@ -144,14 +169,14 @@ impl Orchestrator {
 
     pub fn execute_move<W>(&mut self, wm: &mut W, dir: Direction) -> Result<()>
     where
-        W: WindowManagerSession + ?Sized,
+        W: RuntimeWindowManager + ?Sized,
     {
         self.execute_move_session(wm, dir)
     }
 
     fn execute_move_session<W>(&mut self, wm: &mut W, dir: Direction) -> Result<()>
     where
-        W: WindowManagerSession + ?Sized,
+        W: RuntimeWindowManager + ?Sized,
     {
         let fallback_dir = dir.into();
         if self.attempt_focused_app_move(wm, fallback_dir)? {
@@ -202,7 +227,7 @@ impl Orchestrator {
 
     fn attempt_focused_app_move<W>(&mut self, wm: &mut W, dir: Direction) -> Result<bool>
     where
-        W: WindowManagerSession + ?Sized,
+        W: RuntimeWindowManager + ?Sized,
     {
         let focused = wm.focused_window()?;
         let source_window_id = focused.id;
@@ -310,7 +335,7 @@ impl Orchestrator {
         decision_label: &str,
     ) -> Result<()>
     where
-        W: WindowManagerSession + ?Sized,
+        W: RuntimeWindowManager + ?Sized,
     {
         let adapter_name = app.adapter_name();
         let pre_window_ids: BTreeSet<u64> = match wm.windows() {
@@ -372,7 +397,7 @@ impl Orchestrator {
         source_app_id: &str,
     ) -> Result<Option<u64>>
     where
-        W: WindowManagerSession + ?Sized,
+        W: RuntimeWindowManager + ?Sized,
     {
         let target_window_id = self.wait_for_tearout_window_id(
             wm,
@@ -399,7 +424,7 @@ impl Orchestrator {
         source_app_id: &str,
     ) -> Result<Option<u64>>
     where
-        W: WindowManagerSession + ?Sized,
+        W: RuntimeWindowManager + ?Sized,
     {
         const ATTEMPTS: usize = 25;
         const DELAY: Duration = Duration::from_millis(40);
@@ -491,7 +516,7 @@ impl Orchestrator {
         target_window_id: Option<u64>,
     ) -> Result<()>
     where
-        W: WindowManagerSession + ?Sized,
+        W: RuntimeWindowManager + ?Sized,
     {
         if let Some(target_window_id) = target_window_id.filter(|id| *id != source_window_id) {
             wm.focus_window_by_id(target_window_id)?;
@@ -505,18 +530,13 @@ impl Orchestrator {
         match plan_tear_out(wm.capabilities(), dir) {
             CapabilitySupport::Native => wm.move_direction(dir),
             CapabilitySupport::Unsupported => Ok(()),
-            CapabilitySupport::Composed => match dir {
-                Direction::West | Direction::East => wm.move_column(dir),
-                Direction::North | Direction::South => {
-                    wm.consume_into_column_and_move(dir, source_tile_index)
-                }
-            },
+            CapabilitySupport::Composed => wm.compose_tear_out(dir, source_tile_index),
         }
     }
 
     fn focused_window_record<W>(wm: &mut W) -> Result<WindowRecord>
     where
-        W: WindowManagerSession + ?Sized,
+        W: RuntimeWindowManager + ?Sized,
     {
         let window = wm.focused_window()?;
         Ok(WindowRecord {
@@ -537,7 +557,7 @@ impl Orchestrator {
         focus_mode: DirectionalProbeFocusMode,
     ) -> Result<Option<WindowRecord>>
     where
-        W: WindowManagerSession + ?Sized,
+        W: RuntimeWindowManager + ?Sized,
     {
         if let Err(err) = wm.focus_direction(dir) {
             logging::debug(format!(
@@ -576,7 +596,7 @@ impl Orchestrator {
         focus_mode: DirectionalProbeFocusMode,
     ) -> Result<Option<WindowRecord>>
     where
-        W: WindowManagerSession + ?Sized,
+        W: RuntimeWindowManager + ?Sized,
     {
         let Some(target_window) =
             self.probe_directional_target(wm, dir, source_window_id, focus_mode)?
@@ -604,7 +624,7 @@ impl Orchestrator {
         adapter_name: &str,
     ) -> Result<Option<Box<dyn AppAdapter>>>
     where
-        W: WindowManagerSession + ?Sized,
+        W: RuntimeWindowManager + ?Sized,
     {
         for outer in outer_chain {
             if !outer.capabilities().focus
@@ -697,7 +717,7 @@ impl Orchestrator {
         source_pid: Option<ProcessId>,
     ) -> Result<bool>
     where
-        W: WindowManagerSession + ?Sized,
+        W: RuntimeWindowManager + ?Sized,
     {
         if !app.capabilities().merge {
             return Ok(false);
@@ -864,7 +884,7 @@ impl Orchestrator {
         target_window_id: u64,
         adapter_name: &str,
     ) where
-        W: WindowManagerSession + ?Sized,
+        W: RuntimeWindowManager + ?Sized,
     {
         if source_window_id == target_window_id {
             return;
@@ -891,7 +911,7 @@ impl Orchestrator {
         step: i32,
     ) -> Result<()>
     where
-        W: WindowManagerSession + ?Sized,
+        W: RuntimeWindowManager + ?Sized,
     {
         self.execute_resize_session(wm, dir, grow, step)
     }
@@ -904,7 +924,7 @@ impl Orchestrator {
         step: i32,
     ) -> Result<()>
     where
-        W: WindowManagerSession + ?Sized,
+        W: RuntimeWindowManager + ?Sized,
     {
         if self.attempt_focused_app_resize(wm, dir, grow, step.max(1))? {
             return Ok(());
@@ -929,7 +949,7 @@ impl Orchestrator {
         step: i32,
     ) -> Result<bool>
     where
-        W: WindowManagerSession + ?Sized,
+        W: RuntimeWindowManager + ?Sized,
     {
         let focused = wm.focused_window()?;
         let app_id = focused.app_id.unwrap_or_default();
@@ -1076,11 +1096,11 @@ mod tests {
 
     use anyhow::{anyhow, Result};
 
-    use super::{ActionKind, ActionRequest, Orchestrator};
+    use super::{ActionKind, ActionRequest, Orchestrator, RuntimeWindowManager};
     use crate::adapters::window_managers::{
-        ConfiguredWindowManager, FocusedWindowRecord, FocusedWindowView, WindowManagerCapabilities,
-        WindowManagerExecution, WindowManagerFeatures, WindowManagerIntrospection,
-        WindowManagerMetadata, WindowManagerSession, WindowRecord,
+        CapabilitySupport, ConfiguredWindowManager, DirectionalCapability, FocusedWindowRecord,
+        PrimitiveWindowManagerCapabilities, WindowManagerCapabilities, WindowManagerFeatures,
+        WindowManagerSession, WindowRecord, WindowTearOutComposer,
     };
     use crate::engine::domain::PaneState;
     use crate::engine::domain::{DomainLeafSnapshot, DomainSnapshot, ErasedDomain};
@@ -1154,18 +1174,6 @@ mod tests {
             Ok(())
         }
 
-        fn move_column(&mut self, _direction: Direction) -> Result<()> {
-            Ok(())
-        }
-
-        fn consume_into_column_and_move(
-            &mut self,
-            _direction: Direction,
-            _original_tile_index: usize,
-        ) -> Result<()> {
-            Ok(())
-        }
-
         fn resize_with_intent(
             &mut self,
             _intent: crate::adapters::window_managers::ResizeIntent,
@@ -1232,17 +1240,19 @@ mod tests {
         );
     }
 
+    fn fake_configured_wm(state: Arc<Mutex<SessionState>>) -> ConfiguredWindowManager {
+        ConfiguredWindowManager::new(
+            Box::new(RecordingSession { state }),
+            WindowManagerFeatures::default(),
+        )
+    }
+
     #[test]
-    fn execute_accepts_configured_window_manager_handle() {
+    fn orchestrator_uses_object_safe_wm_core_snapshots() {
         let state = Arc::new(Mutex::new(SessionState {
             focus_calls: Vec::new(),
         }));
-        let mut wm = ConfiguredWindowManager::new(
-            Box::new(RecordingSession {
-                state: state.clone(),
-            }),
-            WindowManagerFeatures::default(),
-        );
+        let mut wm = fake_configured_wm(state.clone());
         let mut orchestrator = Orchestrator::default();
 
         orchestrator
@@ -1250,7 +1260,7 @@ mod tests {
                 &mut wm,
                 ActionRequest {
                     kind: ActionKind::Focus,
-                    direction: Direction::West,
+                    direction: Direction::East,
                 },
             )
             .expect("configured window manager should execute orchestrator actions");
@@ -1260,7 +1270,7 @@ mod tests {
                 .lock()
                 .expect("session state mutex should not be poisoned")
                 .focus_calls,
-            vec![Direction::West]
+            vec![Direction::East]
         );
     }
 
@@ -1357,33 +1367,6 @@ mod tests {
         }
     }
 
-    #[derive(Clone, Copy)]
-    struct FakeFocusedWindow<'a> {
-        inner: &'a WindowRecord,
-    }
-
-    impl FocusedWindowView for FakeFocusedWindow<'_> {
-        fn id(&self) -> u64 {
-            self.inner.id
-        }
-
-        fn app_id(&self) -> Option<&str> {
-            self.inner.app_id.as_deref()
-        }
-
-        fn title(&self) -> Option<&str> {
-            None
-        }
-
-        fn pid(&self) -> Option<ProcessId> {
-            self.inner.pid
-        }
-
-        fn original_tile_index(&self) -> usize {
-            self.inner.original_tile_index
-        }
-    }
-
     struct FakeWindowManager {
         windows: Vec<WindowRecord>,
         window_snapshots: Vec<Vec<WindowRecord>>,
@@ -1397,7 +1380,7 @@ mod tests {
         closed_window_ids: Vec<u64>,
     }
 
-    impl WindowManagerMetadata for FakeWindowManager {
+    impl WindowManagerSession for FakeWindowManager {
         fn adapter_name(&self) -> &'static str {
             "fake"
         }
@@ -1405,24 +1388,20 @@ mod tests {
         fn capabilities(&self) -> WindowManagerCapabilities {
             self.capabilities
         }
-    }
 
-    impl WindowManagerIntrospection for FakeWindowManager {
-        type FocusedWindow<'a>
-            = FakeFocusedWindow<'a>
-        where
-            Self: 'a;
-
-        fn with_focused_window<R>(
-            &mut self,
-            visit: impl for<'a> FnOnce(Self::FocusedWindow<'a>) -> Result<R>,
-        ) -> Result<R> {
+        fn focused_window(&mut self) -> Result<FocusedWindowRecord> {
             let focused = self
                 .windows
                 .iter()
                 .find(|window| window.is_focused)
                 .ok_or_else(|| anyhow!("no focused window"))?;
-            visit(FakeFocusedWindow { inner: focused })
+            Ok(FocusedWindowRecord {
+                id: focused.id,
+                app_id: focused.app_id.clone(),
+                title: focused.title.clone(),
+                pid: focused.pid,
+                original_tile_index: focused.original_tile_index,
+            })
         }
 
         fn windows(&mut self) -> Result<Vec<WindowRecord>> {
@@ -1432,9 +1411,7 @@ mod tests {
             self.windows_call_count += 1;
             Ok(self.windows.clone())
         }
-    }
 
-    impl WindowManagerExecution for FakeWindowManager {
         fn focus_direction(&mut self, _direction: Direction) -> Result<()> {
             if self.windows.len() < 2 {
                 return Ok(());
@@ -1457,21 +1434,6 @@ mod tests {
 
         fn move_direction(&mut self, _direction: Direction) -> Result<()> {
             self.move_calls += 1;
-            Ok(())
-        }
-
-        fn move_column(&mut self, _direction: Direction) -> Result<()> {
-            self.move_column_calls += 1;
-            Ok(())
-        }
-
-        fn consume_into_column_and_move(
-            &mut self,
-            _direction: Direction,
-            original_tile_index: usize,
-        ) -> Result<()> {
-            self.consume_calls += 1;
-            self.consume_last_tile_index = Some(original_tile_index);
             Ok(())
         }
 
@@ -1512,6 +1474,184 @@ mod tests {
             self.closed_window_ids.push(id);
             Ok(())
         }
+    }
+
+    impl RuntimeWindowManager for FakeWindowManager {
+        fn compose_tear_out(&mut self, direction: Direction, source_tile_index: usize) -> Result<()> {
+            match direction {
+                Direction::West | Direction::East => {
+                    self.move_column_calls += 1;
+                }
+                Direction::North | Direction::South => {
+                    self.consume_calls += 1;
+                    self.consume_last_tile_index = Some(source_tile_index);
+                }
+            }
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct ComposerState {
+        calls: Vec<(String, usize)>,
+    }
+
+    struct FakeTearOutComposer {
+        state: Arc<Mutex<ComposerState>>,
+    }
+
+    impl WindowTearOutComposer for FakeTearOutComposer {
+        fn compose_tear_out(&mut self, direction: Direction, source_tile_index: usize) -> Result<()> {
+            self.state
+                .lock()
+                .expect("composer state mutex should not be poisoned")
+                .calls
+                .push((direction.to_string(), source_tile_index));
+            Ok(())
+        }
+    }
+
+    struct TestConfiguredWindowManager {
+        wm: ConfiguredWindowManager,
+        composer_state: Arc<Mutex<ComposerState>>,
+    }
+
+    impl TestConfiguredWindowManager {
+        fn new(wm: ConfiguredWindowManager, composer_state: Arc<Mutex<ComposerState>>) -> Self {
+            Self { wm, composer_state }
+        }
+
+        fn take_composer_calls(&mut self) -> Vec<(String, usize)> {
+            let mut state = self
+                .composer_state
+                .lock()
+                .expect("composer state mutex should not be poisoned");
+            std::mem::take(&mut state.calls)
+        }
+    }
+
+    impl std::ops::Deref for TestConfiguredWindowManager {
+        type Target = ConfiguredWindowManager;
+
+        fn deref(&self) -> &Self::Target {
+            &self.wm
+        }
+    }
+
+    impl std::ops::DerefMut for TestConfiguredWindowManager {
+        fn deref_mut(&mut self) -> &mut Self::Target {
+            &mut self.wm
+        }
+    }
+
+    impl WindowManagerSession for TestConfiguredWindowManager {
+        fn adapter_name(&self) -> &'static str {
+            self.wm.adapter_name()
+        }
+
+        fn capabilities(&self) -> WindowManagerCapabilities {
+            self.wm.capabilities()
+        }
+
+        fn focused_window(&mut self) -> Result<FocusedWindowRecord> {
+            self.wm.focused_window()
+        }
+
+        fn windows(&mut self) -> Result<Vec<WindowRecord>> {
+            self.wm.windows()
+        }
+
+        fn focus_direction(&mut self, direction: Direction) -> Result<()> {
+            self.wm.focus_direction(direction)
+        }
+
+        fn move_direction(&mut self, direction: Direction) -> Result<()> {
+            self.wm.move_direction(direction)
+        }
+
+        fn resize_with_intent(
+            &mut self,
+            intent: crate::adapters::window_managers::ResizeIntent,
+        ) -> Result<()> {
+            self.wm.resize_with_intent(intent)
+        }
+
+        fn spawn(&mut self, command: Vec<String>) -> Result<()> {
+            self.wm.spawn(command)
+        }
+
+        fn focus_window_by_id(&mut self, id: u64) -> Result<()> {
+            self.wm.focus_window_by_id(id)
+        }
+
+        fn close_window_by_id(&mut self, id: u64) -> Result<()> {
+            self.wm.close_window_by_id(id)
+        }
+    }
+
+    impl RuntimeWindowManager for TestConfiguredWindowManager {
+        fn compose_tear_out(&mut self, direction: Direction, source_tile_index: usize) -> Result<()> {
+            self.wm.compose_tear_out(direction, source_tile_index)
+        }
+    }
+
+    fn fake_wm_with_tearout_composer() -> TestConfiguredWindowManager {
+        let composer_state = Arc::new(Mutex::new(ComposerState::default()));
+        let mut caps = WindowManagerCapabilities::none();
+        caps.primitives = PrimitiveWindowManagerCapabilities {
+            tear_out_right: true,
+            move_column: true,
+            consume_into_column_and_move: true,
+            set_window_width: false,
+            set_window_height: false,
+        };
+        caps.tear_out = DirectionalCapability {
+            west: CapabilitySupport::Unsupported,
+            east: CapabilitySupport::Unsupported,
+            north: CapabilitySupport::Composed,
+            south: CapabilitySupport::Unsupported,
+        };
+
+        let mut features = WindowManagerFeatures::default();
+        features.tear_out_composer = Some(Box::new(FakeTearOutComposer {
+            state: composer_state.clone(),
+        }));
+
+        TestConfiguredWindowManager::new(
+            ConfiguredWindowManager::new(
+                Box::new(FakeWindowManager {
+                    windows: vec![
+                        WindowRecord {
+                            id: 11,
+                            app_id: Some("org.wezfurlong.wezterm".into()),
+                            title: Some("source".into()),
+                            pid: ProcessId::new(1),
+                            is_focused: false,
+                            original_tile_index: 1,
+                        },
+                        WindowRecord {
+                            id: 12,
+                            app_id: Some("org.wezfurlong.wezterm".into()),
+                            title: Some("tearout".into()),
+                            pid: ProcessId::new(2),
+                            is_focused: true,
+                            original_tile_index: 1,
+                        },
+                    ],
+                    window_snapshots: Vec::new(),
+                    windows_call_count: 0,
+                    capabilities: caps,
+                    move_calls: 0,
+                    move_column_calls: 0,
+                    consume_calls: 0,
+                    consume_last_tile_index: None,
+                    close_calls: 0,
+                    closed_window_ids: Vec::new(),
+                }),
+                features,
+            ),
+            composer_state,
+        )
     }
 
     #[test]
@@ -1878,6 +2018,18 @@ enabled = true
             .expect("tearout placement should succeed");
         assert_eq!(wm.move_column_calls, 1);
         assert_eq!(wm.consume_calls, 0);
+    }
+
+    #[test]
+    fn composed_tearout_routes_through_wm_specific_composer() {
+        let mut wm = fake_wm_with_tearout_composer();
+        let orchestrator = Orchestrator::default();
+
+        orchestrator
+            .place_tearout_window(&mut wm, Direction::North, 11, 3, None)
+            .expect("tearout placement should succeed");
+
+        assert_eq!(wm.take_composer_calls(), vec![("north".into(), 3)]);
     }
 
     #[test]

@@ -8,14 +8,14 @@ use std::sync::{Mutex, OnceLock};
 use anyhow::{anyhow, Result};
 
 use yeet_and_yoink::adapters::window_managers::{
-    FocusedWindowView, ResizeIntent, WindowManagerCapabilities, WindowManagerExecution,
-    WindowManagerIntrospection, WindowManagerMetadata, WindowRecord,
+    FocusedWindowRecord, ResizeIntent, WindowManagerCapabilities, WindowManagerSession, WindowRecord,
 };
 use yeet_and_yoink::engine::domain::PaneState;
 use yeet_and_yoink::engine::domain::{DomainLeafSnapshot, DomainSnapshot, ErasedDomain};
 use yeet_and_yoink::engine::domain::{EDITOR_DOMAIN_ID, TERMINAL_DOMAIN_ID, WM_DOMAIN_ID};
-use yeet_and_yoink::engine::orchestrator::{ActionKind, ActionRequest, Orchestrator};
-use yeet_and_yoink::engine::runtime::ProcessId;
+use yeet_and_yoink::engine::orchestrator::{
+    ActionKind, ActionRequest, Orchestrator, RuntimeWindowManager,
+};
 use yeet_and_yoink::engine::topology::Direction;
 use yeet_and_yoink::engine::topology::Rect;
 
@@ -110,33 +110,6 @@ impl ErasedDomain for FakeDomain {
     }
 }
 
-#[derive(Clone, Copy)]
-struct FakeFocusedWindow<'a> {
-    inner: &'a WindowRecord,
-}
-
-impl FocusedWindowView for FakeFocusedWindow<'_> {
-    fn id(&self) -> u64 {
-        self.inner.id
-    }
-
-    fn app_id(&self) -> Option<&str> {
-        self.inner.app_id.as_deref()
-    }
-
-    fn title(&self) -> Option<&str> {
-        self.inner.title.as_deref()
-    }
-
-    fn pid(&self) -> Option<ProcessId> {
-        self.inner.pid
-    }
-
-    fn original_tile_index(&self) -> usize {
-        self.inner.original_tile_index
-    }
-}
-
 struct FakeWindowManager {
     windows: Vec<WindowRecord>,
     move_calls: usize,
@@ -171,7 +144,7 @@ fn unique_temp_dir(prefix: &str) -> PathBuf {
     ))
 }
 
-impl WindowManagerMetadata for FakeWindowManager {
+impl WindowManagerSession for FakeWindowManager {
     fn adapter_name(&self) -> &'static str {
         "fake"
     }
@@ -179,32 +152,26 @@ impl WindowManagerMetadata for FakeWindowManager {
     fn capabilities(&self) -> WindowManagerCapabilities {
         WindowManagerCapabilities::none()
     }
-}
 
-impl WindowManagerIntrospection for FakeWindowManager {
-    type FocusedWindow<'a>
-        = FakeFocusedWindow<'a>
-    where
-        Self: 'a;
-
-    fn with_focused_window<R>(
-        &mut self,
-        visit: impl for<'a> FnOnce(Self::FocusedWindow<'a>) -> Result<R>,
-    ) -> Result<R> {
+    fn focused_window(&mut self) -> Result<FocusedWindowRecord> {
         let focused = self
             .windows
             .iter()
             .find(|window| window.is_focused)
             .ok_or_else(|| anyhow!("no focused window"))?;
-        visit(FakeFocusedWindow { inner: focused })
+        Ok(FocusedWindowRecord {
+            id: focused.id,
+            app_id: focused.app_id.clone(),
+            title: focused.title.clone(),
+            pid: focused.pid,
+            original_tile_index: focused.original_tile_index,
+        })
     }
 
     fn windows(&mut self) -> Result<Vec<WindowRecord>> {
         Ok(self.windows.clone())
     }
-}
 
-impl WindowManagerExecution for FakeWindowManager {
     fn focus_direction(&mut self, _direction: Direction) -> Result<()> {
         if self.windows.len() < 2 {
             return Ok(());
@@ -227,18 +194,6 @@ impl WindowManagerExecution for FakeWindowManager {
 
     fn move_direction(&mut self, _direction: Direction) -> Result<()> {
         self.move_calls += 1;
-        Ok(())
-    }
-
-    fn move_column(&mut self, _direction: Direction) -> Result<()> {
-        Ok(())
-    }
-
-    fn consume_into_column_and_move(
-        &mut self,
-        _direction: Direction,
-        _original_tile_index: usize,
-    ) -> Result<()> {
         Ok(())
     }
 
@@ -273,6 +228,12 @@ impl WindowManagerExecution for FakeWindowManager {
             return Err(anyhow!("window id {id} not found"));
         }
         Ok(())
+    }
+}
+
+impl RuntimeWindowManager for FakeWindowManager {
+    fn compose_tear_out(&mut self, direction: Direction, _source_tile_index: usize) -> Result<()> {
+        self.move_direction(direction)
     }
 }
 

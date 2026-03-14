@@ -11,16 +11,14 @@ use anyhow::{anyhow, Context, Result};
 
 #[cfg(target_os = "linux")]
 use crate::adapters::window_managers::i3::I3_SPEC;
-#[cfg(target_os = "linux")]
-use crate::adapters::window_managers::i3::{I3Adapter, I3FocusedWindow};
 #[cfg(any(test, target_os = "linux"))]
 use crate::adapters::window_managers::niri::Niri;
 #[cfg(target_os = "linux")]
 use crate::adapters::window_managers::niri::NIRI_SPEC;
 #[cfg(target_os = "macos")]
-use crate::adapters::window_managers::paneru::{PaneruAdapter, PaneruFocusedWindow, PANERU_SPEC};
+use crate::adapters::window_managers::paneru::PANERU_SPEC;
 #[cfg(target_os = "macos")]
-use crate::adapters::window_managers::yabai::{YabaiAdapter, YabaiFocusedWindow, YABAI_SPEC};
+use crate::adapters::window_managers::yabai::YABAI_SPEC;
 use crate::config::{selected_wm_backend, WmBackend};
 use crate::engine::runtime::ProcessId;
 use crate::engine::topology::Direction;
@@ -198,14 +196,6 @@ impl ResizeIntent {
     }
 }
 
-pub trait FocusedWindowView {
-    fn id(&self) -> u64;
-    fn app_id(&self) -> Option<&str>;
-    fn title(&self) -> Option<&str>;
-    fn pid(&self) -> Option<ProcessId>;
-    fn original_tile_index(&self) -> usize;
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WindowRecord {
     pub id: u64,
@@ -226,37 +216,6 @@ pub struct FocusedWindowRecord {
 }
 
 impl FocusedWindowRecord {
-    pub fn from_view(window: impl FocusedWindowView) -> Self {
-        Self {
-            id: window.id(),
-            app_id: window.app_id().map(str::to_owned),
-            title: window.title().map(str::to_owned),
-            pid: window.pid(),
-            original_tile_index: window.original_tile_index(),
-        }
-    }
-}
-
-impl FocusedWindowView for FocusedWindowRecord {
-    fn id(&self) -> u64 {
-        self.id
-    }
-
-    fn app_id(&self) -> Option<&str> {
-        self.app_id.as_deref()
-    }
-
-    fn title(&self) -> Option<&str> {
-        self.title.as_deref()
-    }
-
-    fn pid(&self) -> Option<ProcessId> {
-        self.pid
-    }
-
-    fn original_tile_index(&self) -> usize {
-        self.original_tile_index
-    }
 }
 
 pub trait WindowManagerSession: Send {
@@ -266,73 +225,10 @@ pub trait WindowManagerSession: Send {
     fn windows(&mut self) -> Result<Vec<WindowRecord>>;
     fn focus_direction(&mut self, direction: Direction) -> Result<()>;
     fn move_direction(&mut self, direction: Direction) -> Result<()>;
-    fn move_column(&mut self, direction: Direction) -> Result<()>;
-    fn consume_into_column_and_move(
-        &mut self,
-        direction: Direction,
-        original_tile_index: usize,
-    ) -> Result<()>;
     fn resize_with_intent(&mut self, intent: ResizeIntent) -> Result<()>;
     fn spawn(&mut self, command: Vec<String>) -> Result<()>;
     fn focus_window_by_id(&mut self, id: u64) -> Result<()>;
     fn close_window_by_id(&mut self, id: u64) -> Result<()>;
-}
-
-impl<T> WindowManagerSession for T
-where
-    T: WindowManagerAdapter + Send,
-{
-    fn adapter_name(&self) -> &'static str {
-        WindowManagerMetadata::adapter_name(self)
-    }
-
-    fn capabilities(&self) -> WindowManagerCapabilities {
-        WindowManagerMetadata::capabilities(self)
-    }
-
-    fn focused_window(&mut self) -> Result<FocusedWindowRecord> {
-        self.with_focused_window(|window| Ok(FocusedWindowRecord::from_view(window)))
-    }
-
-    fn windows(&mut self) -> Result<Vec<WindowRecord>> {
-        WindowManagerIntrospection::windows(self)
-    }
-
-    fn focus_direction(&mut self, direction: Direction) -> Result<()> {
-        WindowManagerExecution::focus_direction(self, direction)
-    }
-
-    fn move_direction(&mut self, direction: Direction) -> Result<()> {
-        WindowManagerExecution::move_direction(self, direction)
-    }
-
-    fn move_column(&mut self, direction: Direction) -> Result<()> {
-        WindowManagerExecution::move_column(self, direction)
-    }
-
-    fn consume_into_column_and_move(
-        &mut self,
-        direction: Direction,
-        original_tile_index: usize,
-    ) -> Result<()> {
-        WindowManagerExecution::consume_into_column_and_move(self, direction, original_tile_index)
-    }
-
-    fn resize_with_intent(&mut self, intent: ResizeIntent) -> Result<()> {
-        WindowManagerExecution::resize_with_intent(self, intent)
-    }
-
-    fn spawn(&mut self, command: Vec<String>) -> Result<()> {
-        WindowManagerExecution::spawn(self, command)
-    }
-
-    fn focus_window_by_id(&mut self, id: u64) -> Result<()> {
-        WindowManagerExecution::focus_window_by_id(self, id)
-    }
-
-    fn close_window_by_id(&mut self, id: u64) -> Result<()> {
-        WindowManagerExecution::close_window_by_id(self, id)
-    }
 }
 
 pub trait WindowManagerDomainFactory: Send {
@@ -355,7 +251,9 @@ pub trait WindowCycleProvider: Send {
     fn focus_or_cycle(&mut self, request: &WindowCycleRequest) -> Result<()>;
 }
 
-pub trait WindowTearOutComposer: Send {}
+pub trait WindowTearOutComposer: Send {
+    fn compose_tear_out(&mut self, direction: Direction, source_tile_index: usize) -> Result<()>;
+}
 
 #[derive(Default)]
 pub struct WindowManagerFeatures {
@@ -398,19 +296,6 @@ impl ConfiguredWindowManager {
         self.core.move_direction(direction)
     }
 
-    pub fn move_column(&mut self, direction: Direction) -> Result<()> {
-        self.core.move_column(direction)
-    }
-
-    pub fn consume_into_column_and_move(
-        &mut self,
-        direction: Direction,
-        original_tile_index: usize,
-    ) -> Result<()> {
-        self.core
-            .consume_into_column_and_move(direction, original_tile_index)
-    }
-
     pub fn resize_with_intent(&mut self, intent: ResizeIntent) -> Result<()> {
         self.core.resize_with_intent(intent)
     }
@@ -445,6 +330,13 @@ impl ConfiguredWindowManager {
     pub fn tear_out_composer(&self) -> Option<&dyn WindowTearOutComposer> {
         self.features.tear_out_composer.as_deref()
     }
+
+    pub fn tear_out_composer_mut(&mut self) -> Option<&mut (dyn WindowTearOutComposer + '_)> {
+        match self.features.tear_out_composer.as_mut() {
+            Some(composer) => Some(composer.as_mut()),
+            None => None,
+        }
+    }
 }
 
 impl WindowManagerSession for ConfiguredWindowManager {
@@ -470,18 +362,6 @@ impl WindowManagerSession for ConfiguredWindowManager {
 
     fn move_direction(&mut self, direction: Direction) -> Result<()> {
         ConfiguredWindowManager::move_direction(self, direction)
-    }
-
-    fn move_column(&mut self, direction: Direction) -> Result<()> {
-        ConfiguredWindowManager::move_column(self, direction)
-    }
-
-    fn consume_into_column_and_move(
-        &mut self,
-        direction: Direction,
-        original_tile_index: usize,
-    ) -> Result<()> {
-        ConfiguredWindowManager::consume_into_column_and_move(self, direction, original_tile_index)
     }
 
     fn resize_with_intent(&mut self, intent: ResizeIntent) -> Result<()> {
@@ -518,83 +398,6 @@ pub fn validate_declared_capabilities<T: WindowManagerCapabilityDescriptor>() ->
         .with_context(|| format!("invalid capabilities for adapter '{}'", T::NAME))
 }
 
-pub trait WindowManagerMetadata {
-    fn adapter_name(&self) -> &'static str;
-    fn capabilities(&self) -> WindowManagerCapabilities;
-}
-
-impl<T: WindowManagerCapabilityDescriptor> WindowManagerMetadata for T {
-    fn adapter_name(&self) -> &'static str {
-        T::NAME
-    }
-
-    fn capabilities(&self) -> WindowManagerCapabilities {
-        T::CAPABILITIES
-    }
-}
-
-pub trait WindowManagerIntrospection {
-    /// Compile-time guardrail: adapter introspection cannot be implemented
-    /// without declaring its GAT window view and required methods.
-    ///
-    /// ```compile_fail
-    /// use yeet_and_yoink::wm::WindowManagerIntrospection;
-    ///
-    /// struct MissingPieces;
-    ///
-    /// impl WindowManagerIntrospection for MissingPieces {}
-    /// ```
-    type FocusedWindow<'a>: FocusedWindowView
-    where
-        Self: 'a;
-
-    fn with_focused_window<R>(
-        &mut self,
-        visit: impl for<'a> FnOnce(Self::FocusedWindow<'a>) -> Result<R>,
-    ) -> Result<R>;
-
-    fn windows(&mut self) -> Result<Vec<WindowRecord>>;
-}
-
-pub trait WindowManagerExecution {
-    fn focus_direction(&mut self, direction: Direction) -> Result<()>;
-    fn move_direction(&mut self, direction: Direction) -> Result<()>;
-    fn move_column(&mut self, direction: Direction) -> Result<()>;
-    fn consume_into_column_and_move(
-        &mut self,
-        direction: Direction,
-        original_tile_index: usize,
-    ) -> Result<()>;
-    fn resize_with_intent(&mut self, intent: ResizeIntent) -> Result<()>;
-    fn spawn(&mut self, command: Vec<String>) -> Result<()>;
-    fn focus_window_by_id(&mut self, id: u64) -> Result<()>;
-    fn close_window_by_id(&mut self, id: u64) -> Result<()>;
-}
-
-/// Compile-time guardrail: callers cannot treat a type as an adapter
-/// unless all supertraits are implemented.
-///
-/// ```compile_fail
-/// use yeet_and_yoink::wm::WindowManagerAdapter;
-///
-/// struct NotAnAdapter;
-///
-/// fn require_adapter<T: WindowManagerAdapter>() {}
-///
-/// fn main() {
-///     require_adapter::<NotAnAdapter>();
-/// }
-/// ```
-pub trait WindowManagerAdapter:
-    WindowManagerMetadata + WindowManagerIntrospection + WindowManagerExecution
-{
-}
-
-impl<T> WindowManagerAdapter for T where
-    T: WindowManagerMetadata + WindowManagerIntrospection + WindowManagerExecution
-{
-}
-
 // ---------------------------------------------------------------------------
 // Linux: Niri adapter
 // ---------------------------------------------------------------------------
@@ -627,42 +430,6 @@ impl NiriAdapter {
 }
 
 #[cfg(any(test, target_os = "linux"))]
-#[derive(Clone, Copy)]
-pub struct NiriFocusedWindow<'a> {
-    inner: &'a niri_ipc::Window,
-}
-
-#[cfg(any(test, target_os = "linux"))]
-impl FocusedWindowView for NiriFocusedWindow<'_> {
-    fn id(&self) -> u64 {
-        self.inner.id
-    }
-
-    fn app_id(&self) -> Option<&str> {
-        self.inner.app_id.as_deref()
-    }
-
-    fn title(&self) -> Option<&str> {
-        self.inner.title.as_deref()
-    }
-
-    fn pid(&self) -> Option<ProcessId> {
-        self.inner
-            .pid
-            .and_then(|raw| u32::try_from(raw).ok())
-            .and_then(ProcessId::new)
-    }
-
-    fn original_tile_index(&self) -> usize {
-        self.inner
-            .layout
-            .pos_in_scrolling_layout
-            .map(|(_, tile_idx)| tile_idx)
-            .unwrap_or(1)
-    }
-}
-
-#[cfg(any(test, target_os = "linux"))]
 impl WindowManagerCapabilityDescriptor for NiriAdapter {
     const NAME: &'static str = "niri";
     const CAPABILITIES: WindowManagerCapabilities = WindowManagerCapabilities {
@@ -689,18 +456,31 @@ impl WindowManagerCapabilityDescriptor for NiriAdapter {
 }
 
 #[cfg(any(test, target_os = "linux"))]
-impl WindowManagerIntrospection for NiriAdapter {
-    type FocusedWindow<'a>
-        = NiriFocusedWindow<'a>
-    where
-        Self: 'a;
+impl WindowManagerSession for NiriAdapter {
+    fn adapter_name(&self) -> &'static str {
+        Self::NAME
+    }
 
-    fn with_focused_window<R>(
-        &mut self,
-        visit: impl for<'a> FnOnce(Self::FocusedWindow<'a>) -> Result<R>,
-    ) -> Result<R> {
+    fn capabilities(&self) -> WindowManagerCapabilities {
+        Self::CAPABILITIES
+    }
+
+    fn focused_window(&mut self) -> Result<FocusedWindowRecord> {
         let window = self.with_inner(|inner| inner.focused_window())?;
-        visit(NiriFocusedWindow { inner: &window })
+        Ok(FocusedWindowRecord {
+            id: window.id,
+            app_id: window.app_id,
+            title: window.title,
+            pid: window
+                .pid
+                .and_then(|raw| u32::try_from(raw).ok())
+                .and_then(ProcessId::new),
+            original_tile_index: window
+                .layout
+                .pos_in_scrolling_layout
+                .map(|(_, tile_idx)| tile_idx)
+                .unwrap_or(1),
+        })
     }
 
     fn windows(&mut self) -> Result<Vec<WindowRecord>> {
@@ -724,28 +504,13 @@ impl WindowManagerIntrospection for NiriAdapter {
             })
             .collect())
     }
-}
 
-#[cfg(any(test, target_os = "linux"))]
-impl WindowManagerExecution for NiriAdapter {
     fn focus_direction(&mut self, direction: Direction) -> Result<()> {
         self.with_inner(|inner| inner.focus_direction(direction))
     }
 
     fn move_direction(&mut self, direction: Direction) -> Result<()> {
         self.with_inner(|inner| inner.move_direction(direction))
-    }
-
-    fn move_column(&mut self, direction: Direction) -> Result<()> {
-        self.with_inner(|inner| inner.move_column(direction))
-    }
-
-    fn consume_into_column_and_move(
-        &mut self,
-        direction: Direction,
-        original_tile_index: usize,
-    ) -> Result<()> {
-        self.with_inner(|inner| inner.consume_into_column_and_move(direction, original_tile_index))
     }
 
     fn resize_with_intent(&mut self, intent: ResizeIntent) -> Result<()> {
@@ -764,6 +529,18 @@ impl WindowManagerExecution for NiriAdapter {
 
     fn close_window_by_id(&mut self, id: u64) -> Result<()> {
         self.with_inner(|inner| inner.close_window_by_id(id))
+    }
+}
+
+#[cfg(any(test, target_os = "linux"))]
+impl WindowTearOutComposer for NiriAdapter {
+    fn compose_tear_out(&mut self, direction: Direction, source_tile_index: usize) -> Result<()> {
+        self.with_inner(|inner| match direction {
+            Direction::West | Direction::East => inner.move_column(direction),
+            Direction::North | Direction::South => {
+                inner.consume_into_column_and_move(direction, source_tile_index)
+            }
+        })
     }
 }
 
@@ -887,346 +664,6 @@ pub fn connect_selected() -> Result<ConfiguredWindowManager> {
     connect_backend(backend, spec)
 }
 
-// ---------------------------------------------------------------------------
-// SelectedWindowManager enum (platform-specific variants)
-// ---------------------------------------------------------------------------
-
-#[cfg(target_os = "linux")]
-pub enum SelectedWindowManager {
-    Niri(NiriAdapter),
-    I3(I3Adapter),
-}
-
-#[cfg(target_os = "macos")]
-pub enum SelectedWindowManager {
-    Paneru(PaneruAdapter),
-    Yabai(YabaiAdapter),
-}
-
-#[cfg(target_os = "linux")]
-#[derive(Clone, Copy)]
-pub enum SelectedFocusedWindow<'a> {
-    Niri(NiriFocusedWindow<'a>),
-    I3(I3FocusedWindow<'a>),
-}
-
-#[cfg(target_os = "macos")]
-#[derive(Clone, Copy)]
-pub enum SelectedFocusedWindow<'a> {
-    Paneru(PaneruFocusedWindow<'a>),
-    Yabai(YabaiFocusedWindow<'a>),
-}
-
-#[cfg(target_os = "linux")]
-impl FocusedWindowView for SelectedFocusedWindow<'_> {
-    fn id(&self) -> u64 {
-        match self {
-            Self::Niri(inner) => inner.id(),
-            Self::I3(inner) => inner.id(),
-        }
-    }
-
-    fn app_id(&self) -> Option<&str> {
-        match self {
-            Self::Niri(inner) => inner.app_id(),
-            Self::I3(inner) => inner.app_id(),
-        }
-    }
-
-    fn title(&self) -> Option<&str> {
-        match self {
-            Self::Niri(inner) => inner.title(),
-            Self::I3(inner) => inner.title(),
-        }
-    }
-
-    fn pid(&self) -> Option<ProcessId> {
-        match self {
-            Self::Niri(inner) => inner.pid(),
-            Self::I3(inner) => inner.pid(),
-        }
-    }
-
-    fn original_tile_index(&self) -> usize {
-        match self {
-            Self::Niri(inner) => inner.original_tile_index(),
-            Self::I3(inner) => inner.original_tile_index(),
-        }
-    }
-}
-
-#[cfg(target_os = "macos")]
-impl FocusedWindowView for SelectedFocusedWindow<'_> {
-    fn id(&self) -> u64 {
-        match self {
-            Self::Paneru(inner) => inner.id(),
-            Self::Yabai(inner) => inner.id(),
-        }
-    }
-
-    fn app_id(&self) -> Option<&str> {
-        match self {
-            Self::Paneru(inner) => inner.app_id(),
-            Self::Yabai(inner) => inner.app_id(),
-        }
-    }
-
-    fn title(&self) -> Option<&str> {
-        match self {
-            Self::Paneru(inner) => inner.title(),
-            Self::Yabai(inner) => inner.title(),
-        }
-    }
-
-    fn pid(&self) -> Option<ProcessId> {
-        match self {
-            Self::Paneru(inner) => inner.pid(),
-            Self::Yabai(inner) => inner.pid(),
-        }
-    }
-
-    fn original_tile_index(&self) -> usize {
-        match self {
-            Self::Paneru(inner) => inner.original_tile_index(),
-            Self::Yabai(inner) => inner.original_tile_index(),
-        }
-    }
-}
-
-#[cfg(target_os = "linux")]
-impl WindowManagerMetadata for SelectedWindowManager {
-    fn adapter_name(&self) -> &'static str {
-        match self {
-            Self::Niri(inner) => WindowManagerMetadata::adapter_name(inner),
-            Self::I3(inner) => WindowManagerMetadata::adapter_name(inner),
-        }
-    }
-
-    fn capabilities(&self) -> WindowManagerCapabilities {
-        match self {
-            Self::Niri(inner) => WindowManagerMetadata::capabilities(inner),
-            Self::I3(inner) => WindowManagerMetadata::capabilities(inner),
-        }
-    }
-}
-
-#[cfg(target_os = "macos")]
-impl WindowManagerMetadata for SelectedWindowManager {
-    fn adapter_name(&self) -> &'static str {
-        match self {
-            Self::Paneru(inner) => WindowManagerMetadata::adapter_name(inner),
-            Self::Yabai(inner) => WindowManagerMetadata::adapter_name(inner),
-        }
-    }
-
-    fn capabilities(&self) -> WindowManagerCapabilities {
-        match self {
-            Self::Paneru(inner) => WindowManagerMetadata::capabilities(inner),
-            Self::Yabai(inner) => WindowManagerMetadata::capabilities(inner),
-        }
-    }
-}
-
-#[cfg(target_os = "linux")]
-impl WindowManagerIntrospection for SelectedWindowManager {
-    type FocusedWindow<'a>
-        = SelectedFocusedWindow<'a>
-    where
-        Self: 'a;
-
-    fn with_focused_window<R>(
-        &mut self,
-        visit: impl for<'a> FnOnce(Self::FocusedWindow<'a>) -> Result<R>,
-    ) -> Result<R> {
-        match self {
-            Self::Niri(inner) => {
-                inner.with_focused_window(|window| visit(SelectedFocusedWindow::Niri(window)))
-            }
-            Self::I3(inner) => {
-                inner.with_focused_window(|window| visit(SelectedFocusedWindow::I3(window)))
-            }
-        }
-    }
-
-    fn windows(&mut self) -> Result<Vec<WindowRecord>> {
-        match self {
-            Self::Niri(inner) => WindowManagerIntrospection::windows(inner),
-            Self::I3(inner) => WindowManagerIntrospection::windows(inner),
-        }
-    }
-}
-
-#[cfg(target_os = "macos")]
-impl WindowManagerIntrospection for SelectedWindowManager {
-    type FocusedWindow<'a>
-        = SelectedFocusedWindow<'a>
-    where
-        Self: 'a;
-
-    fn with_focused_window<R>(
-        &mut self,
-        visit: impl for<'a> FnOnce(Self::FocusedWindow<'a>) -> Result<R>,
-    ) -> Result<R> {
-        match self {
-            Self::Paneru(inner) => {
-                inner.with_focused_window(|window| visit(SelectedFocusedWindow::Paneru(window)))
-            }
-            Self::Yabai(inner) => {
-                inner.with_focused_window(|window| visit(SelectedFocusedWindow::Yabai(window)))
-            }
-        }
-    }
-
-    fn windows(&mut self) -> Result<Vec<WindowRecord>> {
-        match self {
-            Self::Paneru(inner) => WindowManagerIntrospection::windows(inner),
-            Self::Yabai(inner) => WindowManagerIntrospection::windows(inner),
-        }
-    }
-}
-
-#[cfg(target_os = "linux")]
-impl WindowManagerExecution for SelectedWindowManager {
-    fn focus_direction(&mut self, direction: Direction) -> Result<()> {
-        match self {
-            Self::Niri(inner) => WindowManagerExecution::focus_direction(inner, direction),
-            Self::I3(inner) => WindowManagerExecution::focus_direction(inner, direction),
-        }
-    }
-
-    fn move_direction(&mut self, direction: Direction) -> Result<()> {
-        match self {
-            Self::Niri(inner) => WindowManagerExecution::move_direction(inner, direction),
-            Self::I3(inner) => WindowManagerExecution::move_direction(inner, direction),
-        }
-    }
-
-    fn move_column(&mut self, direction: Direction) -> Result<()> {
-        match self {
-            Self::Niri(inner) => WindowManagerExecution::move_column(inner, direction),
-            Self::I3(inner) => WindowManagerExecution::move_column(inner, direction),
-        }
-    }
-
-    fn consume_into_column_and_move(
-        &mut self,
-        direction: Direction,
-        original_tile_index: usize,
-    ) -> Result<()> {
-        match self {
-            Self::Niri(inner) => WindowManagerExecution::consume_into_column_and_move(
-                inner,
-                direction,
-                original_tile_index,
-            ),
-            Self::I3(inner) => WindowManagerExecution::consume_into_column_and_move(
-                inner,
-                direction,
-                original_tile_index,
-            ),
-        }
-    }
-
-    fn resize_with_intent(&mut self, intent: ResizeIntent) -> Result<()> {
-        match self {
-            Self::Niri(inner) => WindowManagerExecution::resize_with_intent(inner, intent),
-            Self::I3(inner) => WindowManagerExecution::resize_with_intent(inner, intent),
-        }
-    }
-
-    fn spawn(&mut self, command: Vec<String>) -> Result<()> {
-        match self {
-            Self::Niri(inner) => WindowManagerExecution::spawn(inner, command),
-            Self::I3(inner) => WindowManagerExecution::spawn(inner, command),
-        }
-    }
-
-    fn focus_window_by_id(&mut self, id: u64) -> Result<()> {
-        match self {
-            Self::Niri(inner) => WindowManagerExecution::focus_window_by_id(inner, id),
-            Self::I3(inner) => WindowManagerExecution::focus_window_by_id(inner, id),
-        }
-    }
-
-    fn close_window_by_id(&mut self, id: u64) -> Result<()> {
-        match self {
-            Self::Niri(inner) => WindowManagerExecution::close_window_by_id(inner, id),
-            Self::I3(inner) => WindowManagerExecution::close_window_by_id(inner, id),
-        }
-    }
-}
-
-#[cfg(target_os = "macos")]
-impl WindowManagerExecution for SelectedWindowManager {
-    fn focus_direction(&mut self, direction: Direction) -> Result<()> {
-        match self {
-            Self::Paneru(inner) => WindowManagerExecution::focus_direction(inner, direction),
-            Self::Yabai(inner) => WindowManagerExecution::focus_direction(inner, direction),
-        }
-    }
-
-    fn move_direction(&mut self, direction: Direction) -> Result<()> {
-        match self {
-            Self::Paneru(inner) => WindowManagerExecution::move_direction(inner, direction),
-            Self::Yabai(inner) => WindowManagerExecution::move_direction(inner, direction),
-        }
-    }
-
-    fn move_column(&mut self, direction: Direction) -> Result<()> {
-        match self {
-            Self::Paneru(inner) => WindowManagerExecution::move_column(inner, direction),
-            Self::Yabai(inner) => WindowManagerExecution::move_column(inner, direction),
-        }
-    }
-
-    fn consume_into_column_and_move(
-        &mut self,
-        direction: Direction,
-        original_tile_index: usize,
-    ) -> Result<()> {
-        match self {
-            Self::Paneru(inner) => WindowManagerExecution::consume_into_column_and_move(
-                inner,
-                direction,
-                original_tile_index,
-            ),
-            Self::Yabai(inner) => WindowManagerExecution::consume_into_column_and_move(
-                inner,
-                direction,
-                original_tile_index,
-            ),
-        }
-    }
-
-    fn resize_with_intent(&mut self, intent: ResizeIntent) -> Result<()> {
-        match self {
-            Self::Paneru(inner) => WindowManagerExecution::resize_with_intent(inner, intent),
-            Self::Yabai(inner) => WindowManagerExecution::resize_with_intent(inner, intent),
-        }
-    }
-
-    fn spawn(&mut self, command: Vec<String>) -> Result<()> {
-        match self {
-            Self::Paneru(inner) => WindowManagerExecution::spawn(inner, command),
-            Self::Yabai(inner) => WindowManagerExecution::spawn(inner, command),
-        }
-    }
-
-    fn focus_window_by_id(&mut self, id: u64) -> Result<()> {
-        match self {
-            Self::Paneru(inner) => WindowManagerExecution::focus_window_by_id(inner, id),
-            Self::Yabai(inner) => WindowManagerExecution::focus_window_by_id(inner, id),
-        }
-    }
-
-    fn close_window_by_id(&mut self, id: u64) -> Result<()> {
-        match self {
-            Self::Paneru(inner) => WindowManagerExecution::close_window_by_id(inner, id),
-            Self::Yabai(inner) => WindowManagerExecution::close_window_by_id(inner, id),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
@@ -1244,7 +681,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     use super::NiriAdapter;
     #[cfg(target_os = "macos")]
-    use super::YabaiAdapter;
+    use crate::adapters::window_managers::yabai::YabaiAdapter;
 
     struct InvalidComposedCapabilities;
 
@@ -1454,18 +891,6 @@ mod tests {
         }
 
         fn move_direction(&mut self, _direction: Direction) -> Result<()> {
-            Ok(())
-        }
-
-        fn move_column(&mut self, _direction: Direction) -> Result<()> {
-            Ok(())
-        }
-
-        fn consume_into_column_and_move(
-            &mut self,
-            _direction: Direction,
-            _original_tile_index: usize,
-        ) -> Result<()> {
             Ok(())
         }
 
