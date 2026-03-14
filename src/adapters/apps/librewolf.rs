@@ -585,6 +585,9 @@ pub(crate) mod native_bridge {
 
     fn handle_local_client(stream: UnixStream, state: &HostState) -> Result<()> {
         stream
+            .set_nonblocking(false)
+            .context("failed to make browser bridge local stream blocking")?;
+        stream
             .set_read_timeout(Some(SOCKET_IO_TIMEOUT))
             .context("failed to configure browser bridge local read timeout")?;
         stream
@@ -719,6 +722,122 @@ pub(crate) mod native_bridge {
             .context("failed to read browser native message body")?;
         Ok(Some(payload))
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::{
+            handle_local_client, BrowserTabState, HostResponseMessage, HostState, SOCKET_IO_TIMEOUT,
+        };
+        use serde_json::json;
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::{UnixListener, UnixStream};
+        use std::path::PathBuf;
+        use std::sync::Arc;
+        use std::thread;
+        use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+        fn unique_socket_path(prefix: &str) -> PathBuf {
+            PathBuf::from(format!(
+                "/tmp/{}-{}-{}.sock",
+                prefix,
+                std::process::id(),
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .expect("clock should be monotonic enough for tests")
+                    .as_nanos()
+            ))
+        }
+
+        #[test]
+        fn local_client_handler_waits_for_delayed_request_on_nonblocking_listener() {
+            let socket_path = unique_socket_path("yny-firefox-local-client");
+            let listener =
+                UnixListener::bind(&socket_path).expect("local client test socket should bind");
+            listener
+                .set_nonblocking(true)
+                .expect("local client test listener should become nonblocking");
+
+            let state = Arc::new(HostState::new());
+            let server_state = Arc::clone(&state);
+            let server = thread::spawn(move || {
+                let (stream, _) = loop {
+                    match listener.accept() {
+                        Ok(pair) => break pair,
+                        Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                            thread::sleep(Duration::from_millis(10));
+                        }
+                        Err(err) => panic!("local client test accept failed: {err}"),
+                    }
+                };
+                handle_local_client(stream, &server_state)
+            });
+
+            let mut client =
+                UnixStream::connect(&socket_path).expect("local client test should connect");
+            client
+                .set_read_timeout(Some(SOCKET_IO_TIMEOUT))
+                .expect("local client test should set read timeout");
+            thread::sleep(Duration::from_millis(50));
+            client
+                .write_all(b"{\"command\":\"get_tab_state\"}\n")
+                .expect("local client test request should write");
+            client
+                .flush()
+                .expect("local client test request should flush");
+
+            for _ in 0..50 {
+                if state
+                    .pending
+                    .lock()
+                    .expect("pending table mutex poisoned")
+                    .contains_key(&1)
+                {
+                    state.handle_response(HostResponseMessage {
+                        id: 1,
+                        ok: true,
+                        state: Some(BrowserTabState {
+                            window_id: None,
+                            active_tab_id: None,
+                            active_tab_index: 1,
+                            tab_count: 3,
+                            pinned_tab_count: 0,
+                            active_tab_pinned: false,
+                        }),
+                        error: None,
+                    });
+                    break;
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+
+            let mut response_line = String::new();
+            let bytes = BufReader::new(client)
+                .read_line(&mut response_line)
+                .expect("local client test response should read");
+            assert!(bytes > 0, "local client test should receive a response");
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(response_line.trim())
+                    .expect("local client test response should parse"),
+                json!({
+                    "ok": true,
+                    "state": {
+                        "windowId": null,
+                        "activeTabId": null,
+                        "activeTabIndex": 1,
+                        "tabCount": 3,
+                        "pinnedTabCount": 0,
+                        "activeTabPinned": false
+                    }
+                })
+            );
+
+            server
+                .join()
+                .expect("local client handler thread should join")
+                .expect("local client handler should succeed");
+            let _ = std::fs::remove_file(&socket_path);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -828,6 +947,9 @@ mod tests {
         queue: &Arc<Mutex<VecDeque<Value>>>,
         log: &Arc<Mutex<Vec<Value>>>,
     ) {
+        stream
+            .set_nonblocking(false)
+            .expect("local bridge stream should become blocking");
         let mut reader = BufReader::new(stream.try_clone().expect("local stream should clone"));
         let mut line = String::new();
         let bytes = reader
@@ -849,6 +971,18 @@ mod tests {
             .write_all(b"\n")
             .expect("local bridge response newline should write");
         stream.flush().expect("local bridge response should flush");
+    }
+
+    fn unique_socket_path(prefix: &str) -> PathBuf {
+        PathBuf::from(format!(
+            "/tmp/{}-{}-{}.sock",
+            prefix,
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be monotonic enough for tests")
+                .as_nanos()
+        ))
     }
 
     fn env_guard() -> std::sync::MutexGuard<'static, ()> {
@@ -921,6 +1055,79 @@ mod tests {
                 "source_tab_id": 23,
                 "direction": "North",
             })
+        );
+    }
+
+    #[test]
+    fn fake_native_harness_waits_for_delayed_request_on_nonblocking_listener() {
+        let socket_path = unique_socket_path("yny-firefox-fake-harness");
+        let listener =
+            UnixListener::bind(&socket_path).expect("fake harness test socket should bind");
+        listener
+            .set_nonblocking(true)
+            .expect("fake harness test listener should become nonblocking");
+        let queue = Arc::new(Mutex::new(VecDeque::from(vec![json!({
+            "ok": true,
+            "state": {
+                "activeTabIndex": 1,
+                "tabCount": 3,
+                "pinnedTabCount": 0,
+                "activeTabPinned": false
+            }
+        })])));
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let queue_thread = Arc::clone(&queue);
+        let log_thread = Arc::clone(&log);
+        let server = thread::spawn(move || {
+            let (stream, _) = loop {
+                match listener.accept() {
+                    Ok(pair) => break pair,
+                    Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(err) => panic!("fake harness test accept failed: {err}"),
+                }
+            };
+            handle_native_connection(stream, &queue_thread, &log_thread);
+        });
+
+        let mut client = UnixStream::connect(&socket_path).expect("fake harness client connects");
+        thread::sleep(Duration::from_millis(50));
+        client
+            .write_all(b"{\"command\":\"get_tab_state\"}\n")
+            .expect("fake harness request should write");
+        client
+            .flush()
+            .expect("fake harness request should flush");
+
+        let mut response_line = String::new();
+        let bytes = BufReader::new(client)
+            .read_line(&mut response_line)
+            .expect("fake harness response should read");
+        assert!(bytes > 0, "fake harness client should receive a response");
+        assert_eq!(
+            serde_json::from_str::<Value>(response_line.trim())
+                .expect("fake harness response should parse"),
+            json!({
+                "ok": true,
+                "state": {
+                    "activeTabIndex": 1,
+                    "tabCount": 3,
+                    "pinnedTabCount": 0,
+                    "activeTabPinned": false
+                }
+            })
+        );
+        assert_eq!(
+            log.lock().expect("log mutex poisoned").clone(),
+            vec![json!({ "command": "get_tab_state" })]
+        );
+
+        server.join().expect("fake harness thread should join");
+        let _ = std::fs::remove_file(&socket_path);
+        assert!(
+            queue.lock().expect("queue mutex poisoned").is_empty(),
+            "fake harness test should consume queued response"
         );
     }
 

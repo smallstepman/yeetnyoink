@@ -306,6 +306,9 @@ mod tests {
         queue: &Arc<Mutex<VecDeque<Value>>>,
         log: &Arc<Mutex<Vec<Value>>>,
     ) {
+        stream
+            .set_nonblocking(false)
+            .expect("local bridge stream should become blocking");
         let mut reader = BufReader::new(stream.try_clone().expect("local stream should clone"));
         let mut line = String::new();
         let bytes = reader
@@ -329,6 +332,18 @@ mod tests {
         stream.flush().expect("local bridge response should flush");
     }
 
+    fn unique_socket_path(prefix: &str) -> PathBuf {
+        PathBuf::from(format!(
+            "/tmp/{}-{}-{}.sock",
+            prefix,
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be monotonic enough for tests")
+                .as_nanos()
+        ))
+    }
+
     fn env_guard() -> std::sync::MutexGuard<'static, ()> {
         crate::utils::env_guard()
     }
@@ -346,6 +361,119 @@ mod tests {
         assert!(!caps.rearrange);
         assert_eq!(app.adapter_name(), ADAPTER_NAME);
         assert_eq!(app.config_aliases(), Some(ADAPTER_ALIASES));
+    }
+
+    #[test]
+    fn fake_native_harness_waits_for_delayed_request_on_nonblocking_listener() {
+        let socket_path = unique_socket_path("yny-chromium-fake-harness");
+        let listener =
+            UnixListener::bind(&socket_path).expect("fake harness test socket should bind");
+        listener
+            .set_nonblocking(true)
+            .expect("fake harness test listener should become nonblocking");
+        let queue = Arc::new(Mutex::new(VecDeque::from(vec![json!({
+            "ok": true,
+            "state": {
+                "activeTabIndex": 1,
+                "tabCount": 3,
+                "pinnedTabCount": 0,
+                "activeTabPinned": false
+            }
+        })])));
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let queue_thread = Arc::clone(&queue);
+        let log_thread = Arc::clone(&log);
+        let server = thread::spawn(move || {
+            let (stream, _) = loop {
+                match listener.accept() {
+                    Ok(pair) => break pair,
+                    Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(err) => panic!("fake harness test accept failed: {err}"),
+                }
+            };
+            handle_native_connection(stream, &queue_thread, &log_thread);
+        });
+
+        let mut client = UnixStream::connect(&socket_path).expect("fake harness client connects");
+        thread::sleep(Duration::from_millis(50));
+        client
+            .write_all(b"{\"command\":\"get_tab_state\"}\n")
+            .expect("fake harness request should write");
+        client
+            .flush()
+            .expect("fake harness request should flush");
+
+        let mut response_line = String::new();
+        let bytes = BufReader::new(client)
+            .read_line(&mut response_line)
+            .expect("fake harness response should read");
+        assert!(bytes > 0, "fake harness client should receive a response");
+        assert_eq!(
+            serde_json::from_str::<Value>(response_line.trim())
+                .expect("fake harness response should parse"),
+            json!({
+                "ok": true,
+                "state": {
+                    "activeTabIndex": 1,
+                    "tabCount": 3,
+                    "pinnedTabCount": 0,
+                    "activeTabPinned": false
+                }
+            })
+        );
+        assert_eq!(
+            log.lock().expect("log mutex poisoned").clone(),
+            vec![json!({ "command": "get_tab_state" })]
+        );
+
+        server.join().expect("fake harness thread should join");
+        let _ = std::fs::remove_file(&socket_path);
+        assert!(
+            queue.lock().expect("queue mutex poisoned").is_empty(),
+            "fake harness test should consume queued response"
+        );
+    }
+
+    #[test]
+    fn can_focus_uses_active_tab_index_via_native_bridge() {
+        let _guard = env_guard();
+        let harness = NativeHarness::new(vec![
+            json!({
+                "ok": true,
+                "state": {
+                    "activeTabIndex": 0,
+                    "tabCount": 3,
+                    "pinnedTabCount": 0,
+                    "activeTabPinned": false
+                }
+            }),
+            json!({
+                "ok": true,
+                "state": {
+                    "activeTabIndex": 1,
+                    "tabCount": 3,
+                    "pinnedTabCount": 0,
+                    "activeTabPinned": false
+                }
+            }),
+        ]);
+        let app = Chromium;
+
+        assert!(!app
+            .can_focus(Direction::West, 0)
+            .expect("west focus probe should succeed"));
+        assert!(app
+            .can_focus(Direction::East, 0)
+            .expect("east focus probe should succeed"));
+        assert_eq!(
+            harness.requests(),
+            vec![
+                json!({ "command": "get_tab_state" }),
+                json!({ "command": "get_tab_state" }),
+            ]
+        );
     }
 
     #[test]
