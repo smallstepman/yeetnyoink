@@ -6,15 +6,15 @@
 
 use anyhow::{bail, Context, Result};
 
-use crate::adapters::window_managers::{
+use crate::config::WmBackend;
+use crate::engine::runtime::{self, CommandContext, ProcessId};
+use crate::engine::topology::Direction;
+use crate::engine::window_manager::{
     validate_declared_capabilities, CapabilitySupport, ConfiguredWindowManager,
     DirectionalCapability, FocusedWindowRecord, PrimitiveWindowManagerCapabilities, ResizeIntent,
     WindowManagerCapabilities, WindowManagerCapabilityDescriptor, WindowManagerFeatures,
     WindowManagerSession, WindowManagerSpec, WindowRecord,
 };
-use crate::config::WmBackend;
-use crate::engine::runtime::{self, CommandContext, ProcessId};
-use crate::engine::topology::Direction;
 use crate::logging;
 
 pub struct PaneruAdapter;

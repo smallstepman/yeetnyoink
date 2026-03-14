@@ -7,16 +7,16 @@ use std::sync::{Mutex, OnceLock};
 
 use anyhow::{anyhow, Result};
 
-use yeet_and_yoink::adapters::window_managers::{
-    ConfiguredWindowManager, FocusedWindowRecord, ResizeIntent, WindowManagerCapabilities,
-    WindowManagerFeatures, WindowManagerSession, WindowRecord,
-};
 use yeet_and_yoink::engine::domain::PaneState;
 use yeet_and_yoink::engine::domain::{DomainLeafSnapshot, DomainSnapshot, ErasedDomain};
 use yeet_and_yoink::engine::domain::{EDITOR_DOMAIN_ID, TERMINAL_DOMAIN_ID, WM_DOMAIN_ID};
 use yeet_and_yoink::engine::orchestrator::{ActionKind, ActionRequest, Orchestrator};
 use yeet_and_yoink::engine::topology::Direction;
 use yeet_and_yoink::engine::topology::Rect;
+use yeet_and_yoink::engine::window_manager::{
+    ConfiguredWindowManager, FocusedWindowRecord, ResizeIntent, WindowManagerCapabilities,
+    WindowManagerFeatures, WindowManagerSession, WindowRecord,
+};
 
 #[derive(Clone, Default)]
 struct DomainCounters {

@@ -9,11 +9,6 @@ use niri_ipc::{Action, Request, Response, SizeChange, Window, Workspace, Workspa
 use serde::{Deserialize, Serialize};
 use std::any::TypeId;
 
-use crate::adapters::window_managers::{
-    ConfiguredWindowManager, NiriAdapter, WindowCycleProvider, WindowCycleRequest,
-    WindowManagerCapabilityDescriptor, WindowManagerDomainFactory, WindowManagerFeatures,
-    WindowManagerSession, WindowManagerSpec,
-};
 use crate::config::WmBackend;
 use crate::engine::domain::PaneState;
 use crate::engine::domain::{decode_native_window_ref, encode_native_window_ref};
@@ -21,9 +16,21 @@ use crate::engine::domain::{
     DomainLeafSnapshot, DomainSnapshot, ErasedDomain, TilingDomain, TopologyModifierImpl,
     TopologyProvider,
 };
+use crate::engine::runtime::ProcessId;
 use crate::engine::topology::Direction;
 use crate::engine::topology::{DomainId, LeafId, Rect};
+use crate::engine::window_manager::{
+    validate_declared_capabilities, CapabilitySupport, ConfiguredWindowManager,
+    DirectionalCapability, FocusedWindowRecord, PrimitiveWindowManagerCapabilities, ResizeIntent,
+    WindowCycleProvider, WindowCycleRequest, WindowManagerCapabilities,
+    WindowManagerCapabilityDescriptor, WindowManagerDomainFactory, WindowManagerFeatures,
+    WindowManagerSession, WindowManagerSpec, WindowRecord, WindowTearOutComposer,
+};
 use crate::logging;
+
+pub struct NiriAdapter {
+    pub(crate) inner: Arc<Mutex<Niri>>,
+}
 
 pub struct Niri {
     socket: Socket,
@@ -44,6 +51,137 @@ struct SummonOrigin {
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct SummonState {
     windows: HashMap<u64, SummonOrigin>,
+}
+
+impl NiriAdapter {
+    pub fn connect() -> Result<Self> {
+        validate_declared_capabilities::<Self>()?;
+        Ok(Self::from_shared(Arc::new(Mutex::new(Niri::connect()?))))
+    }
+
+    pub(crate) fn from_shared(inner: Arc<Mutex<Niri>>) -> Self {
+        Self { inner }
+    }
+
+    fn with_inner<R>(&self, f: impl FnOnce(&mut Niri) -> Result<R>) -> Result<R> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| anyhow!("niri adapter mutex should not be poisoned"))?;
+        f(&mut inner)
+    }
+}
+
+impl WindowManagerCapabilityDescriptor for NiriAdapter {
+    const NAME: &'static str = "niri";
+    const CAPABILITIES: WindowManagerCapabilities = WindowManagerCapabilities {
+        primitives: PrimitiveWindowManagerCapabilities {
+            tear_out_right: true,
+            move_column: true,
+            consume_into_column_and_move: true,
+            set_window_width: true,
+            set_window_height: true,
+        },
+        tear_out: DirectionalCapability {
+            west: CapabilitySupport::Composed,
+            east: CapabilitySupport::Native,
+            north: CapabilitySupport::Composed,
+            south: CapabilitySupport::Composed,
+        },
+        resize: DirectionalCapability {
+            west: CapabilitySupport::Native,
+            east: CapabilitySupport::Native,
+            north: CapabilitySupport::Native,
+            south: CapabilitySupport::Native,
+        },
+    };
+}
+
+impl WindowManagerSession for NiriAdapter {
+    fn adapter_name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn capabilities(&self) -> WindowManagerCapabilities {
+        Self::CAPABILITIES
+    }
+
+    fn focused_window(&mut self) -> Result<FocusedWindowRecord> {
+        let window = self.with_inner(|inner| inner.focused_window())?;
+        Ok(FocusedWindowRecord {
+            id: window.id,
+            app_id: window.app_id,
+            title: window.title,
+            pid: window
+                .pid
+                .and_then(|raw| u32::try_from(raw).ok())
+                .and_then(ProcessId::new),
+            original_tile_index: window
+                .layout
+                .pos_in_scrolling_layout
+                .map(|(_, tile_idx)| tile_idx)
+                .unwrap_or(1),
+        })
+    }
+
+    fn windows(&mut self) -> Result<Vec<WindowRecord>> {
+        Ok(self
+            .with_inner(|inner| inner.windows())?
+            .into_iter()
+            .map(|window| WindowRecord {
+                id: window.id,
+                app_id: window.app_id,
+                title: window.title,
+                pid: window
+                    .pid
+                    .and_then(|raw| u32::try_from(raw).ok())
+                    .and_then(ProcessId::new),
+                is_focused: window.is_focused,
+                original_tile_index: window
+                    .layout
+                    .pos_in_scrolling_layout
+                    .map(|(_, tile_idx)| tile_idx)
+                    .unwrap_or(1),
+            })
+            .collect())
+    }
+
+    fn focus_direction(&mut self, direction: Direction) -> Result<()> {
+        self.with_inner(|inner| inner.focus_direction(direction))
+    }
+
+    fn move_direction(&mut self, direction: Direction) -> Result<()> {
+        self.with_inner(|inner| inner.move_direction(direction))
+    }
+
+    fn resize_with_intent(&mut self, intent: ResizeIntent) -> Result<()> {
+        self.with_inner(|inner| {
+            inner.resize_window(intent.direction, intent.grow(), intent.step.abs().max(1))
+        })
+    }
+
+    fn spawn(&mut self, command: Vec<String>) -> Result<()> {
+        self.with_inner(|inner| inner.spawn(command))
+    }
+
+    fn focus_window_by_id(&mut self, id: u64) -> Result<()> {
+        self.with_inner(|inner| inner.focus_window_by_id(id))
+    }
+
+    fn close_window_by_id(&mut self, id: u64) -> Result<()> {
+        self.with_inner(|inner| inner.close_window_by_id(id))
+    }
+}
+
+impl WindowTearOutComposer for NiriAdapter {
+    fn compose_tear_out(&mut self, direction: Direction, source_tile_index: usize) -> Result<()> {
+        self.with_inner(|inner| match direction {
+            Direction::West | Direction::East => inner.move_column(direction),
+            Direction::North | Direction::South => {
+                inner.consume_into_column_and_move(direction, source_tile_index)
+            }
+        })
+    }
 }
 
 impl WindowManagerSpec for NiriSpec {

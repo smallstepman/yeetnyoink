@@ -3,10 +3,6 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 
-use crate::adapters::window_managers::{
-    plan_tear_out, CapabilitySupport, ConfiguredWindowManager, ResizeIntent, ResizeKind,
-    WindowRecord,
-};
 use crate::engine::contract::{
     AppAdapter, AppKind, MergeExecutionMode, MoveDecision, TopologyHandler,
 };
@@ -16,6 +12,10 @@ use crate::engine::domain::{PayloadRegistry, TransferOutcome, TransferPipeline};
 use crate::engine::runtime::ProcessId;
 use crate::engine::topology::Direction;
 use crate::engine::topology::{DomainId, GlobalLeaf, Rect};
+use crate::engine::window_manager::{
+    plan_tear_out, CapabilitySupport, ConfiguredWindowManager, ResizeIntent, ResizeKind,
+    WindowRecord,
+};
 use crate::logging;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -607,9 +607,10 @@ impl Orchestrator {
                 let _ = wm.focus_window_by_id(source_window_id);
                 continue;
             }
-            let target_app = crate::engine::chain_resolver::resolve_app_chain(app_id, owner_pid, title)
-                .into_iter()
-                .find(|candidate| candidate.adapter_name() == adapter_name);
+            let target_app =
+                crate::engine::chain_resolver::resolve_app_chain(app_id, owner_pid, title)
+                    .into_iter()
+                    .find(|candidate| candidate.adapter_name() == adapter_name);
             if target_app.is_some() {
                 return Ok(target_app);
             }
@@ -645,8 +646,8 @@ impl Orchestrator {
             owner_pid,
             window.title.as_deref().unwrap_or_default(),
         )
-            .into_iter()
-            .find(|adapter| adapter.adapter_name() == adapter_name)
+        .into_iter()
+        .find(|adapter| adapter.adapter_name() == adapter_name)
     }
 
     fn window_matches_adapter(adapter_name: &str, window: &WindowRecord) -> bool {
@@ -1048,16 +1049,17 @@ mod tests {
     use anyhow::{anyhow, Result};
 
     use super::{ActionKind, ActionRequest, Orchestrator};
-    use crate::adapters::window_managers::{
-        ConfiguredWindowManager, FocusedWindowRecord, WindowManagerCapabilities,
-        WindowManagerFeatures, WindowManagerSession, WindowRecord, WindowTearOutComposer,
-    };
     use crate::engine::domain::PaneState;
     use crate::engine::domain::{DomainLeafSnapshot, DomainSnapshot, ErasedDomain};
     use crate::engine::domain::{EDITOR_DOMAIN_ID, TERMINAL_DOMAIN_ID};
     use crate::engine::runtime::ProcessId;
     use crate::engine::topology::Direction;
     use crate::engine::topology::{GlobalLeaf, Rect};
+    use crate::engine::window_manager::{
+        CapabilitySupport, ConfiguredWindowManager, FocusedWindowRecord, ResizeIntent,
+        WindowManagerCapabilities, WindowManagerFeatures, WindowManagerSession, WindowRecord,
+        WindowTearOutComposer,
+    };
 
     fn unique_temp_dir(prefix: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
@@ -1124,10 +1126,7 @@ mod tests {
             Ok(())
         }
 
-        fn resize_with_intent(
-            &mut self,
-            _intent: crate::adapters::window_managers::ResizeIntent,
-        ) -> Result<()> {
+        fn resize_with_intent(&mut self, _intent: ResizeIntent) -> Result<()> {
             Ok(())
         }
 
@@ -1453,10 +1452,7 @@ mod tests {
             Ok(())
         }
 
-        fn resize_with_intent(
-            &mut self,
-            _intent: crate::adapters::window_managers::ResizeIntent,
-        ) -> Result<()> {
+        fn resize_with_intent(&mut self, _intent: ResizeIntent) -> Result<()> {
             Ok(())
         }
 
@@ -1907,18 +1903,10 @@ enabled = true
         caps.primitives.move_column = true;
         caps.primitives.consume_into_column_and_move = true;
         match direction {
-            Direction::West => {
-                caps.tear_out.west = crate::adapters::window_managers::CapabilitySupport::Composed
-            }
-            Direction::East => {
-                caps.tear_out.east = crate::adapters::window_managers::CapabilitySupport::Composed
-            }
-            Direction::North => {
-                caps.tear_out.north = crate::adapters::window_managers::CapabilitySupport::Composed
-            }
-            Direction::South => {
-                caps.tear_out.south = crate::adapters::window_managers::CapabilitySupport::Composed
-            }
+            Direction::West => caps.tear_out.west = CapabilitySupport::Composed,
+            Direction::East => caps.tear_out.east = CapabilitySupport::Composed,
+            Direction::North => caps.tear_out.north = CapabilitySupport::Composed,
+            Direction::South => caps.tear_out.south = CapabilitySupport::Composed,
         }
         caps
     }
