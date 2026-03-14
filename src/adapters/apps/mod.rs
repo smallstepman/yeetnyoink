@@ -301,7 +301,6 @@ mod resolve_chain_tests {
 
     use crate::engine::chain_resolver::runtime_chain_resolver;
     use crate::engine::contract::ChainResolver;
-
     static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
     fn env_guard() -> std::sync::MutexGuard<'static, ()> {
@@ -342,30 +341,6 @@ mod resolve_chain_tests {
         assert_topology_contracts::<Chromium>();
         assert_topology_contracts::<Librewolf>();
         assert_topology_contracts::<Vscode>();
-    }
-
-    #[test]
-    fn direct_match_without_override_returns_adapter() {
-        let _guard = env_guard();
-        let root = unique_temp_dir("direct-match");
-        let config_dir = root.join("yeet-and-yoink");
-        std::fs::create_dir_all(&config_dir).expect("config dir should be created");
-        std::fs::write(
-            config_dir.join("config.toml"),
-            r#"
-[app.editor.emacs]
-enabled = true
-"#,
-        )
-        .expect("config file should be writable");
-        let old_config = load_config(&config_dir.join("config.toml"));
-
-        let chain = runtime_chain_resolver().resolve_chain(emacs::APP_IDS[0], 0, "");
-        assert_eq!(chain.len(), 1);
-        assert_eq!(chain[0].adapter_name(), emacs::ADAPTER_NAME);
-
-        restore_config(old_config);
-        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -411,147 +386,6 @@ enabled = false
 
         let chain = runtime_chain_resolver().resolve_chain(emacs::APP_IDS[0], 0, "");
         assert!(chain.is_empty());
-
-        restore_config(old_config);
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn editor_profile_does_not_disable_terminal_chain_selection() {
-        let _guard = env_guard();
-        let root = unique_temp_dir("override-terminal");
-        let config_dir = root.join("yeet-and-yoink");
-        std::fs::create_dir_all(&config_dir).expect("config dir should be created");
-        std::fs::write(
-            config_dir.join("config.toml"),
-            r#"
-[app.editor.neovim]
-enabled = true
-[app.editor.neovim.ui.terminal]
-app = "wezterm"
-"#,
-        )
-        .expect("config file should be writable");
-
-        let old_config = load_config(&config_dir.join("config.toml"));
-
-        let chain = runtime_chain_resolver().resolve_chain(wezterm::APP_IDS[0], 0, "");
-        assert!(!chain.is_empty());
-        assert_eq!(
-            chain
-                .first()
-                .and_then(|adapter| adapter.config_aliases())
-                .map(|aliases| aliases[0]),
-            Some(wezterm::ADAPTER_ALIASES[0])
-        );
-
-        restore_config(old_config);
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn kitty_terminal_app_id_resolves_terminal_chain() {
-        let _guard = env_guard();
-        let root = unique_temp_dir("kitty-terminal-chain");
-        let config_dir = root.join("yeet-and-yoink");
-        std::fs::create_dir_all(&config_dir).expect("config dir should be created");
-        std::fs::write(
-            config_dir.join("config.toml"),
-            r#"
-[app.terminal.kitty]
-enabled = true
-"#,
-        )
-        .expect("config file should be writable");
-        let old_config = load_config(&config_dir.join("config.toml"));
-
-        let chain = runtime_chain_resolver().resolve_chain(kitty::APP_IDS[0], 0, "");
-        assert!(!chain.is_empty());
-        assert_eq!(
-            chain.last().map(|adapter| adapter.adapter_name()),
-            Some("terminal")
-        );
-
-        restore_config(old_config);
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn foot_terminal_app_id_resolves_terminal_chain() {
-        let _guard = env_guard();
-        let root = unique_temp_dir("foot-terminal-chain");
-        let config_dir = root.join("yeet-and-yoink");
-        std::fs::create_dir_all(&config_dir).expect("config dir should be created");
-        std::fs::write(
-            config_dir.join("config.toml"),
-            r#"
-[app.terminal.foot]
-enabled = true
-"#,
-        )
-        .expect("config file should be writable");
-        let old_config = load_config(&config_dir.join("config.toml"));
-
-        let chain = runtime_chain_resolver().resolve_chain(foot::APP_IDS[0], 0, "");
-        assert!(!chain.is_empty());
-        assert_eq!(
-            chain.last().map(|adapter| adapter.adapter_name()),
-            Some("terminal")
-        );
-
-        restore_config(old_config);
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn alacritty_terminal_app_id_resolves_terminal_chain() {
-        let _guard = env_guard();
-        let root = unique_temp_dir("alacritty-terminal-chain");
-        let config_dir = root.join("yeet-and-yoink");
-        std::fs::create_dir_all(&config_dir).expect("config dir should be created");
-        std::fs::write(
-            config_dir.join("config.toml"),
-            r#"
-[app.terminal.alacritty]
-enabled = true
-"#,
-        )
-        .expect("config file should be writable");
-        let old_config = load_config(&config_dir.join("config.toml"));
-
-        let chain = runtime_chain_resolver().resolve_chain(alacritty::APP_IDS[0], 0, "");
-        assert!(!chain.is_empty());
-        assert_eq!(
-            chain.last().map(|adapter| adapter.adapter_name()),
-            Some("terminal")
-        );
-
-        restore_config(old_config);
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn ghostty_terminal_app_id_resolves_terminal_chain() {
-        let _guard = env_guard();
-        let root = unique_temp_dir("ghostty-terminal-chain");
-        let config_dir = root.join("yeet-and-yoink");
-        std::fs::create_dir_all(&config_dir).expect("config dir should be created");
-        std::fs::write(
-            config_dir.join("config.toml"),
-            r#"
-[app.terminal.ghostty]
-enabled = true
-"#,
-        )
-        .expect("config file should be writable");
-        let old_config = load_config(&config_dir.join("config.toml"));
-
-        let chain = runtime_chain_resolver().resolve_chain(ghostty::APP_IDS[0], 0, "");
-        assert!(!chain.is_empty());
-        assert_eq!(
-            chain.last().map(|adapter| adapter.adapter_name()),
-            Some("terminal")
-        );
 
         restore_config(old_config);
         let _ = std::fs::remove_dir_all(root);

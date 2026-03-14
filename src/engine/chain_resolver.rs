@@ -1,10 +1,11 @@
 use crate::adapters::apps::{
-    self, emacs,
+    self, build_emacs,
     nvim::{self, Nvim},
     AppAdapter, AppKind,
 };
 use crate::adapters::terminal_multiplexers::tmux::Tmux;
 use crate::config::{AppSection, TerminalMuxBackend};
+use crate::engine::app_policy::bind_app_policy;
 use crate::engine::contract::ChainResolver;
 use crate::engine::domain::{EDITOR_DOMAIN_ID, TERMINAL_DOMAIN_ID, WM_DOMAIN_ID};
 use crate::engine::runtime::{self, ProcessId};
@@ -17,6 +18,14 @@ static RUNTIME_CHAIN_RESOLVER: RuntimeChainResolver = RuntimeChainResolver;
 
 pub fn runtime_chain_resolver() -> &'static RuntimeChainResolver {
     &RUNTIME_CHAIN_RESOLVER
+}
+
+pub fn resolve_app_chain(app_id: &str, pid: u32, title: &str) -> Vec<Box<dyn AppAdapter>> {
+    runtime_chain_resolver().resolve_chain(app_id, pid, title)
+}
+
+pub fn default_app_domain_adapters() -> Vec<Box<dyn AppAdapter>> {
+    runtime_chain_resolver().default_domain_adapters()
 }
 
 fn preferred_terminal_adapter_name() -> Option<String> {
@@ -48,7 +57,7 @@ fn resolve_direct_adapter(app_id: &str) -> Option<Box<dyn AppAdapter>> {
             return None;
         }
 
-        return Some(crate::engine::app_policy::bind_app_policy((spec.build)()));
+        return Some(bind_app_policy((spec.build)()));
     }
 
     None
@@ -139,7 +148,7 @@ fn push_nvim_for_pid(
         return false;
     }
     if let Some(nvim) = Nvim::for_pid(nvim_pid, mux_backend) {
-        chain.push(crate::engine::app_policy::bind_app_policy(Box::new(nvim)));
+        chain.push(bind_app_policy(Box::new(nvim)));
         true
     } else {
         false
@@ -259,7 +268,7 @@ fn resolve_terminal_chain(
                             let _ = push_nvim_for_pid(&mut chain, nvim_pid, nvim_mux_backend);
                         }
                     }
-                    chain.push(crate::engine::app_policy::bind_app_policy(Box::new(tmux)));
+                    chain.push(bind_app_policy(Box::new(tmux)));
                     break 'tmux_fallback;
                 }
             }
@@ -268,7 +277,7 @@ fn resolve_terminal_chain(
                 "resolve_terminal_chain: no focused shell match and tmux resolution is disabled",
             );
         }
-        chain.push(crate::engine::app_policy::bind_app_policy((host.build)()));
+        chain.push(bind_app_policy((host.build)()));
         return chain;
     };
     logging::debug(format!(
@@ -289,7 +298,7 @@ fn resolve_terminal_chain(
                         let _ = push_nvim_for_pid(&mut chain, nvim_pid, nvim_mux_backend);
                     }
                 }
-                chain.push(crate::engine::app_policy::bind_app_policy(Box::new(tmux)));
+                chain.push(bind_app_policy(Box::new(tmux)));
             }
         }
         "tmux" => {}
@@ -330,13 +339,13 @@ fn resolve_terminal_chain(
                             let _ = push_nvim_for_pid(&mut chain, nvim_pid, nvim_mux_backend);
                         }
                     }
-                    chain.push(crate::engine::app_policy::bind_app_policy(Box::new(tmux)));
+                    chain.push(bind_app_policy(Box::new(tmux)));
                 }
             }
         }
     }
 
-    chain.push(crate::engine::app_policy::bind_app_policy((host.build)()));
+    chain.push(bind_app_policy((host.build)()));
     logging::debug(format!(
         "resolve_terminal_chain: final depth={}",
         chain.len()
@@ -398,12 +407,9 @@ impl ChainResolver for RuntimeChainResolver {
                     .find(|host| matches_adapter_alias(preferred, host.aliases))
             })
             .or_else(|| apps::TERMINAL_HOSTS.first())
-            .map(|host| crate::engine::app_policy::bind_app_policy((host.build)()))
+            .map(|host| bind_app_policy((host.build)()))
             .expect("terminal host catalog should not be empty");
-        vec![
-            terminal_adapter,
-            crate::engine::app_policy::bind_app_policy(Box::new(emacs::EmacsBackend)),
-        ]
+        vec![terminal_adapter, bind_app_policy(build_emacs())]
     }
 
     fn domain_id_for_window(
@@ -433,8 +439,8 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    use super::{runtime_chain_resolver, ChainResolver};
-    use crate::adapters::apps::{alacritty, foot, ghostty};
+    use super::{default_app_domain_adapters, resolve_app_chain};
+    use crate::adapters::apps::{alacritty, emacs, foot, ghostty, kitty, wezterm};
 
     static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -478,7 +484,7 @@ enabled = true
         .expect("config file should be writable");
         let old_config = load_config(&config_dir.join("config.toml"));
 
-        let adapters = runtime_chain_resolver().default_domain_adapters();
+        let adapters = default_app_domain_adapters();
         assert_eq!(
             adapters
                 .first()
@@ -507,7 +513,7 @@ enabled = true
         .expect("config file should be writable");
         let old_config = load_config(&config_dir.join("config.toml"));
 
-        let adapters = runtime_chain_resolver().default_domain_adapters();
+        let adapters = default_app_domain_adapters();
         assert_eq!(
             adapters
                 .first()
@@ -536,7 +542,7 @@ enabled = true
         .expect("config file should be writable");
         let old_config = load_config(&config_dir.join("config.toml"));
 
-        let adapters = runtime_chain_resolver().default_domain_adapters();
+        let adapters = default_app_domain_adapters();
         assert_eq!(
             adapters
                 .first()
@@ -565,7 +571,7 @@ enabled = true
         .expect("config file should be writable");
         let old_config = load_config(&config_dir.join("config.toml"));
 
-        let chain = runtime_chain_resolver().resolve_chain("librewolf", 0, "LibreWolf");
+        let chain = resolve_app_chain("librewolf", 0, "LibreWolf");
         assert_eq!(chain.len(), 1);
         assert_eq!(chain[0].adapter_name(), "librewolf");
 
@@ -589,7 +595,7 @@ enabled = true
         .expect("config file should be writable");
         let old_config = load_config(&config_dir.join("config.toml"));
 
-        let chain = runtime_chain_resolver().resolve_chain("brave-browser", 0, "Brave Browser");
+        let chain = resolve_app_chain("brave-browser", 0, "Brave Browser");
         assert_eq!(chain.len(), 1);
         assert_eq!(chain[0].adapter_name(), "chromium");
 
@@ -616,5 +622,170 @@ enabled = true
             super::shell_pid_for_tty(&[111, 222], Some("  "), |_pid, _tty| true),
             None
         );
+    }
+
+    #[test]
+    fn direct_match_without_override_returns_adapter() {
+        let _guard = env_guard();
+        let root = unique_temp_dir("direct-match");
+        let config_dir = root.join("yeet-and-yoink");
+        fs::create_dir_all(&config_dir).expect("config dir should be created");
+        fs::write(
+            config_dir.join("config.toml"),
+            r#"
+[app.editor.emacs]
+enabled = true
+"#,
+        )
+        .expect("config file should be writable");
+        let old_config = load_config(&config_dir.join("config.toml"));
+
+        let chain = resolve_app_chain(emacs::APP_IDS[0], 0, "");
+        assert_eq!(chain.len(), 1);
+        assert_eq!(chain[0].adapter_name(), emacs::ADAPTER_NAME);
+
+        restore_config(old_config);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn editor_profile_does_not_disable_terminal_chain_selection() {
+        let _guard = env_guard();
+        let root = unique_temp_dir("override-terminal");
+        let config_dir = root.join("yeet-and-yoink");
+        fs::create_dir_all(&config_dir).expect("config dir should be created");
+        fs::write(
+            config_dir.join("config.toml"),
+            r#"
+[app.editor.neovim]
+enabled = true
+[app.editor.neovim.ui.terminal]
+app = "wezterm"
+"#,
+        )
+        .expect("config file should be writable");
+
+        let old_config = load_config(&config_dir.join("config.toml"));
+
+        let chain = resolve_app_chain(wezterm::APP_IDS[0], 0, "");
+        assert!(!chain.is_empty());
+        assert_eq!(
+            chain
+                .first()
+                .and_then(|adapter| adapter.config_aliases())
+                .map(|aliases| aliases[0]),
+            Some(wezterm::ADAPTER_ALIASES[0])
+        );
+
+        restore_config(old_config);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn kitty_terminal_app_id_resolves_terminal_chain() {
+        let _guard = env_guard();
+        let root = unique_temp_dir("kitty-terminal-chain");
+        let config_dir = root.join("yeet-and-yoink");
+        fs::create_dir_all(&config_dir).expect("config dir should be created");
+        fs::write(
+            config_dir.join("config.toml"),
+            r#"
+[app.terminal.kitty]
+enabled = true
+"#,
+        )
+        .expect("config file should be writable");
+        let old_config = load_config(&config_dir.join("config.toml"));
+
+        let chain = resolve_app_chain(kitty::APP_IDS[0], 0, "");
+        assert!(!chain.is_empty());
+        assert_eq!(
+            chain.last().map(|adapter| adapter.adapter_name()),
+            Some("terminal")
+        );
+
+        restore_config(old_config);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn foot_terminal_app_id_resolves_terminal_chain() {
+        let _guard = env_guard();
+        let root = unique_temp_dir("foot-terminal-chain");
+        let config_dir = root.join("yeet-and-yoink");
+        fs::create_dir_all(&config_dir).expect("config dir should be created");
+        fs::write(
+            config_dir.join("config.toml"),
+            r#"
+[app.terminal.foot]
+enabled = true
+"#,
+        )
+        .expect("config file should be writable");
+        let old_config = load_config(&config_dir.join("config.toml"));
+
+        let chain = resolve_app_chain(foot::APP_IDS[0], 0, "");
+        assert!(!chain.is_empty());
+        assert_eq!(
+            chain.last().map(|adapter| adapter.adapter_name()),
+            Some("terminal")
+        );
+
+        restore_config(old_config);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn alacritty_terminal_app_id_resolves_terminal_chain() {
+        let _guard = env_guard();
+        let root = unique_temp_dir("alacritty-terminal-chain");
+        let config_dir = root.join("yeet-and-yoink");
+        fs::create_dir_all(&config_dir).expect("config dir should be created");
+        fs::write(
+            config_dir.join("config.toml"),
+            r#"
+[app.terminal.alacritty]
+enabled = true
+"#,
+        )
+        .expect("config file should be writable");
+        let old_config = load_config(&config_dir.join("config.toml"));
+
+        let chain = resolve_app_chain(alacritty::APP_IDS[0], 0, "");
+        assert!(!chain.is_empty());
+        assert_eq!(
+            chain.last().map(|adapter| adapter.adapter_name()),
+            Some("terminal")
+        );
+
+        restore_config(old_config);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn ghostty_terminal_app_id_resolves_terminal_chain() {
+        let _guard = env_guard();
+        let root = unique_temp_dir("ghostty-terminal-chain");
+        let config_dir = root.join("yeet-and-yoink");
+        fs::create_dir_all(&config_dir).expect("config dir should be created");
+        fs::write(
+            config_dir.join("config.toml"),
+            r#"
+[app.terminal.ghostty]
+enabled = true
+"#,
+        )
+        .expect("config file should be writable");
+        let old_config = load_config(&config_dir.join("config.toml"));
+
+        let chain = resolve_app_chain(ghostty::APP_IDS[0], 0, "");
+        assert!(!chain.is_empty());
+        assert_eq!(
+            chain.last().map(|adapter| adapter.adapter_name()),
+            Some("terminal")
+        );
+
+        restore_config(old_config);
+        let _ = fs::remove_dir_all(root);
     }
 }
