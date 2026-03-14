@@ -1994,7 +1994,7 @@ enabled = true
                 vec![source_window.clone(), tearout_window],
             ],
             windows_call_count: 0,
-            capabilities: composed_tearout_capabilities_for(Direction::North),
+            capabilities: WindowManagerCapabilities::none(),
             move_calls: 0,
             close_calls: 0,
             closed_window_ids: Vec::new(),
