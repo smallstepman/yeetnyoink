@@ -253,6 +253,10 @@ mod tests {
                 while running_thread.load(Ordering::Relaxed) {
                     match listener.accept() {
                         Ok((stream, _)) => {
+                            // On macOS, accepted sockets may inherit nonblocking from listener
+                            stream
+                                .set_nonblocking(false)
+                                .expect("failed to make accepted stream blocking");
                             handle_native_connection(stream, &queue_thread, &log_thread)
                         }
                         Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {

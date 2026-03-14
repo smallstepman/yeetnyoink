@@ -1,4 +1,6 @@
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
 
@@ -10,6 +12,113 @@ use crate::engine::runtime::{self, CommandContext, ProcessId};
 use crate::engine::topology::{
     select_closest_in_direction, DirectedRect, Direction, DirectionalNeighbors, Rect,
 };
+
+// ---------------------------------------------------------------------------
+// Tmux session cache - avoids repeated `tmux list-clients` calls
+// ---------------------------------------------------------------------------
+
+/// Cache TTL for tmux session mappings (100ms matches process table cache)
+const TMUX_CACHE_TTL: Duration = Duration::from_millis(100);
+
+#[derive(Clone)]
+struct TmuxClientInfo {
+    session_name: String,
+    pane_id: u64,
+    window_id: String,
+    pane_current_command: Option<String>,
+}
+
+struct TmuxClientCache {
+    /// Maps client_pid → client info
+    clients: HashMap<u32, TmuxClientInfo>,
+    /// When this cache was populated
+    fetched_at: Option<Instant>,
+}
+
+impl TmuxClientCache {
+    fn new() -> Self {
+        Self {
+            clients: HashMap::new(),
+            fetched_at: None,
+        }
+    }
+
+    fn is_stale(&self) -> bool {
+        self.fetched_at
+            .map(|t| t.elapsed() > TMUX_CACHE_TTL)
+            .unwrap_or(true)
+    }
+
+    fn refresh(&mut self) {
+        self.clients.clear();
+        // Fetch session_name, pane_id, window_id, and pane_current_command in a single call
+        let output = match runtime::run_command_output(
+            "tmux",
+            &[
+                "list-clients",
+                "-F",
+                "#{client_pid}:#{session_name}:#{pane_id}:#{window_id}:#{pane_current_command}",
+            ],
+            &CommandContext::new("tmux", "list-clients"),
+        ) {
+            Ok(o) if o.status.success() => o,
+            _ => {
+                self.fetched_at = Some(Instant::now());
+                return;
+            }
+        };
+        let stdout = runtime::stdout_text(&output);
+        for line in stdout.lines() {
+            let parts: Vec<&str> = line.splitn(5, ':').collect();
+            if parts.len() >= 4 {
+                if let (Ok(pid), Ok(pane_id)) = (
+                    parts[0].parse::<u32>(),
+                    parts[2].trim().trim_start_matches('%').parse::<u64>(),
+                ) {
+                    let window_id = parts[3].trim().to_string();
+                    let pane_current_command = parts
+                        .get(4)
+                        .map(|s| s.trim())
+                        .filter(|s| !s.is_empty())
+                        .map(|s| s.to_string());
+                    self.clients.insert(
+                        pid,
+                        TmuxClientInfo {
+                            session_name: parts[1].to_string(),
+                            pane_id,
+                            window_id,
+                            pane_current_command,
+                        },
+                    );
+                }
+            }
+        }
+        self.fetched_at = Some(Instant::now());
+    }
+
+    fn get_client_info(&mut self, client_pid: u32) -> Option<TmuxClientInfo> {
+        if self.is_stale() {
+            self.refresh();
+        }
+        self.clients.get(&client_pid).cloned()
+    }
+}
+
+thread_local! {
+    static TMUX_CACHE: RefCell<TmuxClientCache> = RefCell::new(TmuxClientCache::new());
+}
+
+fn cached_client_info(client_pid: u32) -> Option<TmuxClientInfo> {
+    TMUX_CACHE.with(|cache| cache.borrow_mut().get_client_info(client_pid))
+}
+
+fn cached_foreground_command(client_pid: u32) -> Option<String> {
+    cached_client_info(client_pid).and_then(|info| info.pane_current_command)
+}
+
+fn cached_window_id(client_pid: u32) -> Option<String> {
+    cached_client_info(client_pid).map(|info| info.window_id)
+}
 
 pub struct Tmux {
     session: TmuxSession,
@@ -79,28 +188,11 @@ impl Tmux {
 
 impl TmuxSession {
     fn from_client_pid(client_pid: u32) -> Option<TmuxSession> {
-        let output = runtime::run_command_output(
-            "tmux",
-            &["list-clients", "-F", "#{client_pid}:#{session_name}"],
-            &CommandContext::new("tmux", "list-clients").with_target(client_pid.to_string()),
-        )
-        .ok()?;
-        if !output.status.success() {
-            return None;
-        }
-        let stdout = runtime::stdout_text(&output);
-        let target = client_pid.to_string();
-        for line in stdout.lines() {
-            if let Some((pid_str, session)) = line.split_once(':') {
-                if pid_str == target {
-                    return Some(TmuxSession {
-                        name: session.to_string(),
-                        client_pid,
-                    });
-                }
-            }
-        }
-        None
+        let info = cached_client_info(client_pid)?;
+        Some(TmuxSession {
+            name: info.session_name,
+            client_pid,
+        })
     }
 
     /// Resolve a Tmux session from a terminal PID (walks process tree to find
@@ -140,33 +232,20 @@ impl TmuxSession {
     }
 
     fn focused_pane_id_for_client(&self) -> Result<u64> {
-        let output = runtime::run_command_output(
-            "tmux",
-            &["list-clients", "-F", "#{client_pid}:#{pane_id}"],
-            &CommandContext::new("tmux", "list-clients").with_target(self.client_pid.to_string()),
-        )
-        .context("failed to query tmux clients for focused pane")?;
-        if !output.status.success() {
-            bail!(
-                "tmux list-clients failed: {}",
-                runtime::stderr_text(&output)
-            );
+        // Use cached client info when available
+        if let Some(info) = cached_client_info(self.client_pid) {
+            return Ok(info.pane_id);
         }
-        let target = self.client_pid.to_string();
-        let stdout = runtime::stdout_text(&output);
-        for line in stdout.lines() {
-            if let Some((pid_str, pane_str)) = line.split_once(':') {
-                if pid_str == target {
-                    return pane_str
-                        .trim()
-                        .trim_start_matches('%')
-                        .parse::<u64>()
-                        .ok()
-                        .context("failed to parse tmux focused pane id for client");
-                }
-            }
-        }
+        // Fallback to direct query if cache miss (shouldn't happen normally)
         bail!("no tmux client match for pid {}", self.client_pid);
+    }
+
+    fn cached_foreground_command(&self) -> Option<String> {
+        cached_foreground_command(self.client_pid)
+    }
+
+    fn cached_window_id(&self) -> Option<String> {
+        cached_window_id(self.client_pid)
     }
 
     /// `tmux display-message -t <pane> -p <format>` targeted at a specific pane.
@@ -418,7 +497,10 @@ impl TerminalMultiplexerProvider for TmuxMuxProvider {
     fn list_panes_for_pid(&self, pid: u32) -> Result<Vec<TerminalPaneSnapshot>> {
         self.with_session(pid, |session| {
             let focused_pane_id = session.focused_pane_id_for_client()?;
-            let window_ref = session.query_pane(focused_pane_id, "#{window_id}")?;
+            // Use cached window_id to avoid extra tmux display-message call
+            let window_ref = session
+                .cached_window_id()
+                .unwrap_or_else(|| session.query_pane(focused_pane_id, "#{window_id}").unwrap_or_default());
             let panes = session.list_panes_for_window(&window_ref)?;
             Ok(panes
                 .into_iter()
@@ -519,10 +601,12 @@ impl TerminalMultiplexerProvider for TmuxMuxProvider {
     }
 
     fn active_foreground_process(&self, pid: u32) -> Option<String> {
+        // Try cached foreground command first (avoids tmux display-message call)
         self.with_session(pid, |session| {
-            session.query_client_pane("#{pane_current_command}")
+            Ok(session.cached_foreground_command())
         })
         .ok()
+        .flatten()
     }
 }
 
