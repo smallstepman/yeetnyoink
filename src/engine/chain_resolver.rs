@@ -1,5 +1,5 @@
 use crate::adapters::apps::{
-    self, alacritty,
+    alacritty,
     chromium::{self, Chromium},
     emacs, foot, ghostty, kitty,
     librewolf::{self, Librewolf},
@@ -32,39 +32,39 @@ struct DirectAdapterSpec {
 }
 
 fn build_editor() -> Box<dyn AppAdapter> {
-    apps::bind_policy(Box::new(emacs::EmacsBackend))
+    crate::engine::app_policy::bind_app_policy(Box::new(emacs::EmacsBackend))
 }
 
 fn build_librewolf() -> Box<dyn AppAdapter> {
-    apps::bind_policy(Box::new(Librewolf))
+    crate::engine::app_policy::bind_app_policy(Box::new(Librewolf))
 }
 
 fn build_chromium() -> Box<dyn AppAdapter> {
-    apps::bind_policy(Box::new(Chromium))
+    crate::engine::app_policy::bind_app_policy(Box::new(Chromium))
 }
 
 fn build_vscode() -> Box<dyn AppAdapter> {
-    apps::bind_policy(Box::new(Vscode))
+    crate::engine::app_policy::bind_app_policy(Box::new(Vscode))
 }
 
 fn build_wezterm_terminal() -> Box<dyn AppAdapter> {
-    apps::bind_policy(Box::new(wezterm::WeztermBackend))
+    crate::engine::app_policy::bind_app_policy(Box::new(wezterm::WeztermBackend))
 }
 
 fn build_kitty_terminal() -> Box<dyn AppAdapter> {
-    apps::bind_policy(Box::new(kitty::KittyBackend))
+    crate::engine::app_policy::bind_app_policy(Box::new(kitty::KittyBackend))
 }
 
 fn build_foot_terminal() -> Box<dyn AppAdapter> {
-    apps::bind_policy(Box::new(foot::FootBackend))
+    crate::engine::app_policy::bind_app_policy(Box::new(foot::FootBackend))
 }
 
 fn build_alacritty_terminal() -> Box<dyn AppAdapter> {
-    apps::bind_policy(Box::new(alacritty::AlacrittyBackend))
+    crate::engine::app_policy::bind_app_policy(Box::new(alacritty::AlacrittyBackend))
 }
 
 fn build_ghostty_terminal() -> Box<dyn AppAdapter> {
-    apps::bind_policy(Box::new(ghostty::GhosttyBackend))
+    crate::engine::app_policy::bind_app_policy(Box::new(ghostty::GhosttyBackend))
 }
 
 struct TerminalHostSpec {
@@ -258,7 +258,7 @@ fn push_nvim_for_pid(
         return false;
     }
     if let Some(nvim) = Nvim::for_pid(nvim_pid, mux_backend) {
-        chain.push(apps::bind_policy(Box::new(nvim)));
+        chain.push(crate::engine::app_policy::bind_app_policy(Box::new(nvim)));
         true
     } else {
         false
@@ -375,7 +375,7 @@ fn resolve_terminal_chain(terminal_pid: u32, host: &TerminalHostSpec) -> Vec<Box
                             let _ = push_nvim_for_pid(&mut chain, nvim_pid, nvim_mux_backend);
                         }
                     }
-                    chain.push(apps::bind_policy(Box::new(tmux)));
+                    chain.push(crate::engine::app_policy::bind_app_policy(Box::new(tmux)));
                     break 'tmux_fallback;
                 }
             }
@@ -405,7 +405,7 @@ fn resolve_terminal_chain(terminal_pid: u32, host: &TerminalHostSpec) -> Vec<Box
                         let _ = push_nvim_for_pid(&mut chain, nvim_pid, nvim_mux_backend);
                     }
                 }
-                chain.push(apps::bind_policy(Box::new(tmux)));
+                chain.push(crate::engine::app_policy::bind_app_policy(Box::new(tmux)));
             }
         }
         "tmux" => {}
@@ -446,7 +446,7 @@ fn resolve_terminal_chain(terminal_pid: u32, host: &TerminalHostSpec) -> Vec<Box
                             let _ = push_nvim_for_pid(&mut chain, nvim_pid, nvim_mux_backend);
                         }
                     }
-                    chain.push(apps::bind_policy(Box::new(tmux)));
+                    chain.push(crate::engine::app_policy::bind_app_policy(Box::new(tmux)));
                 }
             }
         }
@@ -523,7 +523,7 @@ impl ChainResolver for RuntimeChainResolver {
         };
         vec![
             terminal_adapter,
-            apps::bind_policy(Box::new(emacs::EmacsBackend)),
+            crate::engine::app_policy::bind_app_policy(Box::new(emacs::EmacsBackend)),
         ]
     }
 
