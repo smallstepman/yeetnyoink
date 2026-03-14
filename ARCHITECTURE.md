@@ -64,7 +64,7 @@ Geometry solver that:
 
 Key insight: The solver treats all leaves uniformly regardless of domain, enabling consistent navigation across nested tiling systems.
 
-### 3. Domain Contracts (`src/engine/domain.rs`)
+### 3. Domain Contracts (`src/engine/contract.rs`)
 
 Defines the interface all adapters implement:
 
