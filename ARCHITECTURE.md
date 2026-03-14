@@ -69,18 +69,14 @@ Key insight: The solver treats all leaves uniformly regardless of domain, enabli
 Defines the interface all adapters implement:
 
 ```rust
-trait AppAdapter {
-    fn adapter_name(&self) -> &str;
-    fn config_aliases(&self) -> &[&str];
+trait AppAdapter: Send + TopologyHandler + ChainResolver {
+    fn adapter_name(&self) -> &'static str;
+    fn config_aliases(&self) -> Option<&'static [&'static str]>;
     fn kind(&self) -> AppKind;
-    fn capabilities(&self) -> Capabilities;
-    
-    // Core operations
-    fn focus(&self, direction: Direction) -> Result<()>;
-    fn move_pane(&self, direction: Direction) -> Result<MoveResult>;
-    fn resize(&self, direction: Direction, delta: i32) -> Result<()>;
-    fn tear_out(&self, scope: TearOffScope) -> Result<TearOutResult>;
-    fn merge_into(&self, target: &dyn AppAdapter, prep: MergePreparation) -> Result<()>;
+    fn capabilities(&self) -> AdapterCapabilities;
+
+    // Optional adapter-native evaluation hook
+    fn eval(&self, expression: &str, pid: Option<ProcessId>) -> Result<String>;
 }
 ```
 
