@@ -32,10 +32,10 @@ impl WindowManagerSpec for YabaiSpec {
     }
 
     fn connect(&self) -> Result<ConfiguredWindowManager> {
-        Ok(ConfiguredWindowManager::new(
+        ConfiguredWindowManager::try_new(
             Box::new(YabaiAdapter::connect()?),
             WindowManagerFeatures::default(),
-        ))
+        )
     }
 }
 
@@ -54,11 +54,19 @@ impl YabaiAdapter {
     }
 
     fn command_output(action: &'static str, args: &[&str]) -> Result<std::process::Output> {
-        runtime::run_command_output("yabai", &[&["-m"], args].concat(), &CommandContext::new(Self::NAME, action))
+        runtime::run_command_output(
+            "yabai",
+            &[&["-m"], args].concat(),
+            &CommandContext::new(Self::NAME, action),
+        )
     }
 
     fn command_status(action: &'static str, args: &[&str]) -> Result<()> {
-        runtime::run_command_status("yabai", &[&["-m"], args].concat(), &CommandContext::new(Self::NAME, action))
+        runtime::run_command_status(
+            "yabai",
+            &[&["-m"], args].concat(),
+            &CommandContext::new(Self::NAME, action),
+        )
     }
 
     fn direction_name(direction: Direction) -> &'static str {
@@ -218,14 +226,20 @@ impl WindowManagerSession for YabaiAdapter {
     }
 
     fn focus_direction(&mut self, direction: Direction) -> Result<()> {
-        Self::command_status("focus", &["window", "--focus", Self::direction_name(direction)])
+        Self::command_status(
+            "focus",
+            &["window", "--focus", Self::direction_name(direction)],
+        )
     }
 
     fn move_direction(&mut self, direction: Direction) -> Result<()> {
         // In yabai, --swap exchanges positions with neighbor
         // --warp moves the window to the position (like i3 move)
         // Using --swap for consistency with tiling behavior
-        Self::command_status("move", &["window", "--swap", Self::direction_name(direction)])
+        Self::command_status(
+            "move",
+            &["window", "--swap", Self::direction_name(direction)],
+        )
     }
 
     fn resize_with_intent(&mut self, intent: ResizeIntent) -> Result<()> {
@@ -274,7 +288,11 @@ impl WindowManagerSession for YabaiAdapter {
         }
         let (program, args) = command.split_first().context("spawn: empty command")?;
         let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-        runtime::run_command_status(program, &args_refs, &CommandContext::new(Self::NAME, "spawn"))
+        runtime::run_command_status(
+            program,
+            &args_refs,
+            &CommandContext::new(Self::NAME, "spawn"),
+        )
     }
 
     fn focus_window_by_id(&mut self, id: u64) -> Result<()> {
@@ -325,7 +343,10 @@ mod tests {
             serde_json::from_str(sample).expect("should parse yabai json");
         assert_eq!(windows.len(), 2);
 
-        let focused = windows.iter().find(|w| w.has_focus).expect("should have focused window");
+        let focused = windows
+            .iter()
+            .find(|w| w.has_focus)
+            .expect("should have focused window");
         assert_eq!(focused.id, 1234);
         assert_eq!(focused.app, "WezTerm");
         assert_eq!(focused.pid, 5678);

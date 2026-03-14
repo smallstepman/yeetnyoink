@@ -27,10 +27,10 @@ impl WindowManagerSpec for I3Spec {
     }
 
     fn connect(&self) -> Result<ConfiguredWindowManager> {
-        Ok(ConfiguredWindowManager::new(
+        ConfiguredWindowManager::try_new(
             Box::new(I3Adapter::connect()?),
             WindowManagerFeatures::default(),
-        ))
+        )
     }
 }
 

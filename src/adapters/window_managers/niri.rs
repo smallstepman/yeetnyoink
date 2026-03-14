@@ -61,10 +61,7 @@ impl WindowManagerSpec for NiriSpec {
         features.domain_factory = Some(Box::new(NiriDomainFactory));
         features.window_cycle = Some(Box::new(NiriAdapter::from_shared(shared.clone())));
         features.tear_out_composer = Some(Box::new(NiriAdapter::from_shared(shared.clone())));
-        Ok(ConfiguredWindowManager::new(
-            Box::new(NiriAdapter::from_shared(shared)),
-            features,
-        ))
+        ConfiguredWindowManager::try_new(Box::new(NiriAdapter::from_shared(shared)), features)
     }
 }
 

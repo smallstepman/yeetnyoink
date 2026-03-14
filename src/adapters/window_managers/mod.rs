@@ -215,8 +215,7 @@ pub struct FocusedWindowRecord {
     pub original_tile_index: usize,
 }
 
-impl FocusedWindowRecord {
-}
+impl FocusedWindowRecord {}
 
 pub trait WindowManagerSession: Send {
     fn adapter_name(&self) -> &'static str;
@@ -269,7 +268,17 @@ pub struct ConfiguredWindowManager {
 
 impl ConfiguredWindowManager {
     pub fn new(core: Box<dyn WindowManagerSession>, features: WindowManagerFeatures) -> Self {
-        Self { core, features }
+        Self::try_new(core, features).expect(
+            "configured window manager should have valid capabilities and required features",
+        )
+    }
+
+    pub fn try_new(
+        core: Box<dyn WindowManagerSession>,
+        features: WindowManagerFeatures,
+    ) -> Result<Self> {
+        validate_configured_window_manager(core.as_ref(), &features)?;
+        Ok(Self { core, features })
     }
 
     pub fn adapter_name(&self) -> &'static str {
@@ -337,6 +346,39 @@ impl ConfiguredWindowManager {
             None => None,
         }
     }
+}
+
+fn validate_configured_window_manager(
+    core: &dyn WindowManagerSession,
+    features: &WindowManagerFeatures,
+) -> Result<()> {
+    let capabilities = core.capabilities();
+    let adapter_name = core.adapter_name();
+
+    capabilities
+        .validate()
+        .with_context(|| format!("invalid capabilities for configured wm '{}'", adapter_name))?;
+
+    if features.tear_out_composer.is_none() {
+        for direction in [
+            Direction::West,
+            Direction::East,
+            Direction::North,
+            Direction::South,
+        ] {
+            if matches!(
+                plan_tear_out(capabilities, direction),
+                CapabilitySupport::Composed
+            ) {
+                return Err(anyhow!(
+                    "configured wm '{}' is missing a tear-out composer for {direction}",
+                    adapter_name
+                ));
+            }
+        }
+    }
+
+    Ok(())
 }
 
 impl WindowManagerSession for ConfiguredWindowManager {
@@ -763,6 +805,41 @@ mod tests {
     }
 
     #[test]
+    fn configured_window_manager_rejects_composed_tear_out_without_composer() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+
+        let err = match ConfiguredWindowManager::try_new(
+            Box::new(FakeSession::with_capabilities(
+                calls,
+                composed_tear_out_capabilities(Direction::North),
+            )),
+            WindowManagerFeatures::default(),
+        ) {
+            Ok(_) => panic!("composed tear-out should require a tear-out composer"),
+            Err(err) => err,
+        };
+
+        assert!(err.to_string().contains("missing a tear-out composer"));
+    }
+
+    #[test]
+    fn configured_window_manager_accepts_composed_tear_out_with_composer() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let mut features = WindowManagerFeatures::default();
+        features.tear_out_composer = Some(Box::new(FakeTearOutComposer));
+
+        let wm = ConfiguredWindowManager::new(
+            Box::new(FakeSession::with_capabilities(
+                calls,
+                composed_tear_out_capabilities(Direction::North),
+            )),
+            features,
+        );
+
+        assert!(wm.tear_out_composer().is_some());
+    }
+
+    #[test]
     fn built_in_connectors_are_typed_as_configured_window_managers() {
         fn assert_spec(_spec: &'static dyn WindowManagerSpec) {}
 
@@ -812,6 +889,22 @@ mod tests {
         )
     }
 
+    fn composed_tear_out_capabilities(direction: Direction) -> WindowManagerCapabilities {
+        let mut capabilities = WindowManagerCapabilities::none();
+        capabilities.primitives.tear_out_right = true;
+        capabilities.primitives.move_column = true;
+        capabilities.primitives.consume_into_column_and_move = true;
+
+        match direction {
+            Direction::West => capabilities.tear_out.west = CapabilitySupport::Composed,
+            Direction::East => capabilities.tear_out.east = CapabilitySupport::Composed,
+            Direction::North => capabilities.tear_out.north = CapabilitySupport::Composed,
+            Direction::South => capabilities.tear_out.south = CapabilitySupport::Composed,
+        }
+
+        capabilities
+    }
+
     struct TestConfiguredWindowManager {
         wm: ConfiguredWindowManager,
         calls: Arc<Mutex<Vec<String>>>,
@@ -847,11 +940,25 @@ mod tests {
 
     struct FakeSession {
         calls: Arc<Mutex<Vec<String>>>,
+        capabilities: WindowManagerCapabilities,
     }
 
     impl FakeSession {
         fn new(calls: Arc<Mutex<Vec<String>>>) -> Self {
-            Self { calls }
+            Self {
+                calls,
+                capabilities: WindowManagerCapabilities::none(),
+            }
+        }
+
+        fn with_capabilities(
+            calls: Arc<Mutex<Vec<String>>>,
+            capabilities: WindowManagerCapabilities,
+        ) -> Self {
+            Self {
+                calls,
+                capabilities,
+            }
         }
 
         fn push_call(&self, call: impl Into<String>) {
@@ -868,7 +975,7 @@ mod tests {
         }
 
         fn capabilities(&self) -> WindowManagerCapabilities {
-            WindowManagerCapabilities::none()
+            self.capabilities
         }
 
         fn focused_window(&mut self) -> Result<FocusedWindowRecord> {
@@ -915,6 +1022,18 @@ mod tests {
 
     impl WindowCycleProvider for FakeCycleProvider {
         fn focus_or_cycle(&mut self, _request: &super::WindowCycleRequest) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    struct FakeTearOutComposer;
+
+    impl super::WindowTearOutComposer for FakeTearOutComposer {
+        fn compose_tear_out(
+            &mut self,
+            _direction: Direction,
+            _source_tile_index: usize,
+        ) -> Result<()> {
             Ok(())
         }
     }

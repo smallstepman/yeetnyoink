@@ -33,10 +33,10 @@ impl WindowManagerSpec for PaneruSpec {
     }
 
     fn connect(&self) -> Result<ConfiguredWindowManager> {
-        Ok(ConfiguredWindowManager::new(
+        ConfiguredWindowManager::try_new(
             Box::new(PaneruAdapter::connect()?),
             WindowManagerFeatures::default(),
-        ))
+        )
     }
 }
 
@@ -146,7 +146,10 @@ impl WindowManagerSession for PaneruAdapter {
     }
 
     fn focus_direction(&mut self, direction: Direction) -> Result<()> {
-        Self::send_cmd_status("focus", &["window", "focus", Self::direction_name(direction)])
+        Self::send_cmd_status(
+            "focus",
+            &["window", "focus", Self::direction_name(direction)],
+        )
     }
 
     fn move_direction(&mut self, direction: Direction) -> Result<()> {
@@ -179,7 +182,11 @@ impl WindowManagerSession for PaneruAdapter {
         }
         let (program, args) = command.split_first().context("spawn: empty command")?;
         let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-        runtime::run_command_status(program, &args_refs, &CommandContext::new(Self::NAME, "spawn"))
+        runtime::run_command_status(
+            program,
+            &args_refs,
+            &CommandContext::new(Self::NAME, "spawn"),
+        )
     }
 
     fn focus_window_by_id(&mut self, _id: u64) -> Result<()> {
@@ -219,7 +226,9 @@ fn get_frontmost_window() -> Result<PaneruWindowData> {
 
     // Get app info for the ASN
     let info_output = std::process::Command::new("lsappinfo")
-        .args(["info", "-only", "pid", "-only", "name", "-only", "bundleid", &asn])
+        .args([
+            "info", "-only", "pid", "-only", "name", "-only", "bundleid", &asn,
+        ])
         .output()
         .context("failed to run lsappinfo info")?;
 
@@ -231,7 +240,7 @@ fn get_frontmost_window() -> Result<PaneruWindowData> {
     }
 
     let info = String::from_utf8_lossy(&info_output.stdout);
-    
+
     let mut pid: u32 = 0;
     let mut app_name: Option<String> = None;
     let mut bundle_id: Option<String> = None;
