@@ -156,7 +156,17 @@ Key mux operations:
 
 ### Window Managers (`src/adapters/window_managers/`)
 
-WM adapters handle:
+WM selection is config-driven rather than probe-driven:
+- `config.toml` selects one built-in backend with `[wm].enabled_integration`
+- `connect_selected()` resolves that enum to a built-in `WindowManagerSpec`
+- There is **no runtime WM probing/detection or fallback chain**
+
+Each built-in WM exports a spec object from `src/adapters/window_managers/<name>.rs`. A spec connects the object-safe core session plus any optional WM-only features:
+- `domain_factory`: provides WM domains to the runtime topology builder when the backend can expose them
+- `window_cycle`: powers commands like `focus-or-cycle` when the backend supports app cycling/summoning
+- `tear_out_composer`: applies WM-specific post-tear-out composition when the backend needs it
+
+The object-safe core session still handles the common WM responsibilities:
 - Window listing with geometry
 - Directional window focus
 - Window movement/placement
@@ -165,6 +175,8 @@ WM adapters handle:
 Supported WMs:
 - **niri**: IPC via `niri-ipc` crate
 - **i3**: IPC via Unix socket
+- **paneru**: socket/CLI adapter on macOS
+- **yabai**: shell command adapter on macOS
 
 ## Data Flow Examples
 
@@ -260,7 +272,7 @@ The system is heavily configuration-driven:
 
 ### Override Points
 - `app_adapter_override()`: Pin to specific app
-- `wm_adapter_override()`: Pin to specific WM
+- `[wm].enabled_integration`: Select the built-in WM backend
 - `--config <path>`: Explicit config file path
 
 ## Error Handling Philosophy
@@ -310,8 +322,15 @@ The system is heavily configuration-driven:
 
 ### Window Manager
 1. Create `src/adapters/window_managers/<name>.rs`
-2. Implement `WindowManager` trait
-3. Add to `WmBackend` enum in `src/config.rs`
+2. Export a `WindowManagerSpec` from that file and build a `ConfiguredWindowManager`
+3. Put common behavior in the object-safe core session and wire optional features only when supported:
+   - `domain_factory`
+   - `window_cycle`
+   - `tear_out_composer`
+4. Add the backend to `WmBackend` in `src/config.rs`
+5. Add the spec to the built-in backend mapping in `src/adapters/window_managers/mod.rs`
+
+Do **not** add runtime detector/connect code that probes the current desktop session. New WM support is registered through the config-driven built-in mapping only.
 
 ## Dependencies
 

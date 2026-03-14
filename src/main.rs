@@ -13,10 +13,11 @@ use yeet_and_yoink::profiling::ProfileConfig;
 #[derive(Parser)]
 #[command(
     name = "yeet-and-yoink",
-    about = "Deep focus/move integration for your window manager"
+    about = "Deep focus/move integration for your configured window manager",
+    after_help = "Choose the built-in window manager integration in your config via [wm].enabled_integration. No runtime window-manager detection or probing occurs."
 )]
 struct Cli {
-    /// Load config from an explicit path instead of platform discovery.
+    /// Load config from an explicit path; [wm].enabled_integration selects the built-in WM integration.
     #[arg(long, global = true, value_name = "PATH")]
     config: Option<PathBuf>,
 
@@ -189,7 +190,27 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::BrowserHostMode;
+    use super::{BrowserHostMode, Cli};
+    use clap::CommandFactory;
+
+    #[test]
+    fn cli_help_describes_configured_wm_selection() {
+        let mut command = Cli::command();
+        let mut help = Vec::new();
+        command
+            .write_long_help(&mut help)
+            .expect("help text should render");
+        let help = String::from_utf8(help).expect("help text should be utf-8");
+
+        assert!(
+            help.contains("Choose the built-in window manager integration in your config"),
+            "help should explain that WM selection is config driven: {help}"
+        );
+        assert!(
+            help.contains("No runtime window-manager detection or probing occurs"),
+            "help should explain that WM probing is disabled: {help}"
+        );
+    }
 
     #[test]
     fn browser_host_mode_parses_firefox_aliases() {
