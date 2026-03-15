@@ -43,61 +43,6 @@ fn window_matches_adapter(adapter_name: &str, window: &WindowRecord) -> bool {
     resolve_adapter_for_window(adapter_name, window).is_some()
 }
 
-pub(crate) fn probe_directional_target(
-    wm: &mut ConfiguredWindowManager,
-    dir: Direction,
-    source_window_id: u64,
-    focus_mode: DirectionalProbeFocusMode,
-) -> Result<Option<WindowRecord>> {
-    if let Err(err) = wm.focus_direction(dir) {
-        logging::debug(format!(
-            "actions::probe: directional target probe failed dir={} err={:#}",
-            dir, err
-        ));
-        return Ok(None);
-    }
-
-    let target = match focused_window_record(wm) {
-        Ok(window) => window,
-        Err(err) => {
-            let _ = wm.focus_window_by_id(source_window_id);
-            return Err(err.context("failed to read target window during directional probe"));
-        }
-    };
-
-    if target.id == source_window_id {
-        return Ok(None);
-    }
-
-    if matches!(focus_mode, DirectionalProbeFocusMode::RestoreSource) {
-        wm.focus_window_by_id(source_window_id).with_context(|| {
-            format!("failed to restore focus to window {}", source_window_id)
-        })?;
-    }
-    Ok(Some(target))
-}
-
-pub(crate) fn probe_directional_target_for_adapter(
-    wm: &mut ConfiguredWindowManager,
-    dir: Direction,
-    source_window_id: u64,
-    adapter_name: &str,
-    focus_mode: DirectionalProbeFocusMode,
-) -> Result<Option<WindowRecord>> {
-    let Some(target_window) =
-        probe_directional_target(wm, dir, source_window_id, focus_mode)?
-    else {
-        return Ok(None);
-    };
-    if window_matches_adapter(adapter_name, &target_window) {
-        return Ok(Some(target_window));
-    }
-    if matches!(focus_mode, DirectionalProbeFocusMode::KeepTarget) {
-        let _ = wm.focus_window_by_id(source_window_id);
-    }
-    Ok(None)
-}
-
 /// A scoped helper that owns directional focus mutation and restoration for a
 /// single source window.  Callers in movement, merge, and the orchestrator
 /// should build on this rather than invoking the free `probe_directional_*`
@@ -125,7 +70,37 @@ impl<'a> DirectionalWindowProbe<'a> {
         dir: Direction,
         focus_mode: DirectionalProbeFocusMode,
     ) -> Result<Option<WindowRecord>> {
-        probe_directional_target(self.wm, dir, self.source_window_id, focus_mode)
+        if let Err(err) = self.wm.focus_direction(dir) {
+            logging::debug(format!(
+                "actions::probe: directional target probe failed dir={} err={:#}",
+                dir, err
+            ));
+            return Ok(None);
+        }
+
+        let target = match focused_window_record(self.wm) {
+            Ok(window) => window,
+            Err(err) => {
+                let _ = self.wm.focus_window_by_id(self.source_window_id);
+                return Err(err.context("failed to read target window during directional probe"));
+            }
+        };
+
+        if target.id == self.source_window_id {
+            return Ok(None);
+        }
+
+        if matches!(focus_mode, DirectionalProbeFocusMode::RestoreSource) {
+            self.wm
+                .focus_window_by_id(self.source_window_id)
+                .with_context(|| {
+                    format!(
+                        "failed to restore focus to window {}",
+                        self.source_window_id
+                    )
+                })?;
+        }
+        Ok(Some(target))
     }
 
     /// Like [`window`] but also filters by adapter name — returns `None` when
@@ -136,15 +111,30 @@ impl<'a> DirectionalWindowProbe<'a> {
         adapter_name: &str,
         focus_mode: DirectionalProbeFocusMode,
     ) -> Result<Option<WindowRecord>> {
-        probe_directional_target_for_adapter(
-            self.wm,
-            dir,
-            self.source_window_id,
-            adapter_name,
-            focus_mode,
-        )
+        let Some(target_window) = self.window(dir, focus_mode)? else {
+            return Ok(None);
+        };
+        if window_matches_adapter(adapter_name, &target_window) {
+            return Ok(Some(target_window));
+        }
+        if matches!(focus_mode, DirectionalProbeFocusMode::KeepTarget) {
+            let _ = self.wm.focus_window_by_id(self.source_window_id);
+        }
+        Ok(None)
     }
 }
+
+/// Thin delegator kept for backward compatibility.  All semantics live in
+/// [`DirectionalWindowProbe::window`].
+pub(crate) fn probe_directional_target(
+    wm: &mut ConfiguredWindowManager,
+    dir: Direction,
+    source_window_id: u64,
+    focus_mode: DirectionalProbeFocusMode,
+) -> Result<Option<WindowRecord>> {
+    DirectionalWindowProbe::new(wm, source_window_id).window(dir, focus_mode)
+}
+
 
 pub(crate) fn probe_in_place_target_for_adapter(
     wm: &mut ConfiguredWindowManager,
