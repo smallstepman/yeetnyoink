@@ -128,6 +128,12 @@ pub(crate) fn attempt_focused_app_move(
 mod tests {
     /// The move entrypoint must delegate focused-session setup to
     /// `with_focused_app_session` rather than duplicating the preamble inline.
+    ///
+    /// The assertion is scoped to the *body* of `attempt_focused_app_move` by
+    /// splitting on the function signature.  This ensures the check cannot be
+    /// satisfied by the `use` import at the top of the file, which also
+    /// contains the string `with_focused_app_session` and would allow a
+    /// regression to slip through undetected.
     #[test]
     fn attempt_focused_app_move_uses_shared_session_helper() {
         let source = include_str!("movement.rs");
@@ -136,14 +142,27 @@ mod tests {
             .map(|(impl_part, _)| impl_part)
             .expect("movement.rs must contain a test module");
 
+        // Isolate everything from the function signature onward, excluding
+        // the import section where `with_focused_app_session` also appears.
+        let fn_body = impl_src
+            .split_once("fn attempt_focused_app_move(")
+            .map(|(_, rest)| rest)
+            .expect("attempt_focused_app_move must be defined in movement.rs");
+
         assert!(
-            impl_src.contains("with_focused_app_session"),
-            "attempt_focused_app_move must delegate to with_focused_app_session"
+            fn_body.contains("with_focused_app_session("),
+            "attempt_focused_app_move must call with_focused_app_session(...) \
+             in its body, not merely import it"
         );
         assert!(
-            !impl_src.contains("resolve_app_chain"),
-            "resolve_app_chain must not appear in movement.rs implementation; \
-             session building must go through with_focused_app_session"
+            !fn_body.contains("focused_window("),
+            "attempt_focused_app_move must not duplicate focused_window() preamble; \
+             use with_focused_app_session instead"
+        );
+        assert!(
+            !fn_body.contains("resolve_app_chain("),
+            "attempt_focused_app_move must not duplicate resolve_app_chain() preamble; \
+             use with_focused_app_session instead"
         );
     }
 
