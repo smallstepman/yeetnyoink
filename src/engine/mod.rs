@@ -39,10 +39,3 @@ pub mod orchestrator {
         ActionKind, ActionRequest, RoutingDecision, RoutingError, Orchestrator,
     };
 }
-
-/// Backward-compat alias for `engine::resolution` chain functions.
-pub(crate) mod chain_resolver {
-    pub(crate) use crate::engine::resolution::{
-        default_app_domain_adapters, resolve_app_chain, resolve_window_domain_id,
-    };
-}

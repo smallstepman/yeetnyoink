@@ -1638,4 +1638,13 @@ enabled = true
             }
         }
     }
+
+    #[test]
+    fn engine_mod_drops_unused_chain_resolver_shim() {
+        let engine_mod = include_str!("../mod.rs");
+        assert!(
+            !engine_mod.contains("pub(crate) mod chain_resolver"),
+            "engine/mod.rs must not keep an unused chain_resolver shim once internal engine code uses canonical resolution imports",
+        );
+    }
 }
