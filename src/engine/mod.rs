@@ -31,11 +31,6 @@ pub mod domain {
 /// Backward-compat alias for `engine::wm`.
 pub mod window_manager {
     pub use crate::engine::wm::*;
-    // connect_selected and related bootstrap functions live in wm but are also
-    // re-exported here for callers using the engine::window_manager:: path.
-    pub use crate::engine::wm::connect_selected;
-    #[cfg(test)]
-    pub use crate::engine::wm::connect_backend_for_test;
 }
 
 /// Backward-compat alias for `engine::actions` orchestrator types.

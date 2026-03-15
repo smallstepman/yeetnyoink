@@ -62,6 +62,7 @@ where
 /// Testable inner implementation of the chain-walk loop.
 /// `count` is the number of items; `f` receives the index and returns
 /// `Ok(Some(v))` to stop, `Ok(None)` to continue, or `Err(e)` to propagate.
+#[allow(dead_code)]
 pub(crate) fn walk_chain_iter<T, F>(count: usize, mut f: F) -> Result<Option<T>>
 where
     F: FnMut(usize) -> Result<Option<T>>,
