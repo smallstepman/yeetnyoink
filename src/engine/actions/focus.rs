@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 
-use super::with_focused_app_session;
+use super::context::with_focused_app_session;
 use crate::engine::contract::TopologyHandler;
 use crate::engine::topology::Direction;
 use crate::engine::window_manager::ConfiguredWindowManager;

@@ -8,7 +8,7 @@ pub(crate) mod tearout;
 // Re-exported for use throughout the actions module and beyond; walk_chain
 // is unused until later tasks consume it.
 #[allow(unused_imports)]
-pub(crate) use context::{AppContext, FocusedAppSession, walk_chain, with_focused_app_session};
+pub(crate) use context::{AppContext, walk_chain};
 pub(crate) use merge::*;
 pub(crate) use probe::*;
 pub(crate) use tearout::*;
