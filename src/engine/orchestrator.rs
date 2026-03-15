@@ -328,41 +328,6 @@ impl Orchestrator {
         )
     }
 
-    #[allow(dead_code)]
-    fn focus_tearout_window(
-        &self,
-        wm: &mut ConfiguredWindowManager,
-        pre_window_ids: &BTreeSet<u64>,
-        source_window_id: u64,
-        source_pid: Option<ProcessId>,
-        source_app_id: &str,
-    ) -> Result<Option<u64>> {
-        focus_tearout_window(wm, pre_window_ids, source_window_id, source_pid, source_app_id)
-    }
-
-    #[allow(dead_code)]
-    fn select_tearout_window_id(
-        pre_window_ids: &BTreeSet<u64>,
-        windows: &[WindowRecord],
-        source_window_id: u64,
-        source_pid: Option<ProcessId>,
-        source_app_id: &str,
-    ) -> Option<u64> {
-        select_tearout_window_id(pre_window_ids, windows, source_window_id, source_pid, source_app_id)
-    }
-
-    #[allow(dead_code)]
-    fn place_tearout_window(
-        &self,
-        wm: &mut ConfiguredWindowManager,
-        dir: Direction,
-        source_window_id: u64,
-        source_tile_index: usize,
-        target_window_id: Option<u64>,
-    ) -> Result<()> {
-        place_tearout_window(wm, dir, source_window_id, source_tile_index, target_window_id)
-    }
-
     fn leaf_from_window(window: &WindowRecord, leaf_id: u64) -> GlobalLeaf {
         let domain = domain_id_for_window(
             window.app_id.as_deref(),
@@ -757,7 +722,10 @@ mod tests {
 
     use anyhow::{anyhow, Result};
 
-    use super::{ActionKind, ActionRequest, Orchestrator};
+    use super::{
+        focus_tearout_window, place_tearout_window, select_tearout_window_id, ActionKind,
+        ActionRequest, Orchestrator,
+    };
     use crate::engine::domain::PaneState;
     use crate::engine::domain::{DomainLeafSnapshot, DomainSnapshot, ErasedDomain};
     use crate::engine::domain::{EDITOR_DOMAIN_ID, TERMINAL_DOMAIN_ID};
@@ -944,7 +912,6 @@ mod tests {
         assert!(!implementation.contains("W: RuntimeWindowManager"));
         assert!(implementation.contains("pub fn execute("));
         assert!(implementation.contains("wm: &mut ConfiguredWindowManager"));
-        assert!(implementation.contains("fn place_tearout_window("));
     }
 
     #[test]
@@ -1622,11 +1589,9 @@ enabled = true
 
     #[test]
     fn place_tearout_window_moves_column_for_composed_west() {
-        let orchestrator = Orchestrator::default();
         let mut wm = fake_wm_with_tearout_composer(Direction::West);
 
-        orchestrator
-            .place_tearout_window(&mut wm.wm, Direction::West, 11, 4, None)
+        place_tearout_window(&mut wm.wm, Direction::West, 11, 4, None)
             .expect("tearout placement should succeed");
         assert_eq!(wm.take_composer_calls(), vec![("west".into(), 4)]);
     }
@@ -1634,10 +1599,8 @@ enabled = true
     #[test]
     fn composed_tearout_routes_through_wm_specific_composer() {
         let mut wm = fake_wm_with_tearout_composer(Direction::North);
-        let orchestrator = Orchestrator::default();
 
-        orchestrator
-            .place_tearout_window(&mut wm.wm, Direction::North, 11, 3, None)
+        place_tearout_window(&mut wm.wm, Direction::North, 11, 3, None)
             .expect("tearout placement should succeed");
 
         assert_eq!(wm.take_composer_calls(), vec![("north".into(), 3)]);
@@ -1645,18 +1608,15 @@ enabled = true
 
     #[test]
     fn place_tearout_window_consumes_for_composed_north() {
-        let orchestrator = Orchestrator::default();
         let mut wm = fake_wm_with_tearout_composer(Direction::North);
 
-        orchestrator
-            .place_tearout_window(&mut wm.wm, Direction::North, 11, 7, None)
+        place_tearout_window(&mut wm.wm, Direction::North, 11, 7, None)
             .expect("tearout placement should succeed");
         assert_eq!(wm.take_composer_calls(), vec![("north".into(), 7)]);
     }
 
     #[test]
     fn focus_tearout_window_retries_until_new_window_appears() {
-        let orchestrator = Orchestrator::default();
         let source_pid = ProcessId::new(5151);
         let mut pre_window_ids = BTreeSet::new();
         pre_window_ids.insert(31);
@@ -1690,15 +1650,14 @@ enabled = true
             closed_window_ids: Vec::new(),
         });
 
-        let focused = orchestrator
-            .focus_tearout_window(
-                &mut wm.wm,
-                &pre_window_ids,
-                31,
-                source_pid,
-                "com.mitchellh.ghostty",
-            )
-            .expect("tearout focus should succeed");
+        let focused = focus_tearout_window(
+            &mut wm.wm,
+            &pre_window_ids,
+            31,
+            source_pid,
+            "com.mitchellh.ghostty",
+        )
+        .expect("tearout focus should succeed");
 
         let state = wm.snapshot();
         assert_eq!(focused, Some(32));
@@ -1715,10 +1674,8 @@ enabled = true
 
     #[test]
     fn place_tearout_window_focuses_known_target_before_composed_north() {
-        let orchestrator = Orchestrator::default();
         let mut wm = fake_wm_with_tearout_composer(Direction::North);
-        orchestrator
-            .place_tearout_window(&mut wm.wm, Direction::North, 11, 9, Some(12))
+        place_tearout_window(&mut wm.wm, Direction::North, 11, 9, Some(12))
             .expect("tearout placement should succeed");
 
         let state = wm.snapshot();
@@ -1765,7 +1722,7 @@ enabled = true
             },
         ];
 
-        let selected = Orchestrator::select_tearout_window_id(
+        let selected = select_tearout_window_id(
             &pre_window_ids,
             &windows,
             10,
@@ -1799,7 +1756,7 @@ enabled = true
             },
         ];
 
-        let selected = Orchestrator::select_tearout_window_id(
+        let selected = select_tearout_window_id(
             &pre_window_ids,
             &windows,
             20,
