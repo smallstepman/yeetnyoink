@@ -50,7 +50,6 @@ pub struct FocusedWindowRecord {
     pub original_tile_index: usize,
 }
 
-impl FocusedWindowRecord {}
 
 pub trait WindowManagerSession: Send {
     fn adapter_name(&self) -> &'static str;

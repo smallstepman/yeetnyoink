@@ -1,7 +1,6 @@
 use anyhow::{anyhow, Context, Result};
 
-use crate::adapters::window_managers::spec_for_backend;
-use crate::config::{selected_wm_backend, WmBackend};
+use crate::config::WmBackend;
 use crate::engine::topology::Direction;
 use crate::engine::wm::capabilities::{plan_tear_out, CapabilitySupport, WindowManagerCapabilities};
 use crate::engine::wm::session::{
@@ -182,37 +181,6 @@ pub trait WindowManagerSpec: Sync {
     fn backend(&self) -> WmBackend;
     fn name(&self) -> &'static str;
     fn connect(&self) -> Result<ConfiguredWindowManager>;
-}
-
-fn connect_backend(
-    backend: WmBackend,
-    spec: &'static dyn WindowManagerSpec,
-) -> Result<ConfiguredWindowManager> {
-    if spec.backend() != backend {
-        return Err(anyhow!(
-            "wm backend '{}' resolved to mismatched spec '{}'",
-            backend.as_str(),
-            spec.name()
-        ));
-    }
-
-    spec.connect()
-        .with_context(|| format!("failed to connect configured wm '{}'", spec.name()))
-}
-
-#[cfg(test)]
-pub fn connect_backend_for_test(
-    backend: WmBackend,
-    spec: &'static dyn WindowManagerSpec,
-) -> Result<ConfiguredWindowManager> {
-    connect_backend(backend, spec)
-}
-
-pub fn connect_selected() -> Result<ConfiguredWindowManager> {
-    let _span = tracing::debug_span!("window_managers.connect_selected").entered();
-    let backend = selected_wm_backend();
-    let spec = spec_for_backend(backend);
-    connect_backend(backend, spec)
 }
 
 // ---------------------------------------------------------------------------
