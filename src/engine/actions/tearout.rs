@@ -248,9 +248,8 @@ pub(crate) fn place_tearout_window(
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
-    use std::sync::{Arc, Mutex};
 
-    use super::{focus_tearout_window, select_tearout_window_id, wait_for_tearout_window_id, TearOutRequest};
+    use super::{focus_tearout_window, select_tearout_window_id, TearOutRequest};
     use crate::engine::runtime::ProcessId;
     use crate::engine::window_manager::{
         ConfiguredWindowManager, FocusedWindowRecord, ResizeIntent, WindowManagerCapabilities,

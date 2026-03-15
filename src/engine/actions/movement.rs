@@ -16,14 +16,14 @@ use crate::logging;
 /// the window manager reference.  `run` iterates the adapter chain and
 /// delegates detailed mechanics to [`PassthroughMergeContext`] and
 /// [`TearOutRequest`], keeping this file readable as a policy loop.
-struct MoveExecution<'a> {
-    wm: &'a mut ConfiguredWindowManager,
-    session: &'a FocusedAppSession,
-    dir: Direction,
+pub(crate) struct MoveExecution<'a> {
+    pub(crate) wm: &'a mut ConfiguredWindowManager,
+    pub(crate) session: &'a FocusedAppSession,
+    pub(crate) dir: Direction,
 }
 
 impl MoveExecution<'_> {
-    fn run(self) -> Result<bool> {
+    pub(crate) fn run(self) -> Result<bool> {
         let Self { wm, session, dir } = self;
         for (index, app) in session.chain.iter().enumerate() {
             if handle_move_decision(wm, session, index, app.as_ref(), dir)? {

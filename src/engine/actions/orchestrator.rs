@@ -1458,27 +1458,32 @@ enabled = true
         assert_eq!(selected, Some(21));
     }
 
-    /// Verifies that the `PassthroughMergeContext` type is defined in `merge.rs`
-    /// and that when a matching adapter neighbor exists the merge path wins —
-    /// `PassthroughMergeContext::run` returns `true`, the source window is closed
-    /// (merge cleanup), and the wm fallback move is never called.
+    /// Exercises the real linear move policy in `movement.rs` to prove that
+    /// when a matching adapter neighbor exists the move flow prefers merge over
+    /// tear-out and WM fallback.
     ///
-    /// Compile-fails until `PassthroughMergeContext` exists in `merge.rs`.
+    /// The adapter has `tear_out: true` so the test can distinguish merge-wins
+    /// from tear-out-wins; the policy must pick merge first.
+    ///
+    /// Compile-fails until `MoveExecution` is exposed as `pub(crate)` in
+    /// `movement.rs`.
     #[test]
     fn passthrough_move_prefers_merge_before_tear_out_or_wm_fallback() {
         use crate::engine::actions::context::FocusedAppSession;
-        use crate::engine::actions::merge::PassthroughMergeContext;
+        use crate::engine::actions::movement::MoveExecution;
         use crate::engine::contract::{
             AppAdapter, AppCapabilities, AppKind, MergePreparation, TearResult, TopologyHandler,
         };
 
-        // Structural compile guard — fails until PassthroughMergeContext is defined.
-        fn _assert_exists<'a>(_: std::marker::PhantomData<PassthroughMergeContext<'a>>) {}
+        // Structural compile guard — fails until MoveExecution is pub(crate) in
+        // movement.rs.
+        fn _assert_exists<'a, 'b>(_: std::marker::PhantomData<MoveExecution<'a>>) {}
 
         // A minimal adapter whose adapter_name matches what window_matches_adapter
         // will resolve for "org.wezfurlong.wezterm" windows — the WeztermBackend
-        // adapter_name constant is "terminal" (requires wezterm config enabled below),
-        // and whose merge_into_target always succeeds.
+        // adapter_name constant is "terminal" (requires wezterm config enabled below).
+        // tear_out is intentionally true so the test distinguishes merge-wins from
+        // tear-out-wins: only merge produces a close_call.
         struct MergeableAdapter;
 
         impl TopologyHandler for MergeableAdapter {
@@ -1519,13 +1524,13 @@ enabled = true
                     move_internal: false,
                     resize_internal: false,
                     rearrange: false,
-                    tear_out: false,
-                    merge: true, // merge capability enabled
+                    tear_out: true,  // enabled so merge-vs-tear-out ordering is observable
+                    merge: true,     // merge capability enabled — must win
                 }
             }
         }
 
-        // Enable wezterm in config so that window_matches_adapter("wezterm", ...)
+        // Enable wezterm in config so that window_matches_adapter("terminal", ...)
         // recognises the neighbor window correctly.
         let _guard = crate::utils::env_guard();
         let root = unique_temp_dir("merge-wins");
@@ -1571,29 +1576,27 @@ enabled = true
             closed_window_ids: Vec::new(),
         });
 
+        // Build session with the MergeableAdapter in the chain; MoveExecution
+        // iterates this chain and calls handle_move_decision, which goes through
+        // the full Passthrough → merge → tear-out → wm-fallback policy.
         let session = FocusedAppSession {
             source_window_id: 10,
             source_tile_index: 0,
             pid: source_pid,
             app_id: "org.wezfurlong.wezterm".into(),
             title: "source".into(),
-            chain: vec![],
+            chain: vec![Box::new(MergeableAdapter)],
         };
 
-        let adapter = MergeableAdapter;
-        let merged = PassthroughMergeContext {
-            app: &adapter,
-            session: &session,
-            outer_chain: &[],
-            dir: Direction::East,
-        }
-        .run(&mut wm.wm)
-        .expect("PassthroughMergeContext should not error when merge succeeds");
+        let moved = MoveExecution { wm: &mut wm.wm, session: &session, dir: Direction::East }
+            .run()
+            .expect("MoveExecution should not error when merge succeeds");
 
-        assert!(merged, "merge should win when a matching adapter neighbor exists");
+        assert!(moved, "move should be handled (merge wins) when a matching adapter neighbor exists");
 
         let state = wm.snapshot();
-        // Source window must have been closed by cleanup_merged_source_window.
+        // Source window must have been closed by cleanup_merged_source_window — this
+        // only happens on the merge path, not the tear-out or wm-fallback paths.
         assert_eq!(state.close_calls, 1, "source window should be closed after merge");
         // The wm move fallback must never run when merge wins.
         assert_eq!(state.move_calls, 0, "wm move fallback must not run when merge succeeds");
