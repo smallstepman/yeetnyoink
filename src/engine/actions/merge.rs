@@ -1,10 +1,10 @@
 use anyhow::Result;
 
 use crate::engine::actions::context::FocusedAppSession;
-use crate::engine::contract::{AppAdapter, MergeExecutionMode, TopologyHandler};
+use crate::engine::contracts::{AppAdapter, MergeExecutionMode, TopologyHandler};
 use crate::engine::runtime::ProcessId;
 use crate::engine::topology::Direction;
-use crate::engine::window_manager::ConfiguredWindowManager;
+use crate::engine::wm::ConfiguredWindowManager;
 use crate::engine::actions::probe::{
     probe_in_place_target_for_adapter,
     resolve_adapter_for_window, restore_in_place_target_focus, DirectionalProbeFocusMode,

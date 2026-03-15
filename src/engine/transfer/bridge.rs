@@ -4,13 +4,13 @@ use std::sync::OnceLock;
 
 use anyhow::{anyhow, Context, Result};
 
-use crate::engine::contract::{
+use crate::engine::contracts::{
     AppAdapter, MergePreparation, TopologyHandler as AppTopologyHandler,
 };
 use crate::engine::resolution::domain::domain_id_for_app_kind;
 use crate::engine::runtime::ProcessId;
 use crate::engine::topology::{Direction, DomainId, Rect};
-use crate::engine::window_manager::ConfiguredWindowManager;
+use crate::engine::wm::ConfiguredWindowManager;
 
 use super::pipeline::{
     DomainLeafSnapshot, DomainSnapshot, ErasedDomain, TilingDomain, TopologyModifierImpl,
@@ -281,7 +281,7 @@ pub fn domain_id_for_window(
     pid: Option<ProcessId>,
     title: Option<&str>,
 ) -> DomainId {
-    crate::engine::chain_resolver::resolve_window_domain_id(app_id, pid, title)
+    crate::engine::resolution::resolve_window_domain_id(app_id, pid, title)
 }
 
 pub fn runtime_domains_for_window_manager(
@@ -298,7 +298,7 @@ pub fn runtime_domains_for_window_manager(
         )));
     }
 
-    for adapter in crate::engine::chain_resolver::default_app_domain_adapters() {
+    for adapter in crate::engine::resolution::default_app_domain_adapters() {
         let domain_id = domain_id_for_app_kind(adapter.kind());
         domains.push(Box::new(AppDomainPlugin::new(domain_id, adapter)));
     }
@@ -309,7 +309,7 @@ pub fn runtime_domains_for_window_manager(
     let pid = focused.pid;
     let owner_pid = pid.map(ProcessId::get).unwrap_or(0);
     let mut overridden = HashSet::new();
-    for adapter in crate::engine::chain_resolver::resolve_app_chain(&app_id, owner_pid, &title) {
+    for adapter in crate::engine::resolution::resolve_app_chain(&app_id, owner_pid, &title) {
         let domain_id = domain_id_for_app_kind(adapter.kind());
         if overridden.insert(domain_id) {
             domains.push(Box::new(AppDomainPlugin::new(domain_id, adapter)));
@@ -323,7 +323,7 @@ pub fn runtime_domains_for_window_manager(
 mod tests {
     use super::{decode_native_window_ref, domain_id_for_window, encode_native_window_ref};
     use crate::adapters::apps::{alacritty, foot, ghostty, kitty, wezterm};
-    use crate::engine::chain_resolver::resolve_window_domain_id;
+    use crate::engine::resolution::resolve_window_domain_id;
     use crate::engine::runtime::ProcessId;
 
     #[test]
@@ -508,7 +508,7 @@ mod configured_window_manager_tests {
     use super::super::pipeline::{DomainLeafSnapshot, DomainSnapshot};
     use super::super::registry::{PaneState, WM_DOMAIN_ID};
     use crate::engine::topology::Rect;
-    use crate::engine::window_manager::{
+    use crate::engine::wm::{
         ConfiguredWindowManager, FocusedWindowRecord, ResizeIntent, WindowManagerCapabilities,
         WindowManagerDomainFactory, WindowManagerFeatures, WindowManagerSession, WindowRecord,
     };

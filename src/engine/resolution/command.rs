@@ -1,4 +1,4 @@
-use crate::engine::contract::TearResult;
+use crate::engine::contracts::TearResult;
 
 /// Assembles a full terminal+mux attach command by prepending the terminal's
 /// launch prefix to mux-provided attach arguments.

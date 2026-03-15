@@ -54,7 +54,7 @@ impl AppAdapter for PolicyBoundApp {
         self.inner.kind() // delegated — no policy logic
     }
 
-    fn capabilities(&self) -> crate::engine::contract::AdapterCapabilities {
+    fn capabilities(&self) -> crate::engine::contracts::AdapterCapabilities {
         let mut capabilities = self.inner.capabilities();
         if let Some(policy) = self.pane_policy() {
             capabilities.focus &= policy.focus_capability();

@@ -1,5 +1,5 @@
 use crate::adapters::apps::AppKind;
-use crate::engine::domain::{EDITOR_DOMAIN_ID, TERMINAL_DOMAIN_ID, WM_DOMAIN_ID};
+use crate::engine::transfer::{EDITOR_DOMAIN_ID, TERMINAL_DOMAIN_ID, WM_DOMAIN_ID};
 use crate::engine::topology::DomainId;
 
 /// Maps an AppKind to its canonical domain ID.

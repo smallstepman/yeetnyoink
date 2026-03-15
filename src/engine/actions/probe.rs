@@ -1,10 +1,10 @@
 use anyhow::{Context, Result};
 
-use crate::engine::contract::{AppAdapter, TopologyHandler};
+use crate::engine::contracts::{AppAdapter, TopologyHandler};
 use crate::engine::runtime::ProcessId;
 use crate::engine::topology::Direction;
-use crate::engine::window_manager::{ConfiguredWindowManager, WindowRecord};
-use crate::engine::chain_resolver::resolve_app_chain;
+use crate::engine::wm::{ConfiguredWindowManager, WindowRecord};
+use crate::engine::resolution::resolve_app_chain;
 use crate::logging;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -182,7 +182,7 @@ mod tests {
     use super::{focused_window_record, DirectionalProbeFocusMode, DirectionalWindowProbe};
     use crate::engine::runtime::ProcessId;
     use crate::engine::topology::Direction;
-    use crate::engine::window_manager::{
+    use crate::engine::wm::{
         ConfiguredWindowManager, FocusedWindowRecord, ResizeIntent, WindowManagerCapabilities,
         WindowManagerFeatures, WindowManagerSession, WindowRecord,
     };

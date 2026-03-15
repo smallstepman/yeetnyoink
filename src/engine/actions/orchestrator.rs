@@ -11,12 +11,12 @@ use super::movement::attempt_focused_app_move;
 use super::probe::{focused_window_record, DirectionalProbeFocusMode, DirectionalWindowProbe};
 use super::resize::attempt_focused_app_resize;
 
-use crate::engine::domain::ErasedDomain;
-use crate::engine::domain::{domain_id_for_window, encode_native_window_ref};
-use crate::engine::domain::{PayloadRegistry, TransferOutcome, TransferPipeline};
+use crate::engine::transfer::ErasedDomain;
+use crate::engine::transfer::{domain_id_for_window, encode_native_window_ref};
+use crate::engine::transfer::{PayloadRegistry, TransferOutcome, TransferPipeline};
 use crate::engine::topology::Direction;
 use crate::engine::topology::{DomainId, GlobalLeaf, Rect};
-use crate::engine::window_manager::{ConfiguredWindowManager, ResizeIntent, ResizeKind, WindowRecord};
+use crate::engine::wm::{ConfiguredWindowManager, ResizeIntent, ResizeKind, WindowRecord};
 use crate::logging;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -363,13 +363,13 @@ mod tests {
         cleanup_merged_source_window, focus_tearout_window, place_tearout_window,
         select_tearout_window_id,
     };
-    use crate::engine::domain::PaneState;
-    use crate::engine::domain::{DomainLeafSnapshot, DomainSnapshot, ErasedDomain};
-    use crate::engine::domain::{EDITOR_DOMAIN_ID, TERMINAL_DOMAIN_ID};
+    use crate::engine::transfer::PaneState;
+    use crate::engine::transfer::{DomainLeafSnapshot, DomainSnapshot, ErasedDomain};
+    use crate::engine::transfer::{EDITOR_DOMAIN_ID, TERMINAL_DOMAIN_ID};
     use crate::engine::runtime::ProcessId;
     use crate::engine::topology::Direction;
     use crate::engine::topology::{GlobalLeaf, Rect};
-    use crate::engine::window_manager::{
+    use crate::engine::wm::{
         CapabilitySupport, ConfiguredWindowManager, FocusedWindowRecord, ResizeIntent,
         WindowManagerCapabilities, WindowManagerFeatures, WindowManagerSession, WindowRecord,
         WindowTearOutComposer,
@@ -1471,7 +1471,7 @@ enabled = true
     fn passthrough_move_prefers_merge_before_tear_out_or_wm_fallback() {
         use crate::engine::actions::context::FocusedAppSession;
         use crate::engine::actions::movement::MoveExecution;
-        use crate::engine::contract::{
+        use crate::engine::contracts::{
             AppAdapter, AppCapabilities, AppKind, MergePreparation, TearResult, TopologyHandler,
         };
 
@@ -1603,5 +1603,39 @@ enabled = true
 
         restore_config(old_config);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Structural regression guard: internal engine action files must use canonical
+    /// layer imports (`engine::contracts`, `engine::transfer`, `engine::wm`,
+    /// `engine::resolution`) rather than the backward-compat shim paths.
+    #[test]
+    fn engine_action_modules_use_canonical_engine_imports() {
+        let files = [
+            ("orchestrator.rs", include_str!("orchestrator.rs")),
+            ("probe.rs", include_str!("probe.rs")),
+            ("tearout.rs", include_str!("tearout.rs")),
+            ("movement.rs", include_str!("movement.rs")),
+            ("merge.rs", include_str!("merge.rs")),
+            ("focus.rs", include_str!("focus.rs")),
+            ("resize.rs", include_str!("resize.rs")),
+            ("context.rs", include_str!("context.rs")),
+        ];
+        // Construct shim path strings at runtime to avoid self-match when this
+        // file is scanned by the test itself.
+        let prefix = "crate::engine::";
+        let shim_suffixes = ["contract::", "domain::", "window_manager::", "chain_resolver::"];
+        let shim_paths: Vec<String> = shim_suffixes
+            .iter()
+            .map(|s| format!("{prefix}{s}"))
+            .collect();
+        for (filename, source) in files {
+            for shim in &shim_paths {
+                assert!(
+                    !source.contains(shim.as_str()),
+                    "{filename} uses backward-compat shim path `{shim}` — \
+                     use canonical engine layer imports instead",
+                );
+            }
+        }
     }
 }

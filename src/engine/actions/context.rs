@@ -33,7 +33,7 @@ pub(crate) fn with_focused_app_session<T>(
     };
     let app_id = focused.app_id.unwrap_or_default();
     let title = focused.title.unwrap_or_default();
-    let chain = crate::engine::chain_resolver::resolve_app_chain(&app_id, pid.get(), &title);
+    let chain = crate::engine::resolution::resolve_app_chain(&app_id, pid.get(), &title);
     Ok(Some(f(FocusedAppSession {
         source_window_id: focused.id,
         source_tile_index: focused.original_tile_index,
@@ -49,7 +49,7 @@ pub(crate) fn with_focused_app_session<T>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::window_manager::{
+    use crate::engine::wm::{
         ConfiguredWindowManager, FocusedWindowRecord, ResizeIntent, WindowManagerCapabilities,
         WindowManagerFeatures, WindowManagerSession, WindowRecord,
     };

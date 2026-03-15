@@ -4,10 +4,10 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 
 use crate::engine::actions::context::FocusedAppSession;
-use crate::engine::contract::{AppAdapter, TopologyHandler};
+use crate::engine::contracts::{AppAdapter, TopologyHandler};
 use crate::engine::runtime::ProcessId;
 use crate::engine::topology::Direction;
-use crate::engine::window_manager::{
+use crate::engine::wm::{
     plan_tear_out, CapabilitySupport, ConfiguredWindowManager, WindowRecord,
 };
 use crate::logging;
@@ -251,7 +251,7 @@ mod tests {
 
     use super::{focus_tearout_window, select_tearout_window_id, TearOutRequest};
     use crate::engine::runtime::ProcessId;
-    use crate::engine::window_manager::{
+    use crate::engine::wm::{
         ConfiguredWindowManager, FocusedWindowRecord, ResizeIntent, WindowManagerCapabilities,
         WindowManagerFeatures, WindowManagerSession, WindowRecord,
     };

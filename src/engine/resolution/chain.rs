@@ -5,7 +5,7 @@ use crate::adapters::apps::{
 };
 use crate::adapters::terminal_multiplexers::tmux::Tmux;
 use crate::config::{AppSection, TerminalMuxBackend};
-use crate::engine::domain::WM_DOMAIN_ID;
+use crate::engine::transfer::WM_DOMAIN_ID;
 use crate::engine::resolution::policy::bind_app_policy;
 use crate::engine::runtime::{self, ProcessId};
 use crate::engine::topology::DomainId;
@@ -133,7 +133,7 @@ fn shell_pid_for_host_focused_tty(
     let panes = crate::adapters::terminal_multiplexers::active_mux_provider(host.aliases)
         .list_panes_for_pid(terminal_pid)
         .ok()?;
-    let focused_tty = crate::engine::contract::TerminalPaneSnapshot::active_or_first(panes.iter())
+    let focused_tty = crate::engine::contracts::TerminalPaneSnapshot::active_or_first(panes.iter())
         .and_then(|pane| pane.tty_name.as_deref());
     let selected = shell_pid_for_tty(shells, focused_tty, runtime::process_uses_tty);
     if let (Some(shell_pid), Some(tty_name)) = (selected, focused_tty) {

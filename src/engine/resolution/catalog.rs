@@ -1,5 +1,5 @@
 use crate::config::AppSection;
-use crate::engine::contract::AppAdapter;
+use crate::engine::contracts::AppAdapter;
 
 pub(crate) struct DirectAdapterSpec {
     pub name: &'static str,

@@ -68,7 +68,7 @@ pub trait WindowManagerDomainFactory: Send {
     fn create_domain(
         &self,
         domain_id: crate::engine::topology::DomainId,
-    ) -> Result<Box<dyn crate::engine::domain::ErasedDomain>>;
+    ) -> Result<Box<dyn crate::engine::transfer::ErasedDomain>>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

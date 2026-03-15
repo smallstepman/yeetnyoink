@@ -2,7 +2,7 @@ use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-use crate::engine::contract::MoveDecision;
+use crate::engine::contracts::MoveDecision;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SplitAxis {
@@ -355,7 +355,7 @@ mod tests {
         select_closest_in_direction, DirectedRect, Direction, DirectionalNeighbors, MoveSurface,
         Rect, SplitAxis,
     };
-    use crate::engine::contract::MoveDecision;
+    use crate::engine::contracts::MoveDecision;
 
     #[test]
     fn rect_leading_and_receiving_edges_are_opposites() {

@@ -5,9 +5,9 @@ use super::merge::PassthroughMergeContext;
 use super::tearout::TearOutRequest;
 use super::DirectionalProbeFocusMode;
 use super::probe::DirectionalWindowProbe;
-use crate::engine::contract::{AppAdapter, AppKind, MoveDecision, TopologyHandler};
+use crate::engine::contracts::{AppAdapter, AppKind, MoveDecision, TopologyHandler};
 use crate::engine::topology::Direction;
-use crate::engine::window_manager::ConfiguredWindowManager;
+use crate::engine::wm::ConfiguredWindowManager;
 use crate::logging;
 
 // ── MoveExecution ─────────────────────────────────────────────────────────────
