@@ -10,8 +10,7 @@ pub(crate) fn attempt_focused_app_focus(
     wm: &mut ConfiguredWindowManager,
     dir: Direction,
 ) -> Result<bool> {
-    let _span =
-        tracing::debug_span!("actions::focus.attempt_focused_app_focus", ?dir).entered();
+    let _span = tracing::debug_span!("actions::focus.attempt_focused_app_focus", ?dir).entered();
     let result = with_focused_app_session(wm, |session| {
         let owner_pid = session.pid.get();
         for app in session.chain {

@@ -7,9 +7,7 @@ use crate::engine::actions::context::FocusedAppSession;
 use crate::engine::contracts::{AppAdapter, TopologyHandler};
 use crate::engine::runtime::ProcessId;
 use crate::engine::topology::Direction;
-use crate::engine::wm::{
-    plan_tear_out, CapabilitySupport, ConfiguredWindowManager, WindowRecord,
-};
+use crate::engine::wm::{plan_tear_out, CapabilitySupport, ConfiguredWindowManager, WindowRecord};
 use crate::logging;
 
 // ── TearOutRequest ────────────────────────────────────────────────────────────
@@ -67,22 +65,17 @@ pub(crate) fn execute_app_tear_out(
         wm.spawn(command)
             .with_context(|| format!("{adapter_name} tear-out spawn via wm failed"))?;
     }
-    let tearout_window_id = match focus_tearout_window(
-        wm,
-        &pre_window_ids,
-        source_window_id,
-        source_pid,
-        app_id,
-    ) {
-        Ok(window_id) => window_id,
-        Err(err) => {
-            logging::debug(format!(
-                "actions::tearout: unable to focus tear-out window adapter={} err={:#}",
-                adapter_name, err
-            ));
-            None
-        }
-    };
+    let tearout_window_id =
+        match focus_tearout_window(wm, &pre_window_ids, source_window_id, source_pid, app_id) {
+            Ok(window_id) => window_id,
+            Err(err) => {
+                logging::debug(format!(
+                    "actions::tearout: unable to focus tear-out window adapter={} err={:#}",
+                    adapter_name, err
+                ));
+                None
+            }
+        };
     if let Err(err) = place_tearout_window(
         wm,
         dir,
@@ -187,9 +180,7 @@ pub(crate) fn select_tearout_window_id(
 
     new_windows
         .iter()
-        .find(|window| {
-            window.pid == source_pid && window.app_id.as_deref() == Some(source_app_id)
-        })
+        .find(|window| window.pid == source_pid && window.app_id.as_deref() == Some(source_app_id))
         .map(|window| window.id)
         .or_else(|| {
             new_windows
@@ -251,11 +242,11 @@ mod tests {
 
     use super::{focus_tearout_window, select_tearout_window_id, TearOutRequest};
     use crate::engine::runtime::ProcessId;
+    use crate::engine::topology::Direction;
     use crate::engine::wm::{
         ConfiguredWindowManager, FocusedWindowRecord, ResizeIntent, WindowManagerCapabilities,
         WindowManagerFeatures, WindowManagerSession, WindowRecord,
     };
-    use crate::engine::topology::Direction;
 
     fn window(id: u64, pid: u32, app_id: &str, focused: bool) -> WindowRecord {
         WindowRecord {
@@ -344,13 +335,21 @@ mod tests {
 
     impl SnapshotWM {
         fn new(focused_id: u64, snapshots: Vec<Vec<WindowRecord>>) -> Self {
-            Self { snapshots, call_count: 0, focused_id }
+            Self {
+                snapshots,
+                call_count: 0,
+                focused_id,
+            }
         }
     }
 
     impl WindowManagerSession for SnapshotWM {
-        fn adapter_name(&self) -> &'static str { "snapshot-fake" }
-        fn capabilities(&self) -> WindowManagerCapabilities { WindowManagerCapabilities::none() }
+        fn adapter_name(&self) -> &'static str {
+            "snapshot-fake"
+        }
+        fn capabilities(&self) -> WindowManagerCapabilities {
+            WindowManagerCapabilities::none()
+        }
         fn focused_window(&mut self) -> anyhow::Result<FocusedWindowRecord> {
             Ok(FocusedWindowRecord {
                 id: self.focused_id,
@@ -365,15 +364,25 @@ mod tests {
             self.call_count += 1;
             Ok(self.snapshots.get(idx).cloned().unwrap_or_default())
         }
-        fn focus_direction(&mut self, _: Direction) -> anyhow::Result<()> { Ok(()) }
-        fn move_direction(&mut self, _: Direction) -> anyhow::Result<()> { Ok(()) }
-        fn resize_with_intent(&mut self, _: ResizeIntent) -> anyhow::Result<()> { Ok(()) }
-        fn spawn(&mut self, _: Vec<String>) -> anyhow::Result<()> { Ok(()) }
+        fn focus_direction(&mut self, _: Direction) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn move_direction(&mut self, _: Direction) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn resize_with_intent(&mut self, _: ResizeIntent) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn spawn(&mut self, _: Vec<String>) -> anyhow::Result<()> {
+            Ok(())
+        }
         fn focus_window_by_id(&mut self, id: u64) -> anyhow::Result<()> {
             self.focused_id = id;
             Ok(())
         }
-        fn close_window_by_id(&mut self, _: u64) -> anyhow::Result<()> { Ok(()) }
+        fn close_window_by_id(&mut self, _: u64) -> anyhow::Result<()> {
+            Ok(())
+        }
     }
 
     fn snapshot_wm(focused_id: u64, snapshots: Vec<Vec<WindowRecord>>) -> ConfiguredWindowManager {
@@ -418,22 +427,19 @@ mod tests {
 
         // Three snapshot rounds: source only, source only, then new_window appears.
         // The WM starts focused on the source window.
-        let mut wm = snapshot_wm(source_window_id, vec![
-            vec![source.clone()],
-            vec![source.clone()],
-            vec![source.clone(), new_window.clone()],
-        ]);
+        let mut wm = snapshot_wm(
+            source_window_id,
+            vec![
+                vec![source.clone()],
+                vec![source.clone()],
+                vec![source.clone(), new_window.clone()],
+            ],
+        );
 
         // Exercise focus_tearout_window (not just wait_for_tearout_window_id) to
         // verify that the wait-and-focus path actually moves focus to the new window.
-        let result = focus_tearout_window(
-            &mut wm,
-            &pre_ids,
-            source_window_id,
-            source_pid,
-            app_id,
-        )
-        .expect("focus_tearout_window should not error");
+        let result = focus_tearout_window(&mut wm, &pre_ids, source_window_id, source_pid, app_id)
+            .expect("focus_tearout_window should not error");
 
         assert_eq!(
             result,
@@ -447,8 +453,7 @@ mod tests {
             .expect("focused_window should not fail after focus_tearout_window")
             .id;
         assert_eq!(
-            focused_after,
-            2,
+            focused_after, 2,
             "focus should have moved to the late-appearing window"
         );
     }

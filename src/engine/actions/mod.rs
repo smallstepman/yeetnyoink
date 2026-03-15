@@ -14,4 +14,4 @@ pub(crate) use probe::*;
 pub(crate) use tearout::*;
 
 pub(crate) mod orchestrator;
-pub use orchestrator::{ActionKind, ActionRequest, RoutingDecision, RoutingError, Orchestrator};
+pub use orchestrator::{ActionKind, ActionRequest, Orchestrator, RoutingDecision, RoutingError};

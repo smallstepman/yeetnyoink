@@ -5,8 +5,4 @@ pub(crate) mod domain;
 pub(crate) mod policy;
 
 // Re-exports for canonical engine::resolution imports.
-pub(crate) use chain::{
-    default_app_domain_adapters,
-    resolve_app_chain,
-    resolve_window_domain_id,
-};
+pub(crate) use chain::{default_app_domain_adapters, resolve_app_chain, resolve_window_domain_id};

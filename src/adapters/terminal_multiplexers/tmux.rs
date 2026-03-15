@@ -4,7 +4,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
 
-use crate::engine::contract::{
+use crate::engine::contracts::{
     AdapterCapabilities, AppAdapter, AppKind, MergeExecutionMode, MergePreparation, TearResult,
     TerminalMultiplexerProvider, TerminalPaneSnapshot, TopologyHandler,
 };
@@ -498,9 +498,11 @@ impl TerminalMultiplexerProvider for TmuxMuxProvider {
         self.with_session(pid, |session| {
             let focused_pane_id = session.focused_pane_id_for_client()?;
             // Use cached window_id to avoid extra tmux display-message call
-            let window_ref = session
-                .cached_window_id()
-                .unwrap_or_else(|| session.query_pane(focused_pane_id, "#{window_id}").unwrap_or_default());
+            let window_ref = session.cached_window_id().unwrap_or_else(|| {
+                session
+                    .query_pane(focused_pane_id, "#{window_id}")
+                    .unwrap_or_default()
+            });
             let panes = session.list_panes_for_window(&window_ref)?;
             Ok(panes
                 .into_iter()
@@ -602,11 +604,9 @@ impl TerminalMultiplexerProvider for TmuxMuxProvider {
 
     fn active_foreground_process(&self, pid: u32) -> Option<String> {
         // Try cached foreground command first (avoids tmux display-message call)
-        self.with_session(pid, |session| {
-            Ok(session.cached_foreground_command())
-        })
-        .ok()
-        .flatten()
+        self.with_session(pid, |session| Ok(session.cached_foreground_command()))
+            .ok()
+            .flatten()
     }
 }
 

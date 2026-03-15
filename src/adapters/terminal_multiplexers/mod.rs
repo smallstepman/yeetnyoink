@@ -1,11 +1,10 @@
 use anyhow::Result;
 
 use crate::config::TerminalMuxBackend;
-use crate::engine::contract::TerminalMultiplexerProvider;
+use crate::engine::contracts::TerminalMultiplexerProvider;
 
 pub use crate::engine::resolution::command::{
-    prepend_terminal_launch_prefix,
-    spawn_attach_command,
+    prepend_terminal_launch_prefix, spawn_attach_command,
 };
 
 pub mod kitty;

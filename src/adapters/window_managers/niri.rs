@@ -10,16 +10,16 @@ use serde::{Deserialize, Serialize};
 use std::any::TypeId;
 
 use crate::config::WmBackend;
-use crate::engine::domain::PaneState;
-use crate::engine::domain::{decode_native_window_ref, encode_native_window_ref};
-use crate::engine::domain::{
-    DomainLeafSnapshot, DomainSnapshot, ErasedDomain, TilingDomain, TopologyModifierImpl,
-    TopologyProvider,
-};
 use crate::engine::runtime::ProcessId;
 use crate::engine::topology::Direction;
 use crate::engine::topology::{DomainId, LeafId, Rect};
-use crate::engine::window_manager::{
+use crate::engine::transfer::PaneState;
+use crate::engine::transfer::{decode_native_window_ref, encode_native_window_ref};
+use crate::engine::transfer::{
+    DomainLeafSnapshot, DomainSnapshot, ErasedDomain, TilingDomain, TopologyModifierImpl,
+    TopologyProvider,
+};
+use crate::engine::wm::{
     validate_declared_capabilities, CapabilitySupport, ConfiguredWindowManager,
     DirectionalCapability, FocusedWindowRecord, PrimitiveWindowManagerCapabilities, ResizeIntent,
     WindowCycleProvider, WindowCycleRequest, WindowManagerCapabilities,

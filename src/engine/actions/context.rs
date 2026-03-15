@@ -49,11 +49,11 @@ pub(crate) fn with_focused_app_session<T>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::topology::Direction;
     use crate::engine::wm::{
         ConfiguredWindowManager, FocusedWindowRecord, ResizeIntent, WindowManagerCapabilities,
         WindowManagerFeatures, WindowManagerSession, WindowRecord,
     };
-    use crate::engine::topology::Direction;
 
     struct NoPidSession;
 
@@ -98,10 +98,8 @@ mod tests {
 
     #[test]
     fn with_focused_app_session_returns_none_when_focused_window_has_no_pid() {
-        let mut wm = ConfiguredWindowManager::new(
-            Box::new(NoPidSession),
-            WindowManagerFeatures::default(),
-        );
+        let mut wm =
+            ConfiguredWindowManager::new(Box::new(NoPidSession), WindowManagerFeatures::default());
         let result = with_focused_app_session(&mut wm, |_session| Ok(42u32));
         assert_eq!(result.unwrap(), None);
     }

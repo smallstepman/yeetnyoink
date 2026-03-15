@@ -1,10 +1,10 @@
 use anyhow::{Context, Result};
 
 use crate::engine::contracts::{AppAdapter, TopologyHandler};
+use crate::engine::resolution::resolve_app_chain;
 use crate::engine::runtime::ProcessId;
 use crate::engine::topology::Direction;
 use crate::engine::wm::{ConfiguredWindowManager, WindowRecord};
-use crate::engine::resolution::resolve_app_chain;
 use crate::logging;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,7 +124,6 @@ impl<'a> DirectionalWindowProbe<'a> {
     }
 }
 
-
 pub(crate) fn probe_in_place_target_for_adapter(
     wm: &mut ConfiguredWindowManager,
     outer_chain: &[Box<dyn AppAdapter>],
@@ -147,10 +146,9 @@ pub(crate) fn probe_in_place_target_for_adapter(
             let _ = wm.focus_window_by_id(source_window_id);
             continue;
         }
-        let target_app =
-            resolve_app_chain(app_id, owner_pid, title)
-                .into_iter()
-                .find(|candidate| candidate.adapter_name() == adapter_name);
+        let target_app = resolve_app_chain(app_id, owner_pid, title)
+            .into_iter()
+            .find(|candidate| candidate.adapter_name() == adapter_name);
         if target_app.is_some() {
             return Ok(target_app);
         }
@@ -264,7 +262,10 @@ mod tests {
         assert_eq!(record.title.as_deref(), Some("Test Window"));
         assert_eq!(record.pid, ProcessId::new(1234));
         assert_eq!(record.original_tile_index, 2);
-        assert!(record.is_focused, "focused_window_record should always mark is_focused=true");
+        assert!(
+            record.is_focused,
+            "focused_window_record should always mark is_focused=true"
+        );
     }
 
     #[test]

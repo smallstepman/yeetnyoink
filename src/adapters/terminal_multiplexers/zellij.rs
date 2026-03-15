@@ -4,7 +4,7 @@ use std::sync::{Mutex, OnceLock};
 
 use anyhow::{bail, Context, Result};
 
-use crate::engine::contract::{
+use crate::engine::contracts::{
     AdapterCapabilities, MergeExecutionMode, MergePreparation, MoveDecision, TearResult,
     TerminalMultiplexerProvider, TerminalPaneSnapshot, TopologyHandler,
 };
@@ -1192,7 +1192,7 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     use super::ZellijMuxProvider;
-    use crate::engine::contract::{MoveDecision, TerminalMultiplexerProvider, TopologyHandler};
+    use crate::engine::contracts::{MoveDecision, TerminalMultiplexerProvider, TopologyHandler};
     use crate::engine::runtime::ProcessId;
     use crate::engine::topology::Direction;
 

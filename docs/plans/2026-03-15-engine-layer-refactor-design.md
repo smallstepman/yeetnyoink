@@ -262,7 +262,7 @@ compatibility with `src/commands/` callers. The refactor is purely internal to `
 
 Existing re-export aliases to maintain:
 - `engine::orchestrator::*` → `engine::actions::*`
-- `engine::contract::*` → split across `engine::contracts::*`
+- `engine::contracts::*` → split across `engine::contracts::*`
 - `engine::domain::*` → split across `engine::transfer::*`
 - `engine::window_manager::*` → `engine::wm::*`
 - `engine::chain_resolver::*` → `engine::resolution::*`

@@ -1,5 +1,5 @@
 use crate::config::AppSection;
-pub use crate::engine::contract::{
+pub use crate::engine::contracts::{
     unsupported_operation, AdapterCapabilities, AppAdapter, AppCapabilities, AppKind,
     MergeExecutionMode, MergePreparation, MoveDecision, TearResult, TopologyHandler,
     TopologySnapshot,
@@ -7,7 +7,7 @@ pub use crate::engine::contract::{
 
 macro_rules! delegate_topology_to_mux_provider {
     ($ty:ty, $launch_prefix:expr) => {
-        impl crate::engine::contract::TopologyHandler for $ty {
+        impl crate::engine::contracts::TopologyHandler for $ty {
             fn can_focus(
                 &self,
                 dir: crate::engine::topology::Direction,
@@ -20,7 +20,7 @@ macro_rules! delegate_topology_to_mux_provider {
                 &self,
                 dir: crate::engine::topology::Direction,
                 pid: u32,
-            ) -> anyhow::Result<crate::engine::contract::MoveDecision> {
+            ) -> anyhow::Result<crate::engine::contracts::MoveDecision> {
                 Self::mux_provider().move_decision(dir, pid)
             }
 
@@ -71,7 +71,7 @@ macro_rules! delegate_topology_to_mux_provider {
                 &self,
                 dir: crate::engine::topology::Direction,
                 pid: u32,
-            ) -> anyhow::Result<crate::engine::contract::TearResult> {
+            ) -> anyhow::Result<crate::engine::contracts::TearResult> {
                 Ok(
                     crate::adapters::terminal_multiplexers::prepend_terminal_launch_prefix(
                         $launch_prefix,
@@ -80,22 +80,22 @@ macro_rules! delegate_topology_to_mux_provider {
                 )
             }
 
-            fn merge_execution_mode(&self) -> crate::engine::contract::MergeExecutionMode {
+            fn merge_execution_mode(&self) -> crate::engine::contracts::MergeExecutionMode {
                 Self::mux_provider().merge_execution_mode()
             }
 
             fn prepare_merge(
                 &self,
                 source_pid: Option<crate::engine::runtime::ProcessId>,
-            ) -> anyhow::Result<crate::engine::contract::MergePreparation> {
+            ) -> anyhow::Result<crate::engine::contracts::MergePreparation> {
                 Self::mux_provider().prepare_merge(source_pid)
             }
 
             fn augment_merge_preparation_for_target(
                 &self,
-                preparation: crate::engine::contract::MergePreparation,
+                preparation: crate::engine::contracts::MergePreparation,
                 target_window_id: Option<u64>,
-            ) -> crate::engine::contract::MergePreparation {
+            ) -> crate::engine::contracts::MergePreparation {
                 Self::mux_provider()
                     .augment_merge_preparation_for_target(preparation, target_window_id)
             }
@@ -105,7 +105,7 @@ macro_rules! delegate_topology_to_mux_provider {
                 dir: crate::engine::topology::Direction,
                 source_pid: Option<crate::engine::runtime::ProcessId>,
                 target_pid: Option<crate::engine::runtime::ProcessId>,
-                preparation: crate::engine::contract::MergePreparation,
+                preparation: crate::engine::contracts::MergePreparation,
             ) -> anyhow::Result<()> {
                 Self::mux_provider().merge_into_target(dir, source_pid, target_pid, preparation)
             }
@@ -119,7 +119,7 @@ macro_rules! impl_terminal_host_backend {
     ($ty:ty, $launch_prefix:expr) => {
         impl $ty {
             pub(crate) fn mux_provider(
-            ) -> &'static dyn crate::engine::contract::TerminalMultiplexerProvider {
+            ) -> &'static dyn crate::engine::contracts::TerminalMultiplexerProvider {
                 crate::adapters::terminal_multiplexers::active_mux_provider(ADAPTER_ALIASES)
             }
 
@@ -141,11 +141,11 @@ macro_rules! impl_terminal_host_backend {
                 Some(ADAPTER_ALIASES)
             }
 
-            fn kind(&self) -> crate::engine::contract::AppKind {
-                crate::engine::contract::AppKind::Terminal
+            fn kind(&self) -> crate::engine::contracts::AppKind {
+                crate::engine::contracts::AppKind::Terminal
             }
 
-            fn capabilities(&self) -> crate::engine::contract::AdapterCapabilities {
+            fn capabilities(&self) -> crate::engine::contracts::AdapterCapabilities {
                 Self::mux_provider().capabilities()
             }
         }

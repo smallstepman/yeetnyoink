@@ -14,7 +14,7 @@ use tungstenite::{client::client, Message, WebSocket};
 
 use crate::adapters::apps::AppAdapter;
 use crate::config::{self, EditorTearOffScope};
-use crate::engine::contract::{
+use crate::engine::contracts::{
     AdapterCapabilities, AppKind, MergeExecutionMode, MergePreparation, MoveDecision, TearResult,
     TopologyHandler,
 };
@@ -1638,7 +1638,7 @@ mod tests {
         VscodeWindowState,
     };
     use crate::config::{self, EditorTearOffScope};
-    use crate::engine::contract::{AppAdapter, MergePreparation, MoveDecision, TopologyHandler};
+    use crate::engine::contracts::{AppAdapter, MergePreparation, MoveDecision, TopologyHandler};
     use crate::engine::runtime::ProcessId;
     use crate::engine::topology::Direction;
     use crate::utils::env_guard;
@@ -1729,7 +1729,11 @@ mod tests {
     }
 
     fn set_clipboard_file(path: &PathBuf) -> Option<PathBuf> {
-        let old = config::snapshot().runtime.vscode.test_clipboard_file.clone();
+        let old = config::snapshot()
+            .runtime
+            .vscode
+            .test_clipboard_file
+            .clone();
         update_vscode_runtime(|runtime| runtime.test_clipboard_file = Some(path.clone()));
         old
     }

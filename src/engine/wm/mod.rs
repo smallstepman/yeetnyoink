@@ -10,9 +10,9 @@ pub use session::*;
 // Window manager connection helpers (moved from window_manager.rs shim)
 // ---------------------------------------------------------------------------
 
-use anyhow::{anyhow, Context, Result};
 use crate::adapters::window_managers::spec_for_backend;
 use crate::config::selected_wm_backend;
+use anyhow::{anyhow, Context, Result};
 
 fn connect_backend(
     backend: crate::config::WmBackend,

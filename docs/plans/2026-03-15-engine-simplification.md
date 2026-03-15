@@ -296,7 +296,7 @@ Representative test:
 #[test]
 fn engine_action_modules_use_canonical_engine_imports() {
     let source = include_str!("movement.rs");
-    assert!(!source.contains("crate::engine::contract::"));
+    assert!(!source.contains("crate::engine::contracts::"));
 }
 ```
 

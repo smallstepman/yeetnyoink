@@ -13,7 +13,7 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     use super::KittyBackend;
-    use crate::engine::contract::AppAdapter;
+    use crate::engine::contracts::AppAdapter;
 
     static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 

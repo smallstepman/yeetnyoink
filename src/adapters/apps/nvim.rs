@@ -7,7 +7,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use crate::adapters::apps::AppAdapter;
 use crate::adapters::terminal_multiplexers;
 use crate::config::TerminalMuxBackend;
-use crate::engine::contract::{
+use crate::engine::contracts::{
     AdapterCapabilities, AppKind, MergeExecutionMode, MergePreparation, MoveDecision, TearResult,
     TerminalMultiplexerProvider, TopologyHandler,
 };
@@ -685,7 +685,7 @@ mod tests {
     use std::sync::{Mutex, OnceLock};
 
     use super::{BufferSnapshot, Nvim, NvimMergePayload, NvimTerminalMux, ADAPTER_ALIASES};
-    use crate::engine::contract::{
+    use crate::engine::contracts::{
         AdapterCapabilities, AppAdapter, MoveDecision, TearResult, TerminalMultiplexerProvider,
         TopologyHandler,
     };

@@ -225,10 +225,10 @@ mod transfer_tests {
 
     use anyhow::{anyhow, Result};
 
+    use super::super::registry::{PaneState, PayloadRegistry, TransferError};
     use super::{
         DomainLeafSnapshot, DomainSnapshot, ErasedDomain, TransferOutcome, TransferPipeline,
     };
-    use super::super::registry::{PaneState, PayloadRegistry, TransferError};
     use crate::engine::topology::{Direction, Rect};
 
     #[derive(Debug)]

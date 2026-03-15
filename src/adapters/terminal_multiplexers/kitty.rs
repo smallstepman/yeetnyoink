@@ -3,7 +3,7 @@ use std::process::Command;
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 
-use crate::engine::contract::{
+use crate::engine::contracts::{
     AdapterCapabilities, MergeExecutionMode, MergePreparation, TearResult,
     TerminalMultiplexerProvider, TerminalPaneSnapshot, TopologyHandler,
 };
@@ -402,7 +402,7 @@ impl TopologyHandler for KittyMux {
         &self,
         dir: Direction,
         pid: u32,
-    ) -> Result<crate::engine::contract::MoveDecision> {
+    ) -> Result<crate::engine::contracts::MoveDecision> {
         self.move_decision_from_pane_lookup(dir, pid, false)
     }
 
@@ -498,7 +498,7 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     use super::KittyMux;
-    use crate::engine::contract::{TerminalMultiplexerProvider, TopologyHandler};
+    use crate::engine::contracts::{TerminalMultiplexerProvider, TopologyHandler};
     use crate::engine::topology::Direction;
 
     static NEXT_ID: AtomicU64 = AtomicU64::new(1);

@@ -197,12 +197,7 @@ pub fn process_cmdline_args(pid: u32) -> Option<Vec<String>> {
 
     // Simple split by whitespace - this won't handle quoted arguments perfectly
     // but matches the behavior we need for most cases
-    Some(
-        args_str
-            .split_whitespace()
-            .map(|s| s.to_string())
-            .collect(),
-    )
+    Some(args_str.split_whitespace().map(|s| s.to_string()).collect())
 }
 
 /// Get the target of a file descriptor using `lsof`.

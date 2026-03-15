@@ -8,7 +8,7 @@ use serde::Deserialize;
 
 use super::WEZTERM_HOST_ALIASES;
 use crate::config::TerminalMuxBackend;
-use crate::engine::contract::{
+use crate::engine::contracts::{
     AdapterCapabilities, MergeExecutionMode, MergePreparation, MoveDecision, SourcePaneMerge,
     TearResult, TerminalMultiplexerProvider, TerminalPaneSnapshot, TopologyHandler,
 };

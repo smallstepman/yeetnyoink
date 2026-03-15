@@ -1,15 +1,14 @@
 use anyhow::Result;
 
 use crate::engine::actions::context::FocusedAppSession;
+use crate::engine::actions::probe::{
+    probe_in_place_target_for_adapter, resolve_adapter_for_window, restore_in_place_target_focus,
+    DirectionalProbeFocusMode, DirectionalWindowProbe,
+};
 use crate::engine::contracts::{AppAdapter, MergeExecutionMode, TopologyHandler};
 use crate::engine::runtime::ProcessId;
 use crate::engine::topology::Direction;
 use crate::engine::wm::ConfiguredWindowManager;
-use crate::engine::actions::probe::{
-    probe_in_place_target_for_adapter,
-    resolve_adapter_for_window, restore_in_place_target_focus, DirectionalProbeFocusMode,
-    DirectionalWindowProbe,
-};
 use crate::logging;
 
 // ── PassthroughMergeContext ───────────────────────────────────────────────────
@@ -66,7 +65,11 @@ pub(crate) fn attempt_passthrough_merge(
     match TopologyHandler::merge_execution_mode(app) {
         MergeExecutionMode::SourceFocused => {
             let Some(target_window) = DirectionalWindowProbe::new(wm, source_window_id)
-                .window_matching_adapter(dir, adapter_name, DirectionalProbeFocusMode::RestoreSource)?
+                .window_matching_adapter(
+                    dir,
+                    adapter_name,
+                    DirectionalProbeFocusMode::RestoreSource,
+                )?
             else {
                 return Ok(false);
             };
@@ -148,13 +151,15 @@ pub(crate) fn attempt_passthrough_merge(
             }
 
             let Some(target_window) = DirectionalWindowProbe::new(wm, source_window_id)
-                .window_matching_adapter(dir, adapter_name, DirectionalProbeFocusMode::KeepTarget)?
+                .window_matching_adapter(
+                    dir,
+                    adapter_name,
+                    DirectionalProbeFocusMode::KeepTarget,
+                )?
             else {
                 return Ok(false);
             };
-            let Some(target_app) =
-                resolve_adapter_for_window(adapter_name, &target_window)
-            else {
+            let Some(target_app) = resolve_adapter_for_window(adapter_name, &target_window) else {
                 let _ = wm.focus_window_by_id(source_window_id);
                 return Ok(false);
             };

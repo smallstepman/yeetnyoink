@@ -502,11 +502,9 @@ mod configured_window_manager_tests {
 
     use anyhow::Result;
 
-    use super::{
-        runtime_domains_for_window_manager, ErasedDomain,
-    };
     use super::super::pipeline::{DomainLeafSnapshot, DomainSnapshot};
     use super::super::registry::{PaneState, WM_DOMAIN_ID};
+    use super::{runtime_domains_for_window_manager, ErasedDomain};
     use crate::engine::topology::Rect;
     use crate::engine::wm::{
         ConfiguredWindowManager, FocusedWindowRecord, ResizeIntent, WindowManagerCapabilities,

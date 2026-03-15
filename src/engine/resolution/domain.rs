@@ -1,6 +1,6 @@
 use crate::adapters::apps::AppKind;
-use crate::engine::transfer::{EDITOR_DOMAIN_ID, TERMINAL_DOMAIN_ID, WM_DOMAIN_ID};
 use crate::engine::topology::DomainId;
+use crate::engine::transfer::{EDITOR_DOMAIN_ID, TERMINAL_DOMAIN_ID, WM_DOMAIN_ID};
 
 /// Maps an AppKind to its canonical domain ID.
 /// Canonical copy — previously duplicated in chain_resolver.rs and domain.rs.

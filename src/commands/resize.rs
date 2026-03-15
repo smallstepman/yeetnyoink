@@ -1,10 +1,10 @@
 use anyhow::Result;
 use clap::ValueEnum;
 
-use crate::engine::domain::runtime_domains_for_window_manager;
-use crate::engine::orchestrator::{ActionKind, ActionRequest, Orchestrator};
+use crate::engine::actions::orchestrator::{ActionKind, ActionRequest, Orchestrator};
 use crate::engine::topology::Direction;
-use crate::engine::window_manager::connect_selected;
+use crate::engine::transfer::bridge::runtime_domains_for_window_manager;
+use crate::engine::wm::connect_selected;
 use crate::logging;
 
 const DEFAULT_RESIZE_STEP: i32 = 40;

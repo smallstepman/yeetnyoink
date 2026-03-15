@@ -171,7 +171,7 @@ mod tests {
     use crate::adapters::terminal_multiplexers::tmux::TmuxMuxProvider;
     use crate::adapters::terminal_multiplexers::wezterm::WeztermMux;
     use crate::adapters::terminal_multiplexers::zellij::ZellijMuxProvider;
-    use crate::engine::contract::{
+    use crate::engine::contracts::{
         AppAdapter, MoveDecision, TerminalMultiplexerProvider, TopologyHandler,
     };
     use crate::engine::topology::Direction;

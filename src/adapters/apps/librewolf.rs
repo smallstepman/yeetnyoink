@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 
 use crate::adapters::apps::AppAdapter;
-use crate::engine::contract::{
+use crate::engine::contracts::{
     AdapterCapabilities, AppKind, MergeExecutionMode, MergePreparation, MoveDecision, TearResult,
     TopologyHandler,
 };
@@ -846,7 +846,7 @@ mod tests {
         native_bridge, Librewolf, MergeExecutionMode, MoveDecision, TopologyHandler,
         ADAPTER_ALIASES, ADAPTER_NAME, NATIVE_BRIDGE,
     };
-    use crate::engine::contract::AppAdapter;
+    use crate::engine::contracts::AppAdapter;
     use crate::engine::topology::Direction;
     use serde_json::{json, Value};
     use std::collections::VecDeque;
@@ -1100,9 +1100,7 @@ mod tests {
         client
             .write_all(b"{\"command\":\"get_tab_state\"}\n")
             .expect("fake harness request should write");
-        client
-            .flush()
-            .expect("fake harness request should flush");
+        client.flush().expect("fake harness request should flush");
 
         let mut response_line = String::new();
         let bytes = BufReader::new(client)

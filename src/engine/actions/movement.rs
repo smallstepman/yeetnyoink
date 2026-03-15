@@ -2,9 +2,9 @@ use anyhow::{Context, Result};
 
 use super::context::{with_focused_app_session, FocusedAppSession};
 use super::merge::PassthroughMergeContext;
+use super::probe::DirectionalWindowProbe;
 use super::tearout::TearOutRequest;
 use super::DirectionalProbeFocusMode;
-use super::probe::DirectionalWindowProbe;
 use crate::engine::contracts::{AppAdapter, AppKind, MoveDecision, TopologyHandler};
 use crate::engine::topology::Direction;
 use crate::engine::wm::ConfiguredWindowManager;
@@ -119,7 +119,12 @@ pub(crate) fn attempt_focused_app_move(
     let Some(session) = session_opt else {
         return Ok(false);
     };
-    MoveExecution { wm, session: &session, dir }.run()
+    MoveExecution {
+        wm,
+        session: &session,
+        dir,
+    }
+    .run()
 }
 
 // ── structural regression tests ───────────────────────────────────────────────

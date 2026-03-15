@@ -9,7 +9,7 @@ use serde::Deserialize;
 use crate::config::WmBackend;
 use crate::engine::runtime::{self, CommandContext, ProcessId};
 use crate::engine::topology::Direction;
-use crate::engine::window_manager::{
+use crate::engine::wm::{
     validate_declared_capabilities, CapabilitySupport, ConfiguredWindowManager,
     DirectionalCapability, FocusedWindowRecord, PrimitiveWindowManagerCapabilities, ResizeIntent,
     WindowManagerCapabilities, WindowManagerCapabilityDescriptor, WindowManagerFeatures,

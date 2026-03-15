@@ -11,11 +11,11 @@ use super::movement::attempt_focused_app_move;
 use super::probe::{focused_window_record, DirectionalProbeFocusMode, DirectionalWindowProbe};
 use super::resize::attempt_focused_app_resize;
 
+use crate::engine::topology::Direction;
+use crate::engine::topology::{DomainId, GlobalLeaf, Rect};
 use crate::engine::transfer::ErasedDomain;
 use crate::engine::transfer::{domain_id_for_window, encode_native_window_ref};
 use crate::engine::transfer::{PayloadRegistry, TransferOutcome, TransferPipeline};
-use crate::engine::topology::Direction;
-use crate::engine::topology::{DomainId, GlobalLeaf, Rect};
 use crate::engine::wm::{ConfiguredWindowManager, ResizeIntent, ResizeKind, WindowRecord};
 use crate::logging;
 
@@ -363,12 +363,12 @@ mod tests {
         cleanup_merged_source_window, focus_tearout_window, place_tearout_window,
         select_tearout_window_id,
     };
-    use crate::engine::transfer::PaneState;
-    use crate::engine::transfer::{DomainLeafSnapshot, DomainSnapshot, ErasedDomain};
-    use crate::engine::transfer::{EDITOR_DOMAIN_ID, TERMINAL_DOMAIN_ID};
     use crate::engine::runtime::ProcessId;
     use crate::engine::topology::Direction;
     use crate::engine::topology::{GlobalLeaf, Rect};
+    use crate::engine::transfer::PaneState;
+    use crate::engine::transfer::{DomainLeafSnapshot, DomainSnapshot, ErasedDomain};
+    use crate::engine::transfer::{EDITOR_DOMAIN_ID, TERMINAL_DOMAIN_ID};
     use crate::engine::wm::{
         CapabilitySupport, ConfiguredWindowManager, FocusedWindowRecord, ResizeIntent,
         WindowManagerCapabilities, WindowManagerFeatures, WindowManagerSession, WindowRecord,
@@ -1497,7 +1497,9 @@ enabled = true
                 Ok(())
             }
             fn move_out(&self, _: Direction, _: u32) -> anyhow::Result<TearResult> {
-                Ok(TearResult { spawn_command: None })
+                Ok(TearResult {
+                    spawn_command: None,
+                })
             }
             fn merge_into_target(
                 &self,
@@ -1524,8 +1526,8 @@ enabled = true
                     move_internal: false,
                     resize_internal: false,
                     rearrange: false,
-                    tear_out: true,  // enabled so merge-vs-tear-out ordering is observable
-                    merge: true,     // merge capability enabled — must win
+                    tear_out: true, // enabled so merge-vs-tear-out ordering is observable
+                    merge: true,    // merge capability enabled — must win
                 }
             }
         }
@@ -1588,18 +1590,31 @@ enabled = true
             chain: vec![Box::new(MergeableAdapter)],
         };
 
-        let moved = MoveExecution { wm: &mut wm.wm, session: &session, dir: Direction::East }
-            .run()
-            .expect("MoveExecution should not error when merge succeeds");
+        let moved = MoveExecution {
+            wm: &mut wm.wm,
+            session: &session,
+            dir: Direction::East,
+        }
+        .run()
+        .expect("MoveExecution should not error when merge succeeds");
 
-        assert!(moved, "move should be handled (merge wins) when a matching adapter neighbor exists");
+        assert!(
+            moved,
+            "move should be handled (merge wins) when a matching adapter neighbor exists"
+        );
 
         let state = wm.snapshot();
         // Source window must have been closed by cleanup_merged_source_window — this
         // only happens on the merge path, not the tear-out or wm-fallback paths.
-        assert_eq!(state.close_calls, 1, "source window should be closed after merge");
+        assert_eq!(
+            state.close_calls, 1,
+            "source window should be closed after merge"
+        );
         // The wm move fallback must never run when merge wins.
-        assert_eq!(state.move_calls, 0, "wm move fallback must not run when merge succeeds");
+        assert_eq!(
+            state.move_calls, 0,
+            "wm move fallback must not run when merge succeeds"
+        );
 
         restore_config(old_config);
         let _ = std::fs::remove_dir_all(root);
@@ -1623,7 +1638,12 @@ enabled = true
         // Construct shim path strings at runtime to avoid self-match when this
         // file is scanned by the test itself.
         let prefix = "crate::engine::";
-        let shim_suffixes = ["contract::", "domain::", "window_manager::", "chain_resolver::"];
+        let shim_suffixes = [
+            "contract::",
+            "domain::",
+            "window_manager::",
+            "chain_resolver::",
+        ];
         let shim_paths: Vec<String> = shim_suffixes
             .iter()
             .map(|s| format!("{prefix}{s}"))
