@@ -748,7 +748,7 @@ impl TopologyHandler for Tmux {
 #[cfg(test)]
 mod tests {
     use super::{Tmux, TmuxSession};
-    use crate::engine::contract::AppAdapter;
+    use crate::engine::AppAdapter;
 
     #[test]
     fn declares_explicit_capability_contract() {

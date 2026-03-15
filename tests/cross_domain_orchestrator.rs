@@ -7,13 +7,13 @@ use std::sync::{Mutex, OnceLock};
 
 use anyhow::{anyhow, Result};
 
-use yeet_and_yoink::engine::domain::PaneState;
-use yeet_and_yoink::engine::domain::{DomainLeafSnapshot, DomainSnapshot, ErasedDomain};
-use yeet_and_yoink::engine::domain::{EDITOR_DOMAIN_ID, TERMINAL_DOMAIN_ID, WM_DOMAIN_ID};
-use yeet_and_yoink::engine::orchestrator::{ActionKind, ActionRequest, Orchestrator};
+use yeet_and_yoink::engine::PaneState;
+use yeet_and_yoink::engine::{DomainLeafSnapshot, DomainSnapshot, ErasedDomain};
+use yeet_and_yoink::engine::{ActionKind, ActionRequest, Orchestrator};
+use yeet_and_yoink::engine::{EDITOR_DOMAIN_ID, TERMINAL_DOMAIN_ID, WM_DOMAIN_ID};
 use yeet_and_yoink::engine::topology::Direction;
 use yeet_and_yoink::engine::topology::Rect;
-use yeet_and_yoink::engine::window_manager::{
+use yeet_and_yoink::engine::{
     ConfiguredWindowManager, FocusedWindowRecord, ResizeIntent, WindowManagerCapabilities,
     WindowManagerFeatures, WindowManagerSession, WindowRecord,
 };

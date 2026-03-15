@@ -75,6 +75,45 @@ allow_remote_control socket-only
 listen_on unix:@kitty-{kitty_pid}
 ```
 
+## Home Manager module
+
+The flake exports `homeManagerModules.default`. Its
+`programs.yeet-and-yoink.config.*` options are typed to match `src/config.rs`,
+and Home Manager renders them to `~/.config/yeet-and-yoink/config.toml`.
+
+```nix
+{
+  imports = [ inputs.yeet-and-yoink.homeManagerModules.default ];
+
+  programs.yeet-and-yoink = {
+    enable = true;
+    config = {
+      wm.enabled_integration = "niri";
+
+      app.terminal.wezterm = {
+        enabled = true;
+        mux_backend = "wezterm";
+        focus.internal_panes.enabled = true;
+        move.internal_panes.enabled = true;
+        resize.internal_panes.enabled = true;
+        move.docking.tear_off.enabled = true;
+      };
+
+      app.editor.neovim = {
+        enabled = true;
+        ui.terminal = {
+          app = "wezterm";
+          mux_backend = "inherit";
+        };
+      };
+    };
+  };
+}
+```
+
+If you need to bypass the typed options, set `programs.yeet-and-yoink.config.raw`
+to raw TOML instead.
+
 ## Plugin packages
 
 App-facing integration assets now live under `plugins/` as git submodules that track dedicated

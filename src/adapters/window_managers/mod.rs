@@ -87,14 +87,14 @@ pub fn spec_for_backend(backend: WmBackend) -> &'static dyn WindowManagerSpec {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::WindowManagerSpec;
-    use crate::config::WmBackend;
-    use crate::engine::window_manager::{
-        CapabilitySupport, WindowCycleProvider, WindowManagerCapabilityDescriptor,
-        WindowManagerSession, WindowTearOutComposer,
-    };
+    #[cfg(test)]
+    mod tests {
+        use super::WindowManagerSpec;
+        use crate::config::WmBackend;
+        use crate::engine::{
+            CapabilitySupport, WindowCycleProvider, WindowManagerCapabilityDescriptor,
+            WindowManagerSession, WindowTearOutComposer,
+        };
 
     #[test]
     fn built_in_specs_match_window_manager_contract() {
