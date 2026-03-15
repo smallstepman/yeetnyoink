@@ -4,10 +4,12 @@ use serde::de::DeserializeOwned;
 use crate::engine::runtime::{self};
 use crate::engine::topology::{Direction, DirectionalNeighbors};
 
-use super::adapter::{AdapterCapabilities, unsupported_operation};
+use super::adapter::{unsupported_operation, AdapterCapabilities};
 use super::topology::{MoveDecision, TopologyHandler};
 
-pub trait TerminalMultiplexerProvider: TopologyHandler + crate::engine::contract::ChainResolver {
+pub trait TerminalMultiplexerProvider:
+    TopologyHandler
+{
     fn cli_output_for_pid(&self, _pid: u32, _args: &[&str]) -> Result<std::process::Output> {
         Err(unsupported_operation(
             std::any::type_name::<Self>(),

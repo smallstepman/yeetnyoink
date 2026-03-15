@@ -74,7 +74,7 @@ impl AppCapabilities {
 pub type AdapterCapabilities = AppCapabilities;
 
 /// Metadata/capabilities contract for app adapters.
-pub trait AppAdapter: Send + TopologyHandler + crate::engine::contract::ChainResolver {
+pub trait AppAdapter: Send + TopologyHandler {
     /// Human-readable adapter name used in diagnostics.
     fn adapter_name(&self) -> &'static str;
 

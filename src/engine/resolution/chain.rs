@@ -5,7 +5,6 @@ use crate::adapters::apps::{
 };
 use crate::adapters::terminal_multiplexers::tmux::Tmux;
 use crate::config::{AppSection, TerminalMuxBackend};
-use crate::engine::contract::ChainResolver;
 use crate::engine::domain::WM_DOMAIN_ID;
 use crate::engine::resolution::policy::bind_app_policy;
 use crate::engine::runtime::{self, ProcessId};
@@ -362,7 +361,7 @@ fn resolve_terminal_chain(
     chain
 }
 
-impl ChainResolver for RuntimeChainResolver {
+impl RuntimeChainResolver {
     fn resolve_chain(&self, app_id: &str, pid: u32, title: &str) -> Vec<Box<dyn AppAdapter>> {
         let _span = tracing::debug_span!(
             "chain_resolver.resolve_chain",

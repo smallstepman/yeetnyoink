@@ -1,9 +1,9 @@
+use crate::config::AppSection;
 pub use crate::engine::contract::{
     unsupported_operation, AdapterCapabilities, AppAdapter, AppCapabilities, AppKind,
-    ChainResolver, MergeExecutionMode, MergePreparation, MoveDecision, TearResult, TopologyHandler,
+    MergeExecutionMode, MergePreparation, MoveDecision, TearResult, TopologyHandler,
     TopologySnapshot,
 };
-use crate::config::AppSection;
 
 macro_rules! delegate_topology_to_mux_provider {
     ($ty:ty, $launch_prefix:expr) => {
@@ -298,5 +298,4 @@ mod resolve_chain_tests {
         assert_topology_contracts::<Librewolf>();
         assert_topology_contracts::<Vscode>();
     }
-
 }
