@@ -1,0 +1,9 @@
+{
+  "name": "com.yeet_and_yoink.firefox_bridge",
+  "description": "Native host for the yeet-and-yoink Firefox bridge",
+  "path": "__YNY_BINARY__",
+  "type": "stdio",
+  "allowed_extensions": [
+    "browser-bridge@yeet-and-yoink.dev"
+  ]
+}
