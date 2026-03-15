@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 
-use super::context::AppContext;
+use super::AppContext;
 use super::{
     attempt_passthrough_merge, execute_app_tear_out, probe_directional_target_for_adapter,
     DirectionalProbeFocusMode,
@@ -14,6 +14,7 @@ pub(crate) fn attempt_focused_app_move(
     wm: &mut ConfiguredWindowManager,
     dir: Direction,
 ) -> Result<bool> {
+    let _span = tracing::debug_span!("attempt_focused_app_move", dir = ?dir).entered();
     let Some(ctx) = AppContext::from_focused(wm)? else {
         return Ok(false);
     };

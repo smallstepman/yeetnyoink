@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 
-use super::context::AppContext;
+use super::AppContext;
 use crate::engine::contract::TopologyHandler;
 use crate::engine::topology::Direction;
 use crate::engine::window_manager::ConfiguredWindowManager;
@@ -12,6 +12,7 @@ pub(crate) fn attempt_focused_app_resize(
     grow: bool,
     step: i32,
 ) -> Result<bool> {
+    let _span = tracing::debug_span!("attempt_focused_app_resize", dir = ?dir).entered();
     let Some(ctx) = AppContext::from_focused(wm)? else {
         return Ok(false);
     };
