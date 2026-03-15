@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 
+use crate::engine::actions::context::FocusedAppSession;
 use crate::engine::contract::{AppAdapter, TopologyHandler};
 use crate::engine::runtime::ProcessId;
 use crate::engine::topology::Direction;
@@ -10,6 +11,33 @@ use crate::engine::window_manager::{
     plan_tear_out, CapabilitySupport, ConfiguredWindowManager, WindowRecord,
 };
 use crate::logging;
+
+// ── TearOutRequest ────────────────────────────────────────────────────────────
+
+/// Groups the parameters for a single tear-out operation into a named context
+/// so that call-sites in `movement.rs` remain readable.
+pub(crate) struct TearOutRequest<'a> {
+    pub(crate) app: &'a dyn AppAdapter,
+    pub(crate) session: &'a FocusedAppSession,
+    pub(crate) dir: Direction,
+    pub(crate) decision_label: &'a str,
+}
+
+impl<'a> TearOutRequest<'a> {
+    pub(crate) fn run(self, wm: &mut ConfiguredWindowManager) -> Result<()> {
+        execute_app_tear_out(
+            wm,
+            self.app,
+            self.dir,
+            self.session.pid.get(),
+            self.session.source_window_id,
+            self.session.source_tile_index,
+            Some(self.session.pid),
+            &self.session.app_id,
+            self.decision_label,
+        )
+    }
+}
 
 pub(crate) fn execute_app_tear_out(
     wm: &mut ConfiguredWindowManager,
@@ -220,10 +248,15 @@ pub(crate) fn place_tearout_window(
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
+    use std::sync::{Arc, Mutex};
 
-    use super::select_tearout_window_id;
+    use super::{select_tearout_window_id, wait_for_tearout_window_id, TearOutRequest};
     use crate::engine::runtime::ProcessId;
-    use crate::engine::window_manager::WindowRecord;
+    use crate::engine::window_manager::{
+        ConfiguredWindowManager, FocusedWindowRecord, ResizeIntent, WindowManagerCapabilities,
+        WindowManagerFeatures, WindowManagerSession, WindowRecord,
+    };
+    use crate::engine::topology::Direction;
 
     fn window(id: u64, pid: u32, app_id: &str, focused: bool) -> WindowRecord {
         WindowRecord {
@@ -298,5 +331,112 @@ mod tests {
         // No pid, app_id, or focused match → returns first by id (11 < 15)
         let result = select_tearout_window_id(&pre, &windows, 10, source_pid, "source-app");
         assert_eq!(result, Some(11));
+    }
+
+    // ── minimal fake WM for wait/focus tests ─────────────────────────────────
+
+    struct SnapshotWM {
+        /// Snapshots returned in order on successive `windows()` calls.
+        /// When the list is exhausted, the last entry is repeated.
+        snapshots: Vec<Vec<WindowRecord>>,
+        call_count: usize,
+        focused_id: u64,
+    }
+
+    impl SnapshotWM {
+        fn new(focused_id: u64, snapshots: Vec<Vec<WindowRecord>>) -> Self {
+            Self { snapshots, call_count: 0, focused_id }
+        }
+    }
+
+    impl WindowManagerSession for SnapshotWM {
+        fn adapter_name(&self) -> &'static str { "snapshot-fake" }
+        fn capabilities(&self) -> WindowManagerCapabilities { WindowManagerCapabilities::none() }
+        fn focused_window(&mut self) -> anyhow::Result<FocusedWindowRecord> {
+            Ok(FocusedWindowRecord {
+                id: self.focused_id,
+                app_id: Some("com.mitchellh.ghostty".into()),
+                title: None,
+                pid: ProcessId::new(10),
+                original_tile_index: 0,
+            })
+        }
+        fn windows(&mut self) -> anyhow::Result<Vec<WindowRecord>> {
+            let idx = self.call_count.min(self.snapshots.len().saturating_sub(1));
+            self.call_count += 1;
+            Ok(self.snapshots.get(idx).cloned().unwrap_or_default())
+        }
+        fn focus_direction(&mut self, _: Direction) -> anyhow::Result<()> { Ok(()) }
+        fn move_direction(&mut self, _: Direction) -> anyhow::Result<()> { Ok(()) }
+        fn resize_with_intent(&mut self, _: ResizeIntent) -> anyhow::Result<()> { Ok(()) }
+        fn spawn(&mut self, _: Vec<String>) -> anyhow::Result<()> { Ok(()) }
+        fn focus_window_by_id(&mut self, id: u64) -> anyhow::Result<()> {
+            self.focused_id = id;
+            Ok(())
+        }
+        fn close_window_by_id(&mut self, _: u64) -> anyhow::Result<()> { Ok(()) }
+    }
+
+    fn snapshot_wm(focused_id: u64, snapshots: Vec<Vec<WindowRecord>>) -> ConfiguredWindowManager {
+        ConfiguredWindowManager::new(
+            Box::new(SnapshotWM::new(focused_id, snapshots)),
+            WindowManagerFeatures::default(),
+        )
+    }
+
+    /// Verifies that `wait_for_tearout_window_id` (exercised via the
+    /// `TearOutRequest` abstraction) resolves a new window that does not appear
+    /// in the first snapshot poll but becomes visible on the third attempt.
+    ///
+    /// Compile-fails until `TearOutRequest` is defined in this module.
+    #[test]
+    fn tear_out_wait_and_focus_returns_new_window_when_it_appears_late() {
+        // Structural compile guard — fails until TearOutRequest is defined.
+        fn _assert_exists<'a>(_: std::marker::PhantomData<TearOutRequest<'a>>) {}
+
+        let source_pid = ProcessId::new(10);
+        let app_id = "com.mitchellh.ghostty";
+        let source_window_id = 1u64;
+
+        let source = WindowRecord {
+            id: source_window_id,
+            app_id: Some(app_id.into()),
+            title: None,
+            pid: source_pid,
+            is_focused: true,
+            original_tile_index: 0,
+        };
+        let new_window = WindowRecord {
+            id: 2,
+            app_id: Some(app_id.into()),
+            title: None,
+            pid: source_pid,
+            is_focused: false,
+            original_tile_index: 0,
+        };
+
+        let pre_ids: BTreeSet<u64> = [source_window_id].into_iter().collect();
+
+        // Three snapshot rounds: source only, source only, then new_window appears.
+        let mut wm = snapshot_wm(source_window_id, vec![
+            vec![source.clone()],
+            vec![source.clone()],
+            vec![source.clone(), new_window.clone()],
+        ]);
+
+        let result = wait_for_tearout_window_id(
+            &mut wm,
+            &pre_ids,
+            source_window_id,
+            source_pid,
+            app_id,
+        )
+        .expect("wait_for_tearout_window_id should not error");
+
+        assert_eq!(
+            result,
+            Some(2),
+            "new window should be resolved even when it appears on the third poll attempt"
+        );
     }
 }

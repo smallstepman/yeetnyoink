@@ -1,101 +1,134 @@
 use anyhow::{Context, Result};
 
-use super::AppContext;
-use super::{
-    attempt_passthrough_merge, execute_app_tear_out, DirectionalProbeFocusMode,
-};
+use super::context::FocusedAppSession;
+use super::merge::PassthroughMergeContext;
+use super::tearout::TearOutRequest;
+use super::DirectionalProbeFocusMode;
 use super::probe::DirectionalWindowProbe;
-use crate::engine::contract::{AppKind, MoveDecision, TopologyHandler};
+use crate::engine::contract::{AppAdapter, AppKind, MoveDecision, TopologyHandler};
 use crate::engine::topology::Direction;
 use crate::engine::window_manager::ConfiguredWindowManager;
 use crate::logging;
+
+// ── MoveExecution ─────────────────────────────────────────────────────────────
+
+/// Owns a single move session: the already-resolved focused-app snapshot and
+/// the window manager reference.  `run` iterates the adapter chain and
+/// delegates detailed mechanics to [`PassthroughMergeContext`] and
+/// [`TearOutRequest`], keeping this file readable as a policy loop.
+struct MoveExecution<'a> {
+    wm: &'a mut ConfiguredWindowManager,
+    session: &'a FocusedAppSession,
+    dir: Direction,
+}
+
+impl MoveExecution<'_> {
+    fn run(self) -> Result<bool> {
+        let Self { wm, session, dir } = self;
+        for (index, app) in session.chain.iter().enumerate() {
+            if handle_move_decision(wm, session, index, app.as_ref(), dir)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+}
+
+/// Per-adapter routing for a single step in the move chain.  Returns `true`
+/// when the move was handled and the loop should stop.
+fn handle_move_decision(
+    wm: &mut ConfiguredWindowManager,
+    session: &FocusedAppSession,
+    index: usize,
+    app: &dyn AppAdapter,
+    dir: Direction,
+) -> Result<bool> {
+    let adapter_name = app.adapter_name();
+    let owner_pid = session.pid.get();
+    let decision = TopologyHandler::move_decision(app, dir, owner_pid)
+        .with_context(|| format!("{adapter_name} move_decision failed"))?;
+
+    match decision {
+        MoveDecision::Passthrough => {
+            if (PassthroughMergeContext {
+                app,
+                session,
+                outer_chain: &session.chain[index + 1..],
+                dir,
+            })
+            .run(wm)?
+            {
+                return Ok(true);
+            }
+            if matches!(app.kind(), AppKind::Terminal)
+                && app.capabilities().tear_out
+                && DirectionalWindowProbe::new(wm, session.source_window_id)
+                    .window_matching_adapter(
+                        dir,
+                        adapter_name,
+                        DirectionalProbeFocusMode::RestoreSource,
+                    )?
+                    .is_none()
+            {
+                TearOutRequest {
+                    app,
+                    session,
+                    dir,
+                    decision_label: "PassthroughTearOut",
+                }
+                .run(wm)?;
+                return Ok(true);
+            }
+            Ok(false)
+        }
+        MoveDecision::Internal => {
+            TopologyHandler::move_internal(app, dir, owner_pid)
+                .with_context(|| format!("{adapter_name} move_internal failed"))?;
+            logging::debug(format!(
+                "actions::move: app move handled by {adapter_name} decision=Internal"
+            ));
+            Ok(true)
+        }
+        MoveDecision::Rearrange => {
+            TopologyHandler::rearrange(app, dir, owner_pid)
+                .with_context(|| format!("{adapter_name} rearrange failed"))?;
+            logging::debug(format!(
+                "actions::move: app move handled by {adapter_name} decision=Rearrange"
+            ));
+            Ok(true)
+        }
+        MoveDecision::TearOut => {
+            TearOutRequest {
+                app,
+                session,
+                dir,
+                decision_label: "TearOut",
+            }
+            .run(wm)?;
+            Ok(true)
+        }
+    }
+}
 
 pub(crate) fn attempt_focused_app_move(
     wm: &mut ConfiguredWindowManager,
     dir: Direction,
 ) -> Result<bool> {
     let _span = tracing::debug_span!("attempt_focused_app_move", dir = ?dir).entered();
-    let Some(ctx) = AppContext::from_focused(wm)? else {
+    let focused = wm.focused_window()?;
+    let Some(pid) = focused.pid else {
         return Ok(false);
     };
-    let owner_pid = ctx.pid.get();
-    let source_window_id = ctx.source_window_id;
-    let source_tile_index = ctx.source_tile_index;
-    let source_pid = Some(ctx.pid);
-    let app_id = ctx.app_id.clone();
-    let title = ctx.title.clone();
-
-    let chain = ctx.resolve_chain();
-    for (index, app) in chain.iter().enumerate() {
-        let adapter_name = app.adapter_name();
-        let decision = TopologyHandler::move_decision(app.as_ref(), dir, owner_pid)
-            .with_context(|| format!("{adapter_name} move_decision failed"))?;
-        match decision {
-            MoveDecision::Passthrough => {
-                if attempt_passthrough_merge(
-                    wm,
-                    app.as_ref(),
-                    &chain[index + 1..],
-                    &app_id,
-                    &title,
-                    dir,
-                    source_window_id,
-                    source_pid,
-                )? {
-                    return Ok(true);
-                }
-                if matches!(app.kind(), AppKind::Terminal)
-                    && app.capabilities().tear_out
-                    && DirectionalWindowProbe::new(wm, source_window_id)
-                        .window_matching_adapter(dir, adapter_name, DirectionalProbeFocusMode::RestoreSource)?
-                        .is_none()
-                {
-                    execute_app_tear_out(
-                        wm,
-                        app.as_ref(),
-                        dir,
-                        owner_pid,
-                        source_window_id,
-                        source_tile_index,
-                        source_pid,
-                        &app_id,
-                        "PassthroughTearOut",
-                    )?;
-                    return Ok(true);
-                }
-            }
-            MoveDecision::Internal => {
-                TopologyHandler::move_internal(app.as_ref(), dir, owner_pid)
-                    .with_context(|| format!("{adapter_name} move_internal failed"))?;
-                logging::debug(format!(
-                    "actions::move: app move handled by {adapter_name} decision=Internal"
-                ));
-                return Ok(true);
-            }
-            MoveDecision::Rearrange => {
-                TopologyHandler::rearrange(app.as_ref(), dir, owner_pid)
-                    .with_context(|| format!("{adapter_name} rearrange failed"))?;
-                logging::debug(format!(
-                    "actions::move: app move handled by {adapter_name} decision=Rearrange"
-                ));
-                return Ok(true);
-            }
-            MoveDecision::TearOut => {
-                execute_app_tear_out(
-                    wm,
-                    app.as_ref(),
-                    dir,
-                    owner_pid,
-                    source_window_id,
-                    source_tile_index,
-                    source_pid,
-                    &app_id,
-                    "TearOut",
-                )?;
-                return Ok(true);
-            }
-        }
-    }
-
-    Ok(false)
+    let app_id = focused.app_id.unwrap_or_default();
+    let title = focused.title.unwrap_or_default();
+    let chain = crate::engine::chain_resolver::resolve_app_chain(&app_id, pid.get(), &title);
+    let session = FocusedAppSession {
+        source_window_id: focused.id,
+        source_tile_index: focused.original_tile_index,
+        pid,
+        app_id,
+        title,
+        chain,
+    };
+    MoveExecution { wm, session: &session, dir }.run()
 }

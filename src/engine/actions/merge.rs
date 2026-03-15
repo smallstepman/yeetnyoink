@@ -1,5 +1,6 @@
 use anyhow::Result;
 
+use crate::engine::actions::context::FocusedAppSession;
 use crate::engine::contract::{AppAdapter, MergeExecutionMode, TopologyHandler};
 use crate::engine::runtime::ProcessId;
 use crate::engine::topology::Direction;
@@ -10,6 +11,32 @@ use crate::engine::actions::probe::{
     DirectionalWindowProbe,
 };
 use crate::logging;
+
+// ── PassthroughMergeContext ───────────────────────────────────────────────────
+
+/// Groups the parameters for a single passthrough-merge attempt into a named
+/// context so that call-sites in `movement.rs` remain readable.
+pub(crate) struct PassthroughMergeContext<'a> {
+    pub(crate) app: &'a dyn AppAdapter,
+    pub(crate) session: &'a FocusedAppSession,
+    pub(crate) outer_chain: &'a [Box<dyn AppAdapter>],
+    pub(crate) dir: Direction,
+}
+
+impl<'a> PassthroughMergeContext<'a> {
+    pub(crate) fn run(self, wm: &mut ConfiguredWindowManager) -> Result<bool> {
+        attempt_passthrough_merge(
+            wm,
+            self.app,
+            self.outer_chain,
+            &self.session.app_id,
+            &self.session.title,
+            self.dir,
+            self.session.source_window_id,
+            Some(self.session.pid),
+        )
+    }
+}
 
 pub(crate) fn attempt_passthrough_merge(
     wm: &mut ConfiguredWindowManager,

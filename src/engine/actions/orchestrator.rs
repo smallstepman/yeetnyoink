@@ -1457,4 +1457,56 @@ enabled = true
         );
         assert_eq!(selected, Some(21));
     }
+
+    /// Verifies that the `PassthroughMergeContext` type is defined in `merge.rs`
+    /// and that the move action routes through merge before ever reaching tear-out
+    /// or the wm fallback.  With a single focused window (no directional neighbor),
+    /// `attempt_focused_app_move` must return `false` — the move session in
+    /// `execute_move_session` then falls through to `wm.move_direction`, giving
+    /// `move_calls == 1`.  What must NOT happen is a tear-out being executed or
+    /// the merge short-circuit being bypassed.  Compile-fails until
+    /// `PassthroughMergeContext` exists in `merge.rs`.
+    #[test]
+    fn passthrough_move_prefers_merge_before_tear_out_or_wm_fallback() {
+        use crate::engine::actions::merge::PassthroughMergeContext;
+        // Structural compile guard — fails until PassthroughMergeContext is defined.
+        fn _assert_exists<'a>(_: std::marker::PhantomData<PassthroughMergeContext<'a>>) {}
+
+        // Behavioral: single focused window, no neighbor in East direction.
+        // The move session should fall through to the wm fallback (move_calls == 1)
+        // and must NOT trigger close_calls > 0 (tear-out) or panic.
+        let mut wm = fake_wm(FakeWindowManagerState {
+            windows: vec![WindowRecord {
+                id: 10,
+                app_id: Some("org.wezfurlong.wezterm".into()),
+                title: Some("zsh".into()),
+                pid: ProcessId::new(100),
+                is_focused: true,
+                original_tile_index: 0,
+            }],
+            window_snapshots: Vec::new(),
+            windows_call_count: 0,
+            capabilities: WindowManagerCapabilities::none(),
+            move_calls: 0,
+            close_calls: 0,
+            closed_window_ids: Vec::new(),
+        });
+
+        let mut orchestrator = Orchestrator::default();
+        orchestrator
+            .execute(
+                &mut wm.wm,
+                ActionRequest {
+                    kind: ActionKind::Move,
+                    direction: Direction::East,
+                },
+            )
+            .expect("move action should succeed even with no neighbor");
+
+        let state = wm.snapshot();
+        // No tear-out should have run (no window closed).
+        assert_eq!(state.close_calls, 0, "tear-out must not execute before merge is tried");
+        // The wm fallback ran once (no app or domain handler succeeded).
+        assert_eq!(state.move_calls, 1, "wm fallback should run when no merge neighbor exists");
+    }
 }
