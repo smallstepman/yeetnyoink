@@ -108,10 +108,12 @@ impl Orchestrator {
     ) -> Result<()> {
         let _span = tracing::debug_span!("orchestrator.execute_focus", ?dir).entered();
         let fallback_dir = dir.into();
-        if attempt_focused_app_focus(wm, fallback_dir)? {
-            return Ok(());
-        }
-        wm.focus_direction(fallback_dir)
+        self.execute_app_then_wm_fallback(
+            wm,
+            fallback_dir,
+            |wm, d| attempt_focused_app_focus(wm, d),
+            |wm, d| wm.focus_direction(d),
+        )
     }
 
     pub fn execute_move(&mut self, wm: &mut ConfiguredWindowManager, dir: Direction) -> Result<()> {
@@ -206,19 +208,44 @@ impl Orchestrator {
         grow: bool,
         step: i32,
     ) -> Result<()> {
-        if attempt_focused_app_resize(wm, dir, grow, step.max(1))? {
-            return Ok(());
-        }
-        let intent = ResizeIntent::new(
-            dir.into(),
-            if grow {
-                ResizeKind::Grow
-            } else {
-                ResizeKind::Shrink
+        self.execute_app_then_wm_fallback(
+            wm,
+            dir,
+            move |wm, d| attempt_focused_app_resize(wm, d, grow, step.max(1)),
+            move |wm, d| {
+                let intent = ResizeIntent::new(
+                    d.into(),
+                    if grow {
+                        ResizeKind::Grow
+                    } else {
+                        ResizeKind::Shrink
+                    },
+                    step.max(1),
+                );
+                wm.resize_with_intent(intent)
             },
-            step.max(1),
-        );
-        wm.resize_with_intent(intent)
+        )
+    }
+
+    /// Call `app_handler(wm, dir)`.  If it returns `true` the action was
+    /// fully handled by the app adapter — return immediately.  Otherwise fall
+    /// back to `wm_fallback(wm, dir)`.
+    fn execute_app_then_wm_fallback<A, W>(
+        &mut self,
+        wm: &mut ConfiguredWindowManager,
+        dir: Direction,
+        app_handler: A,
+        wm_fallback: W,
+    ) -> Result<()>
+    where
+        A: FnOnce(&mut ConfiguredWindowManager, Direction) -> Result<bool>,
+        W: FnOnce(&mut ConfiguredWindowManager, Direction) -> Result<()>,
+    {
+        if app_handler(wm, dir)? {
+            Ok(())
+        } else {
+            wm_fallback(wm, dir)
+        }
     }
 
     pub fn route(&self, source: &GlobalLeaf, target: &GlobalLeaf) -> RoutingDecision {
@@ -432,6 +459,62 @@ mod tests {
         fn close_window_by_id(&mut self, _id: u64) -> Result<()> {
             Ok(())
         }
+    }
+
+    #[test]
+    fn execute_app_then_wm_fallback_skips_wm_when_app_handler_returns_true() {
+        let state = Arc::new(Mutex::new(SessionState {
+            focus_calls: Vec::new(),
+        }));
+        let mut wm = fake_configured_wm(state.clone());
+        let mut orchestrator = Orchestrator::default();
+
+        let wm_called = std::sync::atomic::AtomicBool::new(false);
+        orchestrator
+            .execute_app_then_wm_fallback(
+                &mut wm,
+                Direction::East,
+                |_wm, _dir| Ok(true),
+                |_wm, _dir| {
+                    wm_called.store(true, Ordering::Relaxed);
+                    Ok(())
+                },
+            )
+            .expect("execute_app_then_wm_fallback should succeed");
+
+        assert!(
+            !wm_called.load(Ordering::Relaxed),
+            "wm fallback should not be called when app handler returns true"
+        );
+    }
+
+    #[test]
+    fn execute_app_then_wm_fallback_runs_wm_when_app_handler_returns_false() {
+        let state = Arc::new(Mutex::new(SessionState {
+            focus_calls: Vec::new(),
+        }));
+        let mut wm = fake_configured_wm(state.clone());
+        let mut orchestrator = Orchestrator::default();
+
+        let wm_call_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let wm_call_count_clone = wm_call_count.clone();
+        orchestrator
+            .execute_app_then_wm_fallback(
+                &mut wm,
+                Direction::East,
+                |_wm, _dir| Ok(false),
+                move |_wm, _dir| {
+                    wm_call_count_clone.fetch_add(1, Ordering::Relaxed);
+                    Ok(())
+                },
+            )
+            .expect("execute_app_then_wm_fallback should succeed");
+
+        assert_eq!(
+            wm_call_count.load(Ordering::Relaxed),
+            1,
+            "wm fallback should be called exactly once when app handler returns false"
+        );
     }
 
     #[test]
