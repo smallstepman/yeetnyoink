@@ -147,3 +147,124 @@ pub(crate) fn restore_in_place_target_focus(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use anyhow::{anyhow, Result};
+
+    use super::{focused_window_record, probe_directional_target, DirectionalProbeFocusMode};
+    use crate::engine::runtime::ProcessId;
+    use crate::engine::topology::Direction;
+    use crate::engine::window_manager::{
+        ConfiguredWindowManager, FocusedWindowRecord, ResizeIntent, WindowManagerCapabilities,
+        WindowManagerFeatures, WindowManagerSession, WindowRecord,
+    };
+
+    struct FakeSession {
+        focused_id: u64,
+        focus_direction_ok: bool,
+    }
+
+    impl WindowManagerSession for FakeSession {
+        fn adapter_name(&self) -> &'static str {
+            "fake"
+        }
+
+        fn capabilities(&self) -> WindowManagerCapabilities {
+            WindowManagerCapabilities::none()
+        }
+
+        fn focused_window(&mut self) -> Result<FocusedWindowRecord> {
+            Ok(FocusedWindowRecord {
+                id: self.focused_id,
+                app_id: Some("com.test.app".into()),
+                title: Some("Test Window".into()),
+                pid: ProcessId::new(1234),
+                original_tile_index: 2,
+            })
+        }
+
+        fn windows(&mut self) -> Result<Vec<WindowRecord>> {
+            Ok(Vec::new())
+        }
+
+        fn focus_direction(&mut self, _direction: Direction) -> Result<()> {
+            if self.focus_direction_ok {
+                Ok(())
+            } else {
+                Err(anyhow!("focus direction unavailable"))
+            }
+        }
+
+        fn move_direction(&mut self, _direction: Direction) -> Result<()> {
+            Ok(())
+        }
+
+        fn resize_with_intent(&mut self, _intent: ResizeIntent) -> Result<()> {
+            Ok(())
+        }
+
+        fn spawn(&mut self, _command: Vec<String>) -> Result<()> {
+            Ok(())
+        }
+
+        fn focus_window_by_id(&mut self, id: u64) -> Result<()> {
+            self.focused_id = id;
+            Ok(())
+        }
+
+        fn close_window_by_id(&mut self, _id: u64) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    fn fake_wm(focused_id: u64, focus_direction_ok: bool) -> ConfiguredWindowManager {
+        ConfiguredWindowManager::new(
+            Box::new(FakeSession {
+                focused_id,
+                focus_direction_ok,
+            }),
+            WindowManagerFeatures::default(),
+        )
+    }
+
+    #[test]
+    fn focused_window_record_maps_all_fields_from_focused_window() {
+        let mut wm = fake_wm(42, true);
+        let record = focused_window_record(&mut wm).expect("focused_window_record should succeed");
+        assert_eq!(record.id, 42);
+        assert_eq!(record.app_id.as_deref(), Some("com.test.app"));
+        assert_eq!(record.title.as_deref(), Some("Test Window"));
+        assert_eq!(record.pid, ProcessId::new(1234));
+        assert_eq!(record.original_tile_index, 2);
+        assert!(record.is_focused, "focused_window_record should always mark is_focused=true");
+    }
+
+    #[test]
+    fn probe_directional_target_returns_none_when_focus_direction_fails() {
+        let mut wm = fake_wm(10, false); // focus_direction returns Err
+        let result = probe_directional_target(
+            &mut wm,
+            Direction::East,
+            10,
+            DirectionalProbeFocusMode::RestoreSource,
+        );
+        // focus failure is treated as no target (returns Ok(None), not Err)
+        assert!(result.is_ok(), "should not propagate focus error");
+        assert_eq!(result.unwrap(), None);
+    }
+
+    #[test]
+    fn probe_directional_target_returns_none_when_target_equals_source_window() {
+        // focus_direction succeeds but focused_window still returns the source id
+        let mut wm = fake_wm(99, true); // after focus_direction, focused_id stays 99
+        let result = probe_directional_target(
+            &mut wm,
+            Direction::East,
+            99, // source_window_id matches the focused id
+            DirectionalProbeFocusMode::RestoreSource,
+        );
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), None, "no target when source == target");
+    }
+}

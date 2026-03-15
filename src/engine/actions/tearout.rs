@@ -216,3 +216,87 @@ pub(crate) fn place_tearout_window(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use super::select_tearout_window_id;
+    use crate::engine::runtime::ProcessId;
+    use crate::engine::window_manager::WindowRecord;
+
+    fn window(id: u64, pid: u32, app_id: &str, focused: bool) -> WindowRecord {
+        WindowRecord {
+            id,
+            app_id: Some(app_id.into()),
+            title: None,
+            pid: ProcessId::new(pid),
+            is_focused: focused,
+            original_tile_index: 0,
+        }
+    }
+
+    #[test]
+    fn select_tearout_window_id_returns_none_when_windows_empty() {
+        let pre = BTreeSet::new();
+        let result = select_tearout_window_id(&pre, &[], 10, ProcessId::new(1), "app");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn select_tearout_window_id_returns_none_when_source_only_and_not_focused_elsewhere() {
+        let mut pre = BTreeSet::new();
+        pre.insert(10);
+        let windows = vec![window(10, 1, "app", false)];
+        let result = select_tearout_window_id(&pre, &windows, 10, ProcessId::new(1), "app");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn select_tearout_window_id_prefers_pid_only_match_over_app_id_only() {
+        let mut pre = BTreeSet::new();
+        pre.insert(10);
+        let source_pid = ProcessId::new(42);
+        let windows = vec![
+            window(10, 42, "source-app", false),
+            window(11, 99, "source-app", false), // same app_id, different pid
+            window(12, 42, "other-app", false),  // same pid, different app_id
+        ];
+        // window 12 has matching pid so should be preferred over window 11 (app_id only)
+        let result = select_tearout_window_id(&pre, &windows, 10, source_pid, "source-app");
+        // Both 11 and 12 are new; 12 matches pid so pid-only wins over app_id-only
+        // Actually the function first checks pid+app_id, then pid-only, then app_id-only
+        // window 12 matches pid-only, window 11 matches app_id-only → window 12 wins
+        assert_eq!(result, Some(12));
+    }
+
+    #[test]
+    fn select_tearout_window_id_falls_back_to_app_id_only_when_no_pid_match() {
+        let mut pre = BTreeSet::new();
+        pre.insert(10);
+        let source_pid = ProcessId::new(42);
+        let windows = vec![
+            window(10, 42, "source-app", false),
+            window(11, 99, "source-app", false), // app_id matches, pid doesn't
+            window(12, 77, "other-app", true),   // neither matches, but focused
+        ];
+        // No pid match → falls back to app_id match (window 11)
+        let result = select_tearout_window_id(&pre, &windows, 10, source_pid, "source-app");
+        assert_eq!(result, Some(11));
+    }
+
+    #[test]
+    fn select_tearout_window_id_returns_first_new_window_when_no_preference_matches() {
+        let mut pre = BTreeSet::new();
+        pre.insert(10);
+        let source_pid = ProcessId::new(42);
+        let windows = vec![
+            window(10, 42, "source-app", false),
+            window(15, 77, "other-app", false), // no pid/app_id match, not focused
+            window(11, 99, "another-app", false), // no pid/app_id match, not focused
+        ];
+        // No pid, app_id, or focused match → returns first by id (11 < 15)
+        let result = select_tearout_window_id(&pre, &windows, 10, source_pid, "source-app");
+        assert_eq!(result, Some(11));
+    }
+}
