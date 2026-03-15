@@ -1,14 +1,10 @@
 use std::collections::BTreeMap;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 
-use crate::engine::contract::{
-    AppAdapter, AppKind, MoveDecision, TopologyHandler,
-};
 use crate::engine::domain::ErasedDomain;
 use crate::engine::domain::{domain_id_for_window, encode_native_window_ref};
 use crate::engine::domain::{PayloadRegistry, TransferOutcome, TransferPipeline};
-use crate::engine::runtime::ProcessId;
 use crate::engine::topology::Direction;
 use crate::engine::topology::{DomainId, GlobalLeaf, Rect};
 use crate::engine::window_manager::{
@@ -16,8 +12,8 @@ use crate::engine::window_manager::{
     WindowRecord,
 };
 use crate::engine::actions::{
-    attempt_passthrough_merge, execute_app_tear_out, focused_window_record,
-    probe_directional_target, probe_directional_target_for_adapter, DirectionalProbeFocusMode,
+    attempt_focused_app_focus, attempt_focused_app_move, attempt_focused_app_resize,
+    focused_window_record, probe_directional_target, DirectionalProbeFocusMode,
 };
 use crate::logging;
 
@@ -110,43 +106,10 @@ impl Orchestrator {
     ) -> Result<()> {
         let _span = tracing::debug_span!("orchestrator.execute_focus", ?dir).entered();
         let fallback_dir = dir.into();
-        if self.attempt_focused_app_focus(wm, fallback_dir)? {
+        if attempt_focused_app_focus(wm, fallback_dir)? {
             return Ok(());
         }
         wm.focus_direction(fallback_dir)
-    }
-
-    fn attempt_focused_app_focus(
-        &mut self,
-        wm: &mut ConfiguredWindowManager,
-        dir: Direction,
-    ) -> Result<bool> {
-        let _span = tracing::debug_span!("orchestrator.attempt_focused_app_focus", ?dir).entered();
-        let focused = wm.focused_window()?;
-        let app_id = focused.app_id.unwrap_or_default();
-        let title = focused.title.unwrap_or_default();
-        let source_pid = focused.pid;
-        let owner_pid = source_pid.map(ProcessId::get);
-        let Some(owner_pid) = owner_pid else {
-            return Ok(false);
-        };
-
-        for app in crate::engine::chain_resolver::resolve_app_chain(&app_id, owner_pid, &title) {
-            if !app.capabilities().focus {
-                continue;
-            }
-            let adapter_name = app.adapter_name();
-            if TopologyHandler::can_focus(app.as_ref(), dir, owner_pid)
-                .with_context(|| format!("{adapter_name} can_focus failed"))?
-            {
-                TopologyHandler::focus(app.as_ref(), dir, owner_pid)
-                    .with_context(|| format!("{adapter_name} focus failed"))?;
-                logging::debug(format!("orchestrator: app focus handled by {adapter_name}"));
-                return Ok(true);
-            }
-        }
-
-        Ok(false)
     }
 
     pub fn execute_move(&mut self, wm: &mut ConfiguredWindowManager, dir: Direction) -> Result<()> {
@@ -159,7 +122,7 @@ impl Orchestrator {
         dir: Direction,
     ) -> Result<()> {
         let fallback_dir = dir.into();
-        if self.attempt_focused_app_move(wm, fallback_dir)? {
+        if attempt_focused_app_move(wm, fallback_dir)? {
             return Ok(());
         }
 
@@ -205,127 +168,6 @@ impl Orchestrator {
         }
     }
 
-    fn attempt_focused_app_move(
-        &mut self,
-        wm: &mut ConfiguredWindowManager,
-        dir: Direction,
-    ) -> Result<bool> {
-        let focused = wm.focused_window()?;
-        let source_window_id = focused.id;
-        let source_tile_index = focused.original_tile_index;
-        let app_id = focused.app_id.unwrap_or_default();
-        let title = focused.title.unwrap_or_default();
-        let source_pid = focused.pid;
-        let owner_pid = source_pid.map(ProcessId::get);
-        let Some(owner_pid) = owner_pid else {
-            return Ok(false);
-        };
-
-        let chain = crate::engine::chain_resolver::resolve_app_chain(&app_id, owner_pid, &title);
-        for (index, app) in chain.iter().enumerate() {
-            let adapter_name = app.adapter_name();
-            let decision = TopologyHandler::move_decision(app.as_ref(), dir, owner_pid)
-                .with_context(|| format!("{adapter_name} move_decision failed"))?;
-            match decision {
-                MoveDecision::Passthrough => {
-                    if attempt_passthrough_merge(
-                        wm,
-                        app.as_ref(),
-                        &chain[index + 1..],
-                        &app_id,
-                        &title,
-                        dir,
-                        source_window_id,
-                        source_pid,
-                    )? {
-                        return Ok(true);
-                    }
-                    if matches!(app.kind(), AppKind::Terminal)
-                        && app.capabilities().tear_out
-                        && probe_directional_target_for_adapter(
-                                wm,
-                                dir,
-                                source_window_id,
-                                adapter_name,
-                                DirectionalProbeFocusMode::RestoreSource,
-                            )?
-                            .is_none()
-                    {
-                        self.execute_app_tear_out(
-                            wm,
-                            app.as_ref(),
-                            dir,
-                            owner_pid,
-                            source_window_id,
-                            source_tile_index,
-                            source_pid,
-                            &app_id,
-                            "PassthroughTearOut",
-                        )?;
-                        return Ok(true);
-                    }
-                }
-                MoveDecision::Internal => {
-                    TopologyHandler::move_internal(app.as_ref(), dir, owner_pid)
-                        .with_context(|| format!("{adapter_name} move_internal failed"))?;
-                    logging::debug(format!(
-                        "orchestrator: app move handled by {adapter_name} decision=Internal"
-                    ));
-                    return Ok(true);
-                }
-                MoveDecision::Rearrange => {
-                    TopologyHandler::rearrange(app.as_ref(), dir, owner_pid)
-                        .with_context(|| format!("{adapter_name} rearrange failed"))?;
-                    logging::debug(format!(
-                        "orchestrator: app move handled by {adapter_name} decision=Rearrange"
-                    ));
-                    return Ok(true);
-                }
-                MoveDecision::TearOut => {
-                    self.execute_app_tear_out(
-                        wm,
-                        app.as_ref(),
-                        dir,
-                        owner_pid,
-                        source_window_id,
-                        source_tile_index,
-                        source_pid,
-                        &app_id,
-                        "TearOut",
-                    )?;
-                    return Ok(true);
-                }
-            }
-        }
-
-        Ok(false)
-    }
-
-    fn execute_app_tear_out(
-        &mut self,
-        wm: &mut ConfiguredWindowManager,
-        app: &dyn AppAdapter,
-        dir: Direction,
-        owner_pid: u32,
-        source_window_id: u64,
-        source_tile_index: usize,
-        source_pid: Option<ProcessId>,
-        app_id: &str,
-        decision_label: &str,
-    ) -> Result<()> {
-        execute_app_tear_out(
-            wm,
-            app,
-            dir,
-            owner_pid,
-            source_window_id,
-            source_tile_index,
-            source_pid,
-            app_id,
-            decision_label,
-        )
-    }
-
     fn leaf_from_window(window: &WindowRecord, leaf_id: u64) -> GlobalLeaf {
         let domain = domain_id_for_window(
             window.app_id.as_deref(),
@@ -362,7 +204,7 @@ impl Orchestrator {
         grow: bool,
         step: i32,
     ) -> Result<()> {
-        if self.attempt_focused_app_resize(wm, dir, grow, step.max(1))? {
+        if attempt_focused_app_resize(wm, dir, grow, step.max(1))? {
             return Ok(());
         }
         let intent = ResizeIntent::new(
@@ -375,42 +217,6 @@ impl Orchestrator {
             step.max(1),
         );
         wm.resize_with_intent(intent)
-    }
-
-    fn attempt_focused_app_resize(
-        &mut self,
-        wm: &mut ConfiguredWindowManager,
-        dir: Direction,
-        grow: bool,
-        step: i32,
-    ) -> Result<bool> {
-        let focused = wm.focused_window()?;
-        let app_id = focused.app_id.unwrap_or_default();
-        let title = focused.title.unwrap_or_default();
-        let source_pid = focused.pid;
-        let owner_pid = source_pid.map(ProcessId::get);
-        let Some(owner_pid) = owner_pid else {
-            return Ok(false);
-        };
-
-        for app in crate::engine::chain_resolver::resolve_app_chain(&app_id, owner_pid, &title) {
-            if !app.capabilities().resize_internal {
-                continue;
-            }
-            let adapter_name = app.adapter_name();
-            if TopologyHandler::can_resize(app.as_ref(), dir, grow, owner_pid)
-                .with_context(|| format!("{adapter_name} can_resize failed"))?
-            {
-                TopologyHandler::resize_internal(app.as_ref(), dir, grow, step, owner_pid)
-                    .with_context(|| format!("{adapter_name} resize_internal failed"))?;
-                logging::debug(format!(
-                    "orchestrator: app resize handled by {adapter_name}"
-                ));
-                return Ok(true);
-            }
-        }
-
-        Ok(false)
     }
 
     pub fn route(&self, source: &GlobalLeaf, target: &GlobalLeaf) -> RoutingDecision {
