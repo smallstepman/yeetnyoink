@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 
-use super::context::FocusedAppSession;
+use super::context::{with_focused_app_session, FocusedAppSession};
 use super::merge::PassthroughMergeContext;
 use super::tearout::TearOutRequest;
 use super::DirectionalProbeFocusMode;
@@ -115,20 +115,65 @@ pub(crate) fn attempt_focused_app_move(
     dir: Direction,
 ) -> Result<bool> {
     let _span = tracing::debug_span!("attempt_focused_app_move", dir = ?dir).entered();
-    let focused = wm.focused_window()?;
-    let Some(pid) = focused.pid else {
+    let session_opt = with_focused_app_session(wm, |s| Ok(s))?;
+    let Some(session) = session_opt else {
         return Ok(false);
     };
-    let app_id = focused.app_id.unwrap_or_default();
-    let title = focused.title.unwrap_or_default();
-    let chain = crate::engine::chain_resolver::resolve_app_chain(&app_id, pid.get(), &title);
-    let session = FocusedAppSession {
-        source_window_id: focused.id,
-        source_tile_index: focused.original_tile_index,
-        pid,
-        app_id,
-        title,
-        chain,
-    };
     MoveExecution { wm, session: &session, dir }.run()
+}
+
+// ── structural regression tests ───────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    /// The move entrypoint must delegate focused-session setup to
+    /// `with_focused_app_session` rather than duplicating the preamble inline.
+    #[test]
+    fn attempt_focused_app_move_uses_shared_session_helper() {
+        let source = include_str!("movement.rs");
+        let impl_src = source
+            .split_once("#[cfg(test)]")
+            .map(|(impl_part, _)| impl_part)
+            .expect("movement.rs must contain a test module");
+
+        assert!(
+            impl_src.contains("with_focused_app_session"),
+            "attempt_focused_app_move must delegate to with_focused_app_session"
+        );
+        assert!(
+            !impl_src.contains("resolve_app_chain"),
+            "resolve_app_chain must not appear in movement.rs implementation; \
+             session building must go through with_focused_app_session"
+        );
+    }
+
+    /// `AppContext` and `walk_chain` are dead context scaffolding that must be
+    /// removed once the move path uses the shared session helper.
+    #[test]
+    fn obsolete_context_scaffolding_is_removed() {
+        let source = include_str!("context.rs");
+        let impl_src = source
+            .split_once("#[cfg(test)]")
+            .map(|(impl_part, _)| impl_part)
+            .expect("context.rs must contain a test module");
+
+        assert!(
+            !impl_src.contains("struct AppContext"),
+            "AppContext must be removed from context.rs"
+        );
+        assert!(
+            !impl_src.contains("fn walk_chain"),
+            "walk_chain must be removed from context.rs"
+        );
+
+        let mod_source = include_str!("mod.rs");
+        assert!(
+            !mod_source.contains("AppContext"),
+            "mod.rs must not re-export the obsolete AppContext"
+        );
+        assert!(
+            !mod_source.contains("walk_chain"),
+            "mod.rs must not re-export the obsolete walk_chain"
+        );
+    }
 }
