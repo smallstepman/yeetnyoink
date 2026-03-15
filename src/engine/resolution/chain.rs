@@ -5,9 +5,9 @@ use crate::adapters::apps::{
 };
 use crate::adapters::terminal_multiplexers::tmux::Tmux;
 use crate::config::{AppSection, TerminalMuxBackend};
-use crate::engine::app_policy::bind_app_policy;
 use crate::engine::contract::ChainResolver;
 use crate::engine::domain::WM_DOMAIN_ID;
+use crate::engine::resolution::policy::bind_app_policy;
 use crate::engine::runtime::{self, ProcessId};
 use crate::engine::topology::DomainId;
 use crate::logging;
