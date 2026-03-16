@@ -1,5 +1,3 @@
-use anyhow::{anyhow, Context, Result};
-use etcetera::base_strategy::{choose_base_strategy, BaseStrategy};
 /// Config types for WM app-integration configuration.
 ///
 /// Deserializes TOML like:
@@ -22,13 +20,14 @@ use etcetera::base_strategy::{choose_base_strategy, BaseStrategy};
 /// [wm]
 /// enabled_integraton = 'niri'
 /// ```
+use crate::engine::topology::Direction;
+use anyhow::{anyhow, Context, Result};
+use etcetera::base_strategy::{choose_base_strategy, BaseStrategy};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{OnceLock, RwLock};
 use std::time::Duration;
-
-use crate::engine::topology::Direction;
 
 // ---------------------------------------------------------------------------
 // Top-level config
