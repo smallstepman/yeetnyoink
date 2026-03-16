@@ -1,4 +1,3 @@
-use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
@@ -6,8 +5,6 @@ use std::time::Duration;
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 
-use super::WEZTERM_HOST_ALIASES;
-use crate::config::TerminalMuxBackend;
 use crate::engine::contracts::{
     AdapterCapabilities, MergeExecutionMode, MergePreparation, MoveDecision, SourcePaneMerge,
     TearResult, TerminalMultiplexerProvider, TerminalPaneSnapshot, TopologyHandler,
@@ -400,56 +397,7 @@ impl TerminalMultiplexerProvider for WeztermMux {
         if source_pid != target_pid {
             bail!("cannot merge panes across different wezterm instances");
         }
-
-        // Determine whether the mux bridge path should be used.
-        let use_bridge = {
-            let mux_policy = crate::config::mux_policy_for(WEZTERM_HOST_ALIASES);
-            mux_policy.integration_enabled
-                && mux_policy.bridge_enable_override() != Some(false)
-                && mux_policy.backend == TerminalMuxBackend::Wezterm
-        };
-
-        if use_bridge && target_window_id.is_none() {
-            logging::debug(format!(
-                "wezterm: mux bridge enabled; enqueue merge source pane {} dir={}",
-                source_pane_id, dir
-            ));
-            // Enqueue merge command via filesystem bridge.
-            let dir_name = dir.to_string();
-            let command = format!("merge {source_pane_id} {dir_name}\n");
-            let runtime_dir =
-                std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_string());
-            let bridge_dir = PathBuf::from(runtime_dir).join("yeet-and-yoink-wezterm-mux");
-            fs::create_dir_all(&bridge_dir).with_context(|| {
-                format!("failed to create mux bridge dir: {}", bridge_dir.display())
-            })?;
-            let final_path = bridge_dir.join("merge.cmd");
-            let temp_path = bridge_dir.join(format!(
-                "merge.cmd.tmp-{}-{}",
-                std::process::id(),
-                source_pane_id
-            ));
-            fs::write(&temp_path, command).with_context(|| {
-                format!(
-                    "failed to write mux bridge temp command: {}",
-                    temp_path.display()
-                )
-            })?;
-            fs::rename(&temp_path, &final_path).with_context(|| {
-                format!(
-                    "failed to publish mux bridge command {} -> {}",
-                    temp_path.display(),
-                    final_path.display()
-                )
-            })?;
-            return Ok(());
-        }
-        if use_bridge && target_window_id.is_some() {
-            logging::debug(
-                "wezterm: skipping mux bridge because explicit merge target is available",
-            );
-        }
-        logging::debug("wezterm: mux bridge unavailable; using direct cli merge path");
+        logging::debug("wezterm: using direct cli merge path");
 
         let target_pane_id = if let Some(window_id) = target_window_id {
             self.merge_target_pane_id(target_pid, source_pane_id, Some(window_id))?

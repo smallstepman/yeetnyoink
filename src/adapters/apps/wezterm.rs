@@ -6,8 +6,7 @@
 //! - pane-local directional focus,
 //! - in-window pane rearrange,
 //! - tear-out to new window,
-//! - merge back into a neighboring WezTerm window,
-//! - optional mux-bridge orchestration for ambiguous focus transitions.
+//! - merge back into a neighboring WezTerm window through CLI target selection.
 //!
 //! The goal of this comment is to document the *full relevant WezTerm capability surface*
 //! for this problem (including APIs not currently used directly), and to point to the
@@ -23,9 +22,8 @@
 //! 3. **GUI plane** (`window`, `wezterm.gui.*`)
 //!    - Represents visible windows and focus state, and can be mapped to mux objects.
 //!
-//! yeet-and-yoink currently uses CLI-first control, with an optional Lua/mux bridge path
-//! for cases where deciding merge targets purely from
-//! transient CLI focus metadata is less reliable.
+//! yeet-and-yoink currently uses explicit CLI/socket control. Lua/mux APIs remain useful
+//! background context, but the current integration does not require a WezTerm plugin.
 //!
 //! ## CLI capabilities relevant to this module
 //!
@@ -65,9 +63,9 @@
 //! - `pane:move_to_new_tab()` / `pane:move_to_new_window([workspace])`:
 //!   Useful tear-out style operations from Lua callbacks.
 //!
-//! This split between CLI and Lua capabilities is why the bridge strategy can be useful:
-//! Rust can enqueue intent, and WezTerm-side code can execute in the correct focused GUI
-//! context while still using `wezterm cli split-pane --move-pane-id`.
+//! This split between CLI and Lua capabilities is why the current integration stays
+//! CLI-driven: the CLI exposes `split-pane --move-pane-id`, while Lua exposes richer
+//! mux state but not the same "move an existing pane into a new split" primitive.
 //!
 //! ## GUI <-> mux mapping capabilities
 //!
@@ -76,14 +74,12 @@
 //! - `wezterm.gui.gui_window_for_mux_window(window_id)` resolves mux window id to GUI
 //!   window object, when such mapping exists in the active workspace.
 //! - `wezterm.gui.gui_windows()` lists GUI windows in stable order.
-//! - `window:is_focused()` allows focus-gated bridge processing to avoid wrong-window
-//!   command consumption.
+//! - `window:is_focused()` can still be useful for future in-process policy layers that
+//!   need to validate GUI focus before acting.
 //!
 //! ## Events and lifecycle hooks worth knowing
 //!
 //! - `update-status` is the current periodic status event.
-//! - `update-right-status` is older/deprecated but still commonly used and present in this
-//!   repo for bridge polling cadence.
 //! - `gui-startup` / `mux-startup` are the correct places for startup window/tab/pane
 //!   creation; upstream explicitly warns against spawning splits/tabs/windows at config
 //!   file scope because config can be evaluated multiple times.
@@ -134,7 +130,6 @@
 //! - https://wezterm.org/config/lua/wezterm.gui/gui_windows.html
 //! - https://wezterm.org/config/lua/window/is_focused.html
 //! - https://wezterm.org/config/lua/window-events/update-status.html
-//! - https://wezterm.org/config/lua/window-events/update-right-status.html
 //! - https://wezterm.org/config/lua/gui-events/gui-startup.html
 //! - https://wezterm.org/config/lua/mux-events/mux-startup.html
 //!
@@ -325,7 +320,6 @@ mux_backend = "wezterm"
 
     struct WeztermHarness {
         base: PathBuf,
-        runtime_dir: PathBuf,
         responses_dir: PathBuf,
         log_file: PathBuf,
         old_path: Option<OsString>,
@@ -440,7 +434,6 @@ exit "$status"
 
             Self {
                 base,
-                runtime_dir,
                 responses_dir,
                 log_file,
                 old_path,
@@ -449,19 +442,6 @@ exit "$status"
                 old_log_file,
                 old_config,
             }
-        }
-
-        /// Disable the mux bridge via config for tests that need direct CLI merge.
-        fn disable_mux_bridge(&self) {
-            let config_dir = self.base.join("config");
-            fs::create_dir_all(&config_dir).expect("config dir should be creatable");
-            let config_path = config_dir.join("config.toml");
-            fs::write(
-                &config_path,
-                "[app.terminal.wezterm]\nenabled = true\n\n[app.terminal.wezterm.mux]\nenable = false\n",
-            )
-            .expect("config file should be writable");
-            crate::config::prepare_with_path(Some(&config_path)).expect("config should load");
         }
 
         fn set_response(&self, key: &str, status: i32, stdout: &str, stderr: &str) {
@@ -774,7 +754,6 @@ exit "$status"
         let _env_guard = env_guard();
         let pid = 9595;
         let harness = WeztermHarness::new(pid);
-        harness.disable_mux_bridge();
 
         harness.set_response(
             "list --format json",
@@ -803,49 +782,7 @@ exit "$status"
     }
 
     #[test]
-    fn merge_source_pane_can_enqueue_mux_bridge_command() {
-        let _env_guard = env_guard();
-        let pid = 9696;
-        let harness = WeztermHarness::new(pid);
-
-        WeztermBackend::mux_provider()
-            .merge_source_pane_into_focused_target(pid, 10, pid, None, Direction::West)
-            .expect("merge enqueue should succeed");
-
-        let bridge_cmd = harness
-            .runtime_dir
-            .join("yeet-and-yoink-wezterm-mux")
-            .join("merge.cmd");
-        let payload = fs::read_to_string(&bridge_cmd).expect("bridge command file should exist");
-        assert_eq!(payload.trim(), "merge 10 west");
-
-        let log = harness.command_log();
-        assert!(!log.contains("split-pane --pane-id"));
-    }
-
-    #[test]
-    fn merge_source_pane_uses_bridge_by_default() {
-        let _env_guard = env_guard();
-        let pid = 9707;
-        let harness = WeztermHarness::new(pid);
-
-        WeztermBackend::mux_provider()
-            .merge_source_pane_into_focused_target(pid, 10, pid, None, Direction::West)
-            .expect("bridge enqueue should succeed");
-
-        let bridge_cmd = harness
-            .runtime_dir
-            .join("yeet-and-yoink-wezterm-mux")
-            .join("merge.cmd");
-        let payload = fs::read_to_string(&bridge_cmd).expect("bridge command file should exist");
-        assert_eq!(payload.trim(), "merge 10 west");
-
-        let log = harness.command_log();
-        assert!(!log.contains("split-pane --pane-id"));
-    }
-
-    #[test]
-    fn merge_source_pane_with_target_hint_bypasses_bridge() {
+    fn merge_source_pane_with_target_hint_uses_direct_cli() {
         let _env_guard = env_guard();
         let pid = 9711;
         let harness = WeztermHarness::new(pid);
@@ -872,19 +809,13 @@ exit "$status"
 
         let log = harness.command_log();
         assert!(log.contains("split-pane --pane-id 20 --right --move-pane-id 10"));
-        let bridge_cmd = harness
-            .runtime_dir
-            .join("yeet-and-yoink-wezterm-mux")
-            .join("merge.cmd");
-        assert!(!bridge_cmd.exists());
     }
 
     #[test]
-    fn merge_source_pane_uses_direct_cli_when_bridge_disabled() {
+    fn merge_source_pane_uses_direct_cli_by_default() {
         let _env_guard = env_guard();
         let pid = 9717;
         let harness = WeztermHarness::new(pid);
-        harness.disable_mux_bridge();
 
         harness.set_response(
             "list --format json",
@@ -907,13 +838,7 @@ exit "$status"
 
         WeztermBackend::mux_provider()
             .merge_source_pane_into_focused_target(pid, 10, pid, None, Direction::West)
-            .expect("direct merge should succeed when bridge is disabled");
-
-        let bridge_cmd = harness
-            .runtime_dir
-            .join("yeet-and-yoink-wezterm-mux")
-            .join("merge.cmd");
-        assert!(!bridge_cmd.exists());
+            .expect("direct merge should succeed");
 
         let log = harness.command_log();
         assert!(log.contains("split-pane --pane-id 9 --right --move-pane-id 10"));
@@ -924,7 +849,6 @@ exit "$status"
         let _env_guard = env_guard();
         let pid = 9797;
         let harness = WeztermHarness::new(pid);
-        harness.disable_mux_bridge();
 
         harness.set_response(
             "list --format json",
@@ -956,7 +880,6 @@ exit "$status"
         let _env_guard = env_guard();
         let pid = 9808;
         let harness = WeztermHarness::new(pid);
-        harness.disable_mux_bridge();
 
         harness.set_response(
             "list --format json",
@@ -982,44 +905,5 @@ exit "$status"
 
         let log = harness.command_log();
         assert!(log.contains("split-pane --pane-id 2 --right --move-pane-id 1"));
-    }
-
-    #[test]
-    fn merge_source_pane_config_overrides_bridge_default() {
-        let _env_guard = env_guard();
-        let pid = 9898;
-        let harness = WeztermHarness::new(pid);
-        harness.disable_mux_bridge();
-
-        harness.set_response(
-            "list --format json",
-            0,
-            r#"[{"pane_id":9,"tab_id":5,"is_active":true,"foreground_process_name":"zsh"}]"#,
-            "",
-        );
-        harness.set_response(
-            "list-clients --format json",
-            0,
-            r#"[{"pid":9898,"focused_pane_id":9}]"#,
-            "",
-        );
-        harness.set_response(
-            "split-pane --pane-id 9 --right --move-pane-id 10",
-            0,
-            "",
-            "",
-        );
-
-        WeztermBackend::mux_provider()
-            .merge_source_pane_into_focused_target(pid, 10, pid, None, Direction::West)
-            .expect("merge should use direct cli when config disables mux bridge");
-
-        let log = harness.command_log();
-        assert!(log.contains("split-pane --pane-id 9 --right --move-pane-id 10"));
-        let bridge_cmd = harness
-            .runtime_dir
-            .join("yeet-and-yoink-wezterm-mux")
-            .join("merge.cmd");
-        assert!(!bridge_cmd.exists());
     }
 }

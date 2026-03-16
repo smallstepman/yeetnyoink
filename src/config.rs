@@ -429,15 +429,6 @@ pub struct TerminalVariantConfig {
 
     /// Overrides the default tear-off scope (also settable via move.docking.tear_off.scope).
     pub tear_off_scope: Option<TerminalTearOffScope>,
-
-    /// Optional mux bridge override.
-    #[serde(default)]
-    pub mux: TerminalMuxControl,
-}
-
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-pub struct TerminalMuxControl {
-    pub enable: Option<bool>,
 }
 
 // ---------------------------------------------------------------------------
@@ -789,18 +780,6 @@ impl PanePolicy {
 pub struct MuxPolicy {
     pub integration_enabled: bool,
     pub backend: TerminalMuxBackend,
-    pub enable_override: Option<bool>,
-}
-
-impl MuxPolicy {
-    pub fn bridge_enable_override(self) -> Option<bool> {
-        self.enable_override.or_else(|| match self.backend {
-            TerminalMuxBackend::Wezterm => None,
-            TerminalMuxBackend::Tmux | TerminalMuxBackend::Zellij | TerminalMuxBackend::Kitty => {
-                Some(false)
-            }
-        })
-    }
 }
 
 fn alias_keys(aliases: &[&str]) -> Vec<String> {
@@ -957,7 +936,6 @@ fn mux_policy_from(cfg: &Config, aliases: &[&str]) -> MuxPolicy {
         backend: profile
             .and_then(|profile| profile.variant.mux_backend)
             .unwrap_or_else(|| default_mux_backend_for_aliases(aliases)),
-        enable_override: profile.and_then(|profile| profile.variant.mux.enable),
     }
 }
 

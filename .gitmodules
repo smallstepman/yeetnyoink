@@ -10,7 +10,3 @@
 	path = plugins/kitty
 	url = https://github.com/smallstepman/yeet-and-yoink.git
 	branch = plugin/kitty
-[submodule "plugins/wezterm"]
-	path = plugins/wezterm
-	url = https://github.com/smallstepman/yeet-and-yoink.git
-	branch = plugin/wezterm

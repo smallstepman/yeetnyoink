@@ -121,7 +121,6 @@ plugin branches of this repository:
 
 - `plugins/firefox`: Firefox-family WebExtension source plus native-host installer template
 - `plugins/chrome`: Chromium-family unpacked extension plus native-host installer template
-- `plugins/wezterm`: WezTerm plugin repository with `plugin/init.lua`
 - `plugins/kitty`: kitty config snippet package for remote-control setup
 
 Clone with submodules enabled:

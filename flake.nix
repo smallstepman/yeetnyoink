@@ -308,10 +308,6 @@
             };
           };
 
-          terminalMuxControlConfigModule = {
-            options.enable = optionalBoolOption "Override whether mux bridge/control support is enabled.";
-          };
-
           terminalAppConfigModule = {
             options = {
               enabled = optionalBoolOption "Enable this terminal integration profile.";
@@ -331,7 +327,6 @@
                 "mux_session"
                 "terminal_tab"
               ] "Default terminal tear-off scope.";
-              mux = optionalSubmoduleOption terminalMuxControlConfigModule "Terminal mux control overrides.";
             };
           };
 
