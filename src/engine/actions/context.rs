@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Error, Result};
 
 use crate::engine::contracts::adapter::AppAdapter;
 use crate::engine::runtime::ProcessId;
@@ -42,6 +42,11 @@ pub(crate) fn with_focused_app_session<T>(
         title,
         chain,
     })?))
+}
+
+pub(crate) fn is_no_focused_window_error(err: &Error) -> bool {
+    err.chain()
+        .any(|cause| cause.to_string() == "no focused window")
 }
 
 // ── tests ────────────────────────────────────────────────────────────────────
@@ -102,5 +107,51 @@ mod tests {
             ConfiguredWindowManager::new(Box::new(NoPidSession), WindowManagerFeatures::default());
         let result = with_focused_app_session(&mut wm, |_session| Ok(42u32));
         assert_eq!(result.unwrap(), None);
+    }
+
+    struct NoFocusedWindowSession;
+
+    impl WindowManagerSession for NoFocusedWindowSession {
+        fn adapter_name(&self) -> &'static str {
+            "no-focused-window"
+        }
+        fn capabilities(&self) -> WindowManagerCapabilities {
+            WindowManagerCapabilities::none()
+        }
+        fn focused_window(&mut self) -> anyhow::Result<FocusedWindowRecord> {
+            Err(anyhow::anyhow!("no focused window"))
+        }
+        fn windows(&mut self) -> anyhow::Result<Vec<WindowRecord>> {
+            Ok(Vec::new())
+        }
+        fn focus_direction(&mut self, _: Direction) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn move_direction(&mut self, _: Direction) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn resize_with_intent(&mut self, _: ResizeIntent) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn spawn(&mut self, _: Vec<String>) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn focus_window_by_id(&mut self, _: u64) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn close_window_by_id(&mut self, _: u64) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn detects_no_focused_window_error_across_contexts() {
+        let mut wm = ConfiguredWindowManager::new(
+            Box::new(NoFocusedWindowSession),
+            WindowManagerFeatures::default(),
+        );
+        let err = with_focused_app_session(&mut wm, |_session| Ok(42u32))
+            .expect_err("missing focused window should error");
+        assert!(is_no_focused_window_error(&err));
     }
 }
