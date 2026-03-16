@@ -261,6 +261,12 @@ pub struct DirectionalBrowserFocus {
     pub down: Option<BrowserFocusAction>,
 }
 
+impl DirectionalBrowserFocus {
+    fn action_for(&self, direction: Direction) -> Option<BrowserFocusAction> {
+        direction.select(self.left, self.right, self.up, self.down)
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct DirectionalBrowserMove {
     pub left: Option<BrowserMoveAction>,
@@ -284,6 +290,69 @@ impl Default for DirectionalBrowserMove {
     }
 }
 
+impl DirectionalBrowserMove {
+    fn action_for(&self, direction: Direction) -> Option<BrowserMoveAction> {
+        direction.select(self.left, self.right, self.up, self.down)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserTabAxis {
+    #[default]
+    Horizontal,
+    Vertical,
+    VerticalFlipped,
+}
+
+impl BrowserTabAxis {
+    fn default_focus_action(self, direction: Direction) -> BrowserFocusAction {
+        match self {
+            Self::Horizontal => direction.select(
+                BrowserFocusAction::FocusPreviousTab,
+                BrowserFocusAction::FocusNextTab,
+                BrowserFocusAction::Ignore,
+                BrowserFocusAction::Ignore,
+            ),
+            Self::Vertical => direction.select(
+                BrowserFocusAction::Ignore,
+                BrowserFocusAction::Ignore,
+                BrowserFocusAction::FocusPreviousTab,
+                BrowserFocusAction::FocusNextTab,
+            ),
+            Self::VerticalFlipped => direction.select(
+                BrowserFocusAction::Ignore,
+                BrowserFocusAction::Ignore,
+                BrowserFocusAction::FocusNextTab,
+                BrowserFocusAction::FocusPreviousTab,
+            ),
+        }
+    }
+
+    fn default_move_action(self, direction: Direction) -> BrowserMoveAction {
+        match self {
+            Self::Horizontal => direction.select(
+                BrowserMoveAction::MoveTabBackward,
+                BrowserMoveAction::MoveTabForward,
+                BrowserMoveAction::Ignore,
+                BrowserMoveAction::Ignore,
+            ),
+            Self::Vertical => direction.select(
+                BrowserMoveAction::Ignore,
+                BrowserMoveAction::Ignore,
+                BrowserMoveAction::MoveTabBackward,
+                BrowserMoveAction::MoveTabForward,
+            ),
+            Self::VerticalFlipped => direction.select(
+                BrowserMoveAction::Ignore,
+                BrowserMoveAction::Ignore,
+                BrowserMoveAction::MoveTabForward,
+                BrowserMoveAction::MoveTabBackward,
+            ),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct BrowserAppConfig {
     /// Must be true to activate the integration. Default false.
@@ -293,6 +362,16 @@ pub struct BrowserAppConfig {
     /// Prevent the WM from moving the app window. Default false.
     #[serde(default)]
     pub anchor_app_window: bool,
+
+    /// Selects which directional axis maps to browser tab actions by default.
+    ///
+    /// - `horizontal` preserves the historical west/east tab behavior.
+    /// - `vertical` routes north/south to previous/next tab and leaves
+    ///   west/east to the window manager unless explicitly overridden.
+    /// - `vertical_flipped` routes north/south to next/previous tab and leaves
+    ///   west/east to the window manager unless explicitly overridden.
+    #[serde(default)]
+    pub tab_axis: BrowserTabAxis,
 
     #[serde(default)]
     pub focus: DirectionalBrowserFocus,
@@ -890,6 +969,42 @@ pub fn app_integration_enabled(section: AppSection, aliases: &[&str]) -> bool {
     app_enabled_from(&read_config(), section, aliases)
 }
 
+fn browser_profile_from<'a>(cfg: &'a Config, aliases: &[&str]) -> Option<&'a BrowserAppConfig> {
+    profile_by_aliases(&cfg.app.browser, aliases)
+}
+
+fn browser_focus_action_from(
+    cfg: &Config,
+    aliases: &[&str],
+    direction: Direction,
+) -> BrowserFocusAction {
+    let profile = browser_profile_from(cfg, aliases);
+    let tab_axis = profile.map(|profile| profile.tab_axis).unwrap_or_default();
+    profile
+        .and_then(|profile| profile.focus.action_for(direction))
+        .unwrap_or_else(|| tab_axis.default_focus_action(direction))
+}
+
+pub fn browser_focus_action_for(aliases: &[&str], direction: Direction) -> BrowserFocusAction {
+    browser_focus_action_from(&read_config(), aliases, direction)
+}
+
+fn browser_move_action_from(
+    cfg: &Config,
+    aliases: &[&str],
+    direction: Direction,
+) -> BrowserMoveAction {
+    let profile = browser_profile_from(cfg, aliases);
+    let tab_axis = profile.map(|profile| profile.tab_axis).unwrap_or_default();
+    profile
+        .and_then(|profile| profile.movement.action_for(direction))
+        .unwrap_or_else(|| tab_axis.default_move_action(direction))
+}
+
+pub fn browser_move_action_for(aliases: &[&str], direction: Direction) -> BrowserMoveAction {
+    browser_move_action_from(&read_config(), aliases, direction)
+}
+
 fn pane_policy_from(cfg: &Config, section: AppSection, aliases: &[&str]) -> PanePolicy {
     match section {
         AppSection::Terminal => {
@@ -1177,6 +1292,153 @@ enabled = false
             &["editor", "emacs"]
         ));
         assert!(!app_enabled_from(&parsed, AppSection::Editor, &["vscode"]));
+    }
+
+    #[test]
+    fn browser_focus_and_move_default_to_horizontal_tab_axis() {
+        let sample = r#"
+[app.browser.librewolf]
+enabled = true
+"#;
+        let parsed: Config = toml::from_str(sample).expect("sample config should parse");
+
+        assert_eq!(
+            browser_focus_action_from(&parsed, &["firefox", "librewolf"], Direction::West),
+            BrowserFocusAction::FocusPreviousTab
+        );
+        assert_eq!(
+            browser_focus_action_from(&parsed, &["firefox", "librewolf"], Direction::East),
+            BrowserFocusAction::FocusNextTab
+        );
+        assert_eq!(
+            browser_focus_action_from(&parsed, &["firefox", "librewolf"], Direction::North),
+            BrowserFocusAction::Ignore
+        );
+        assert_eq!(
+            browser_focus_action_from(&parsed, &["firefox", "librewolf"], Direction::South),
+            BrowserFocusAction::Ignore
+        );
+
+        assert_eq!(
+            browser_move_action_from(&parsed, &["firefox", "librewolf"], Direction::West),
+            BrowserMoveAction::MoveTabBackward
+        );
+        assert_eq!(
+            browser_move_action_from(&parsed, &["firefox", "librewolf"], Direction::East),
+            BrowserMoveAction::MoveTabForward
+        );
+        assert_eq!(
+            browser_move_action_from(&parsed, &["firefox", "librewolf"], Direction::North),
+            BrowserMoveAction::Ignore
+        );
+        assert_eq!(
+            browser_move_action_from(&parsed, &["firefox", "librewolf"], Direction::South),
+            BrowserMoveAction::Ignore
+        );
+    }
+
+    #[test]
+    fn browser_vertical_tab_axis_maps_north_up_and_south_down() {
+        let sample = r#"
+[app.browser.chromium]
+enabled = true
+tab_axis = "vertical"
+"#;
+        let parsed: Config = toml::from_str(sample).expect("sample config should parse");
+
+        assert_eq!(
+            browser_focus_action_from(&parsed, &["chromium", "chrome"], Direction::West),
+            BrowserFocusAction::Ignore
+        );
+        assert_eq!(
+            browser_focus_action_from(&parsed, &["chromium", "chrome"], Direction::East),
+            BrowserFocusAction::Ignore
+        );
+        assert_eq!(
+            browser_focus_action_from(&parsed, &["chromium", "chrome"], Direction::North),
+            BrowserFocusAction::FocusPreviousTab
+        );
+        assert_eq!(
+            browser_focus_action_from(&parsed, &["chromium", "chrome"], Direction::South),
+            BrowserFocusAction::FocusNextTab
+        );
+
+        assert_eq!(
+            browser_move_action_from(&parsed, &["chromium", "chrome"], Direction::West),
+            BrowserMoveAction::Ignore
+        );
+        assert_eq!(
+            browser_move_action_from(&parsed, &["chromium", "chrome"], Direction::East),
+            BrowserMoveAction::Ignore
+        );
+        assert_eq!(
+            browser_move_action_from(&parsed, &["chromium", "chrome"], Direction::North),
+            BrowserMoveAction::MoveTabBackward
+        );
+        assert_eq!(
+            browser_move_action_from(&parsed, &["chromium", "chrome"], Direction::South),
+            BrowserMoveAction::MoveTabForward
+        );
+    }
+
+    #[test]
+    fn browser_vertical_flipped_tab_axis_preserves_previous_runtime_mapping() {
+        let sample = r#"
+[app.browser.chromium]
+enabled = true
+tab_axis = "vertical_flipped"
+"#;
+        let parsed: Config = toml::from_str(sample).expect("sample config should parse");
+
+        assert_eq!(
+            browser_focus_action_from(&parsed, &["chromium", "chrome"], Direction::North),
+            BrowserFocusAction::FocusNextTab
+        );
+        assert_eq!(
+            browser_focus_action_from(&parsed, &["chromium", "chrome"], Direction::South),
+            BrowserFocusAction::FocusPreviousTab
+        );
+        assert_eq!(
+            browser_move_action_from(&parsed, &["chromium", "chrome"], Direction::North),
+            BrowserMoveAction::MoveTabForward
+        );
+        assert_eq!(
+            browser_move_action_from(&parsed, &["chromium", "chrome"], Direction::South),
+            BrowserMoveAction::MoveTabBackward
+        );
+    }
+
+    #[test]
+    fn browser_direction_overrides_beat_tab_axis_defaults() {
+        let sample = r#"
+[app.browser.librewolf]
+enabled = true
+tab_axis = "vertical"
+
+[app.browser.librewolf.focus]
+left = "focus_first_tab"
+
+[app.browser.librewolf.move]
+right = "move_tab_to_last_position"
+"#;
+        let parsed: Config = toml::from_str(sample).expect("sample config should parse");
+
+        assert_eq!(
+            browser_focus_action_from(&parsed, &["firefox", "librewolf"], Direction::West),
+            BrowserFocusAction::FocusFirstTab
+        );
+        assert_eq!(
+            browser_focus_action_from(&parsed, &["firefox", "librewolf"], Direction::North),
+            BrowserFocusAction::FocusPreviousTab
+        );
+        assert_eq!(
+            browser_move_action_from(&parsed, &["firefox", "librewolf"], Direction::East),
+            BrowserMoveAction::MoveTabToLastPosition
+        );
+        assert_eq!(
+            browser_move_action_from(&parsed, &["firefox", "librewolf"], Direction::South),
+            BrowserMoveAction::MoveTabForward
+        );
     }
 
     #[test]

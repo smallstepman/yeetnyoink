@@ -61,6 +61,12 @@ enabled = true
 [app.editor.neovim.ui.terminal]
 app = "wezterm"
 mux_backend = "inherit"
+
+[app.browser.librewolf]
+enabled = true
+# Optional: route north/south to previous/next tab instead of west/east.
+# Use `vertical_flipped` if your browser feels inverted with `vertical`.
+tab_axis = "vertical"
 ```
 
 Terminal-hosted editors use `app.editor.<editor>.ui.terminal` to describe which terminal UI they

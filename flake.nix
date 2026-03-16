@@ -266,6 +266,11 @@
             options = {
               enabled = optionalBoolOption "Enable this browser integration profile.";
               anchor_app_window = optionalBoolOption "Prevent the window manager from moving this browser window.";
+              tab_axis = optionalEnumOption [ "horizontal" "vertical" "vertical_flipped" ] ''
+                Default browser tab axis. `horizontal` keeps west/east bound to tab actions;
+                `vertical` maps north/south to previous/next tab; `vertical_flipped` maps
+                north/south to next/previous; both leave west/east to the WM.
+              '';
               focus = optionalSubmoduleOption directionalBrowserFocusModule "Directional browser focus behavior.";
               move = optionalSubmoduleOption directionalBrowserMoveModule "Directional browser move behavior.";
             };

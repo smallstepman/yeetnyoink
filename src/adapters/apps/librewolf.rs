@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 
-use crate::adapters::apps::AppAdapter;
+use crate::adapters::apps::{browser_common, AppAdapter};
 use crate::engine::browser_native::{
     self as native_bridge, BrowserTabState, NativeBrowserDescriptor,
 };
@@ -29,39 +29,6 @@ pub struct Librewolf;
 struct BrowserMergePreparation {
     source_window_id: u64,
     source_tab_id: u64,
-}
-
-fn focus_target_index(state: BrowserTabState, dir: Direction) -> Option<usize> {
-    match dir {
-        Direction::West => state.active_tab_index.checked_sub(1),
-        Direction::East => {
-            (state.active_tab_index + 1 < state.tab_count).then_some(state.active_tab_index + 1)
-        }
-        Direction::North | Direction::South => None,
-    }
-}
-
-fn move_target_index(state: BrowserTabState, dir: Direction) -> Option<usize> {
-    match dir {
-        Direction::West => {
-            if state.active_tab_pinned {
-                state.active_tab_index.checked_sub(1)
-            } else if state.active_tab_index > state.pinned_tab_count {
-                Some(state.active_tab_index - 1)
-            } else {
-                None
-            }
-        }
-        Direction::East => {
-            let upper_bound = if state.active_tab_pinned {
-                state.pinned_tab_count
-            } else {
-                state.tab_count
-            };
-            (state.active_tab_index + 1 < upper_bound).then_some(state.active_tab_index + 1)
-        }
-        Direction::North | Direction::South => None,
-    }
 }
 
 impl Librewolf {
@@ -102,7 +69,14 @@ impl AppAdapter for Librewolf {
 
 impl TopologyHandler for Librewolf {
     fn can_focus(&self, dir: Direction, _pid: u32) -> Result<bool> {
-        Ok(focus_target_index(self.tab_state()?, dir).is_some())
+        if browser_common::focus_routes_through_wm(ADAPTER_ALIASES, dir) {
+            return Ok(false);
+        }
+        Ok(browser_common::can_focus(
+            ADAPTER_ALIASES,
+            self.tab_state()?,
+            dir,
+        ))
     }
 
     fn window_count(&self, _pid: u32) -> Result<u32> {
@@ -110,32 +84,40 @@ impl TopologyHandler for Librewolf {
     }
 
     fn move_decision(&self, dir: Direction, _pid: u32) -> Result<MoveDecision> {
-        let state = self.tab_state()?;
-        if state.tab_count <= 1 {
+        if browser_common::move_routes_through_wm(ADAPTER_ALIASES, dir) {
             return Ok(MoveDecision::Passthrough);
         }
-        match dir {
-            Direction::West | Direction::East => Ok(if move_target_index(state, dir).is_some() {
-                MoveDecision::Internal
-            } else {
-                MoveDecision::TearOut
-            }),
-            Direction::North | Direction::South => Ok(MoveDecision::TearOut),
-        }
+        Ok(browser_common::move_decision(
+            ADAPTER_ALIASES,
+            self.tab_state()?,
+            dir,
+        ))
     }
 
     fn focus(&self, dir: Direction, _pid: u32) -> Result<()> {
-        let state = self.tab_state()?;
-        focus_target_index(state, dir)
-            .with_context(|| format!("{ADAPTER_NAME} cannot focus {dir} inside the tab strip"))?;
-        Ok(native_bridge::focus(&NATIVE_BRIDGE, dir)?)
+        browser_common::execute_focus(
+            ADAPTER_NAME,
+            ADAPTER_ALIASES,
+            self.tab_state()?,
+            dir,
+            |mapped| {
+                native_bridge::focus(&NATIVE_BRIDGE, mapped)?;
+                Ok(())
+            },
+        )
     }
 
     fn move_internal(&self, dir: Direction, _pid: u32) -> Result<()> {
-        let state = self.tab_state()?;
-        move_target_index(state, dir)
-            .with_context(|| format!("{ADAPTER_NAME} cannot move the current tab {dir}"))?;
-        Ok(native_bridge::move_tab(&NATIVE_BRIDGE, dir)?)
+        browser_common::execute_move(
+            ADAPTER_NAME,
+            ADAPTER_ALIASES,
+            self.tab_state()?,
+            dir,
+            |mapped| {
+                native_bridge::move_tab(&NATIVE_BRIDGE, mapped)?;
+                Ok(())
+            },
+        )
     }
 
     fn move_out(&self, _dir: Direction, _pid: u32) -> Result<TearResult> {
@@ -339,6 +321,18 @@ mod tests {
         crate::utils::env_guard()
     }
 
+    fn install_config(raw: &str) -> crate::config::Config {
+        let old = crate::config::snapshot();
+        let parsed: crate::config::Config =
+            toml::from_str(raw).expect("browser config should parse");
+        crate::config::install(parsed);
+        old
+    }
+
+    fn restore_config(old: crate::config::Config) {
+        crate::config::install(old);
+    }
+
     #[test]
     fn socket_path_uses_config_override() {
         let _guard = env_guard();
@@ -497,6 +491,12 @@ mod tests {
     #[test]
     fn can_focus_uses_active_tab_index_via_native_bridge() {
         let _guard = env_guard();
+        let old = install_config(
+            r#"
+[app.browser.librewolf]
+enabled = true
+"#,
+        );
         let harness = NativeHarness::new(vec![
             json!({
                 "ok": true,
@@ -532,6 +532,9 @@ mod tests {
                 json!({ "command": "get_tab_state" }),
             ]
         );
+
+        drop(harness);
+        restore_config(old);
     }
 
     #[test]
@@ -554,7 +557,13 @@ mod tests {
     #[test]
     fn move_decision_tears_out_at_pinned_boundary() {
         let _guard = env_guard();
-        let _harness = NativeHarness::new(vec![json!({
+        let old = install_config(
+            r#"
+[app.browser.librewolf]
+enabled = true
+"#,
+        );
+        let harness = NativeHarness::new(vec![json!({
             "ok": true,
             "state": {
                 "activeTabIndex": 2,
@@ -569,31 +578,37 @@ mod tests {
             .move_decision(Direction::West, 0)
             .expect("move_decision should succeed");
         assert!(matches!(decision, MoveDecision::TearOut));
+        drop(harness);
+        restore_config(old);
     }
 
     #[test]
-    fn move_decision_tears_out_vertically_when_multiple_tabs_exist() {
+    fn default_vertical_move_passes_through_to_wm() {
         let _guard = env_guard();
-        let _harness = NativeHarness::new(vec![json!({
-            "ok": true,
-            "state": {
-                "activeTabIndex": 1,
-                "tabCount": 3,
-                "pinnedTabCount": 0,
-                "activeTabPinned": false
-            }
-        })]);
+        let old = install_config(
+            r#"
+[app.browser.librewolf]
+enabled = true
+"#,
+        );
         let app = Librewolf;
 
         let decision = app
             .move_decision(Direction::North, 0)
             .expect("vertical move_decision should succeed");
-        assert!(matches!(decision, MoveDecision::TearOut));
+        assert!(matches!(decision, MoveDecision::Passthrough));
+        restore_config(old);
     }
 
     #[test]
     fn focus_moves_to_adjacent_tab_via_native_bridge() {
         let _guard = env_guard();
+        let old = install_config(
+            r#"
+[app.browser.librewolf]
+enabled = true
+"#,
+        );
         let harness = NativeHarness::new(vec![
             json!({
                 "ok": true,
@@ -620,11 +635,20 @@ mod tests {
                 }),
             ]
         );
+
+        drop(harness);
+        restore_config(old);
     }
 
     #[test]
     fn move_internal_moves_current_tab_via_native_bridge() {
         let _guard = env_guard();
+        let old = install_config(
+            r#"
+[app.browser.librewolf]
+enabled = true
+"#,
+        );
         let harness = NativeHarness::new(vec![
             json!({
                 "ok": true,
@@ -651,6 +675,9 @@ mod tests {
                 }),
             ]
         );
+
+        drop(harness);
+        restore_config(old);
     }
 
     #[test]
@@ -706,5 +733,79 @@ mod tests {
                 }),
             ]
         );
+    }
+
+    #[test]
+    fn explicit_browser_overrides_repeat_bridge_commands_until_target_position() {
+        let _guard = env_guard();
+        let old = install_config(
+            r#"
+[app.browser.librewolf]
+enabled = true
+tab_axis = "vertical"
+
+[app.browser.librewolf.focus]
+left = "focus_first_tab"
+
+[app.browser.librewolf.move]
+right = "move_tab_to_last_position"
+"#,
+        );
+        let harness = NativeHarness::new(vec![
+            json!({
+                "ok": true,
+                "state": {
+                    "activeTabIndex": 2,
+                    "tabCount": 4,
+                    "pinnedTabCount": 0,
+                    "activeTabPinned": false
+                }
+            }),
+            json!({ "ok": true }),
+            json!({ "ok": true }),
+            json!({
+                "ok": true,
+                "state": {
+                    "activeTabIndex": 1,
+                    "tabCount": 4,
+                    "pinnedTabCount": 1,
+                    "activeTabPinned": false
+                }
+            }),
+            json!({ "ok": true }),
+            json!({ "ok": true }),
+        ]);
+        let app = Librewolf;
+
+        app.focus(Direction::West, 0)
+            .expect("left override should focus repeatedly toward the first tab");
+        app.move_internal(Direction::East, 0)
+            .expect("right override should move repeatedly toward the last tab");
+        assert_eq!(
+            harness.requests(),
+            vec![
+                json!({ "command": "get_tab_state" }),
+                json!({
+                    "command": "focus",
+                    "direction": "West",
+                }),
+                json!({
+                    "command": "focus",
+                    "direction": "West",
+                }),
+                json!({ "command": "get_tab_state" }),
+                json!({
+                    "command": "move_tab",
+                    "direction": "East",
+                }),
+                json!({
+                    "command": "move_tab",
+                    "direction": "East",
+                }),
+            ]
+        );
+
+        drop(harness);
+        restore_config(old);
     }
 }

@@ -157,6 +157,7 @@ macro_rules! impl_terminal_host_backend {
 pub(crate) use impl_terminal_host_backend;
 
 pub mod alacritty;
+pub(crate) mod browser_common;
 pub mod chromium;
 pub mod emacs;
 pub mod foot;
