@@ -6,8 +6,7 @@ per-user native-messaging host manifest template.
 ## Contents
 
 - `manifest.json` and `service_worker.js`: the unpacked extension source tree.
-- `install-native-host.sh`: installs a user-scoped native host manifest for the `yny` binary.
-- `native-host/com.yeet_and_yoink.chromium_bridge.json.template`: template used by the installer.
+- `native-host/com.yeet_and_yoink.chromium_bridge.json.template`: reference manifest template.
 
 ## Install the extension
 
@@ -19,9 +18,21 @@ it, which is required for native-messaging permissions.
 
 ## Install the native host manifest
 
+Preferred:
+
 ```sh
-./install-native-host.sh /absolute/path/to/yny [chromium|chrome|brave|edge]
+yny setup chromium
 ```
+
+Other supported browser targets are `chrome`, `brave`, and `edge`.
+
+The installer writes a small `yeet-and-yoink-chromium-host` wrapper next to the manifest and points
+the manifest at that wrapper. This is required because Chromium-family native-messaging manifests
+can only name an executable path, while the main `yny` CLI must be invoked as
+`yny browser-host chromium`.
+
+Use `--yny-path /absolute/path/to/yny` if you want `setup chromium` to target a different binary
+than the currently running one.
 
 Defaults:
 
@@ -30,6 +41,8 @@ Defaults:
 - Linux Brave: `~/.config/BraveSoftware/Brave-Browser/NativeMessagingHosts/`
 - Linux Edge: `~/.config/microsoft-edge/NativeMessagingHosts/`
 - macOS browser-specific `~/Library/Application Support/.../NativeMessagingHosts/`
+
+Use `--manifest-dir /custom/NativeMessagingHosts` to override the target directory explicitly.
 
 ## Native host details
 
