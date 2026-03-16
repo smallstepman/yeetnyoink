@@ -4,13 +4,13 @@ use std::sync::{Mutex, OnceLock};
 
 use anyhow::{bail, Context, Result};
 
+use crate::commands::setup;
 use crate::engine::contracts::{
     AdapterCapabilities, MergeExecutionMode, MergePreparation, MoveDecision, TearResult,
     TerminalMultiplexerProvider, TerminalPaneSnapshot, TopologyHandler,
 };
 use crate::engine::runtime::{self, ProcessId};
 use crate::engine::topology::{Direction, DirectionalNeighbors};
-use crate::engine::zellij_setup;
 use crate::logging;
 
 #[derive(Debug, Clone, Copy)]
@@ -481,7 +481,7 @@ impl ZellijMuxProvider {
                 return Some(url);
             }
         }
-        Some(zellij_setup::release_wasm_url().to_string())
+        Some(setup::zellij_release_wasm_url().to_string())
     }
 
     fn parse_client_pane_id(line: &str) -> Option<String> {

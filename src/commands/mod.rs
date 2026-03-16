@@ -3,6 +3,7 @@ pub mod focus;
 pub mod focus_or_cycle;
 pub mod move_win;
 pub mod resize;
+pub mod setup;
 
 use anyhow::Result;
 
