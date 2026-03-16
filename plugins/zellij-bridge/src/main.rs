@@ -29,6 +29,7 @@ impl ZellijPlugin for YeetAndYoinkZellijBreakPlugin {
         set_selectable(false);
         request_permission(&[
             PermissionType::ChangeApplicationState,
+            PermissionType::ReadApplicationState,
             PermissionType::ReadCliPipes,
         ]);
         subscribe(&[
