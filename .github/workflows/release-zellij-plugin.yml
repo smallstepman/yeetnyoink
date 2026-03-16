@@ -1,0 +1,53 @@
+name: Release zellij plugin
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "plugins/zellij-bridge/**"
+      - ".github/workflows/release-zellij-plugin.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: release-zellij-plugin
+  cancel-in-progress: true
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust with wasm target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip1
+
+      - name: Build zellij plugin
+        run: cargo build --manifest-path plugins/zellij-bridge/Cargo.toml --release --target wasm32-wasip1
+
+      - name: Publish rolling release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="zellij-plugin-latest"
+          asset="plugins/zellij-bridge/target/wasm32-wasip1/release/yeet-and-yoink-zellij-break.wasm"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release delete "$tag" --yes --cleanup-tag
+          fi
+          cat > /tmp/zellij-plugin-release-notes.txt <<EOF
+          Rolling yeet-and-yoink zellij plugin build from ${GITHUB_SHA}.
+
+          Direct asset URL:
+          https://github.com/${GITHUB_REPOSITORY}/releases/download/${tag}/yeet-and-yoink-zellij-break.wasm
+          EOF
+          gh release create "$tag" "$asset" \
+            --target "$GITHUB_SHA" \
+            --title "Zellij plugin (latest)" \
+            --notes-file /tmp/zellij-plugin-release-notes.txt

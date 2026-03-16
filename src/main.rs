@@ -1,5 +1,6 @@
 use anyhow::{bail, Context, Result};
 use clap::{Args, Parser, Subcommand};
+use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
 use yeet_and_yoink::commands;
 #[cfg(target_os = "linux")]
@@ -7,6 +8,8 @@ use yeet_and_yoink::commands::focus_or_cycle::FocusOrCycleArgs;
 use yeet_and_yoink::commands::resize::ResizeMode;
 use yeet_and_yoink::config;
 use yeet_and_yoink::engine::browser_native::{self, BrowserInstallTarget};
+use yeet_and_yoink::engine::kitty_setup::{self, KittyIncludeStatus};
+use yeet_and_yoink::engine::zellij_setup;
 use yeet_and_yoink::engine::topology::Direction;
 use yeet_and_yoink::logging;
 use yeet_and_yoink::profiling::ProfileConfig;
@@ -91,7 +94,7 @@ impl Cmd {
 }
 
 #[derive(Debug, Clone, Args)]
-struct SetupArgs {
+struct BrowserSetupArgs {
     /// Override the yny binary path recorded in the generated wrapper script.
     #[arg(long, value_name = "PATH")]
     yny_path: Option<PathBuf>,
@@ -100,44 +103,36 @@ struct SetupArgs {
     manifest_dir: Option<PathBuf>,
 }
 
+#[derive(Debug, Clone, Args)]
+struct KittySetupArgs {
+    /// Override the kitty.conf path that should receive the managed include line.
+    #[arg(long, value_name = "PATH")]
+    kitty_conf: Option<PathBuf>,
+    /// Append the include line without prompting.
+    #[arg(long, short = 'y')]
+    yes: bool,
+}
+
 #[derive(Debug, Clone, Subcommand)]
 enum SetupInstaller {
     /// Install the Firefox/LibreWolf native host manifest and wrapper.
     #[command(visible_alias = "librewolf")]
-    Firefox(SetupArgs),
+    Firefox(BrowserSetupArgs),
     /// Install the Chromium native host manifest and wrapper.
-    Chromium(SetupArgs),
+    Chromium(BrowserSetupArgs),
     /// Install the Google Chrome native host manifest and wrapper.
     #[command(visible_alias = "google-chrome")]
-    Chrome(SetupArgs),
+    Chrome(BrowserSetupArgs),
     /// Install the Brave native host manifest and wrapper.
     #[command(visible_alias = "brave-browser")]
-    Brave(SetupArgs),
+    Brave(BrowserSetupArgs),
     /// Install the Microsoft Edge native host manifest and wrapper.
     #[command(visible_alias = "microsoft-edge")]
-    Edge(SetupArgs),
-}
-
-impl SetupInstaller {
-    fn target(&self) -> BrowserInstallTarget {
-        match self {
-            Self::Firefox(_) => BrowserInstallTarget::Firefox,
-            Self::Chromium(_) => BrowserInstallTarget::Chromium,
-            Self::Chrome(_) => BrowserInstallTarget::Chrome,
-            Self::Brave(_) => BrowserInstallTarget::Brave,
-            Self::Edge(_) => BrowserInstallTarget::Edge,
-        }
-    }
-
-    fn args(&self) -> &SetupArgs {
-        match self {
-            Self::Firefox(args)
-            | Self::Chromium(args)
-            | Self::Chrome(args)
-            | Self::Brave(args)
-            | Self::Edge(args) => args,
-        }
-    }
+    Edge(BrowserSetupArgs),
+    /// Install kitty remote-control config and offer to wire it into kitty.conf.
+    Kitty(KittySetupArgs),
+    /// Print zellij plugin install instructions and the hosted release URL.
+    Zellij,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -196,6 +191,82 @@ fn install_browser_native_host(
     Ok(())
 }
 
+fn install_kitty_setup(kitty_conf: Option<&std::path::Path>, assume_yes: bool) -> Result<()> {
+    let plan = kitty_setup::plan(kitty_conf)?;
+    kitty_setup::write_managed_snippet(&plan)?;
+
+    println!("{}", kitty_setup::explanation(&plan));
+    println!();
+
+    if kitty_setup::include_present(&plan)? {
+        println!("Already configured in {}.", plan.kitty_conf_path.display());
+        println!("Restart kitty so the remote-control socket settings take effect.");
+        return Ok(());
+    }
+
+    if assume_yes {
+        return finish_kitty_setup(&plan);
+    }
+
+    let stdin = io::stdin();
+    let stdout = io::stdout();
+    if !stdin.is_terminal() || !stdout.is_terminal() {
+        println!("Non-interactive shell detected; leaving kitty.conf unchanged.");
+        println!();
+        println!("Run this command yourself:");
+        println!("{}", plan.manual_command);
+        return Ok(());
+    }
+
+    loop {
+        print!(
+            "Press `Y` to append that include line to {} now. Press `N` to print a shell command you can run yourself [Y/n]: ",
+            plan.kitty_conf_path.display()
+        );
+        io::stdout().flush().context("failed to flush setup prompt")?;
+
+        let mut response = String::new();
+        stdin
+            .read_line(&mut response)
+            .context("failed to read setup prompt response")?;
+        match response.trim().to_ascii_lowercase().as_str() {
+            "" | "y" | "yes" => return finish_kitty_setup(&plan),
+            "n" | "no" => {
+                println!();
+                println!("Run this command yourself:");
+                println!("{}", plan.manual_command);
+                return Ok(());
+            }
+            _ => {
+                println!("Please answer `Y` or `N`.");
+                println!();
+            }
+        }
+    }
+}
+
+fn finish_kitty_setup(plan: &kitty_setup::KittySetupPlan) -> Result<()> {
+    match kitty_setup::append_include(plan)? {
+        KittyIncludeStatus::Added => {
+            println!(
+                "Added `{}` to {}.",
+                plan.include_line,
+                plan.kitty_conf_path.display()
+            );
+        }
+        KittyIncludeStatus::AlreadyPresent => {
+            println!("Already configured in {}.", plan.kitty_conf_path.display());
+        }
+    }
+    println!("Restart kitty so the remote-control socket settings take effect.");
+    Ok(())
+}
+
+fn install_zellij_setup() -> Result<()> {
+    println!("{}", zellij_setup::instructions());
+    Ok(())
+}
+
 fn main() {
     let cli = Cli::parse();
 
@@ -211,12 +282,38 @@ fn main() {
             return;
         }
         Cmd::Setup { installer } => {
-            let args = installer.args();
-            if let Err(err) = install_browser_native_host(
-                installer.target(),
-                args.yny_path.as_deref(),
-                args.manifest_dir.as_deref(),
-            ) {
+            let result = match installer {
+                SetupInstaller::Firefox(args) => install_browser_native_host(
+                    BrowserInstallTarget::Firefox,
+                    args.yny_path.as_deref(),
+                    args.manifest_dir.as_deref(),
+                ),
+                SetupInstaller::Chromium(args) => install_browser_native_host(
+                    BrowserInstallTarget::Chromium,
+                    args.yny_path.as_deref(),
+                    args.manifest_dir.as_deref(),
+                ),
+                SetupInstaller::Chrome(args) => install_browser_native_host(
+                    BrowserInstallTarget::Chrome,
+                    args.yny_path.as_deref(),
+                    args.manifest_dir.as_deref(),
+                ),
+                SetupInstaller::Brave(args) => install_browser_native_host(
+                    BrowserInstallTarget::Brave,
+                    args.yny_path.as_deref(),
+                    args.manifest_dir.as_deref(),
+                ),
+                SetupInstaller::Edge(args) => install_browser_native_host(
+                    BrowserInstallTarget::Edge,
+                    args.yny_path.as_deref(),
+                    args.manifest_dir.as_deref(),
+                ),
+                SetupInstaller::Kitty(args) => {
+                    install_kitty_setup(args.kitty_conf.as_deref(), args.yes)
+                }
+                SetupInstaller::Zellij => install_zellij_setup(),
+            };
+            if let Err(err) = result {
                 eprintln!("yeet-and-yoink: {err:#}");
                 std::process::exit(1);
             }
@@ -349,7 +446,7 @@ mod tests {
             .expect("setup help should render");
         let help = String::from_utf8(help).expect("help text should be utf-8");
 
-        for installer in ["firefox", "chromium", "chrome", "brave", "edge"] {
+        for installer in ["firefox", "chromium", "chrome", "brave", "edge", "kitty", "zellij"] {
             assert!(
                 help.contains(installer),
                 "setup help should list {installer}: {help}"
@@ -358,6 +455,14 @@ mod tests {
         assert!(
             help.contains("Install the Firefox/LibreWolf native host manifest and wrapper"),
             "setup help should describe firefox installer: {help}"
+        );
+        assert!(
+            help.contains("Install kitty remote-control config and offer to wire it into kitty.conf"),
+            "setup help should describe kitty installer: {help}"
+        );
+        assert!(
+            help.contains("Print zellij plugin install instructions and the hosted release URL"),
+            "setup help should describe zellij installer: {help}"
         );
     }
 
@@ -378,6 +483,24 @@ mod tests {
             chrome.command,
             Cmd::Setup {
                 installer: SetupInstaller::Chrome(_)
+            }
+        ));
+
+        let kitty = Cli::try_parse_from(["yny", "setup", "kitty"])
+            .expect("kitty installer should parse");
+        assert!(matches!(
+            kitty.command,
+            Cmd::Setup {
+                installer: SetupInstaller::Kitty(_)
+            }
+        ));
+
+        let zellij = Cli::try_parse_from(["yny", "setup", "zellij"])
+            .expect("zellij installer should parse");
+        assert!(matches!(
+            zellij.command,
+            Cmd::Setup {
+                installer: SetupInstaller::Zellij
             }
         ));
     }

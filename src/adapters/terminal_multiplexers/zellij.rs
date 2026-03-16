@@ -10,6 +10,7 @@ use crate::engine::contracts::{
 };
 use crate::engine::runtime::{self, ProcessId};
 use crate::engine::topology::{Direction, DirectionalNeighbors};
+use crate::engine::zellij_setup;
 use crate::logging;
 
 #[derive(Debug, Clone, Copy)]
@@ -351,7 +352,7 @@ impl ZellijMuxProvider {
                 return false;
             };
             for ancestor in path.ancestors() {
-                let source = ancestor.join("plugins/zellij-break/src/main.rs");
+                let source = ancestor.join("plugins/zellij-bridge/src/main.rs");
                 let Ok(source_meta) = std::fs::metadata(&source) else {
                     continue;
                 };
@@ -392,13 +393,13 @@ impl ZellijMuxProvider {
             );
             candidates.push(
                 base.join(
-                    "plugins/zellij-break/target/wasm32-wasip1/release/yeet-and-yoink-zellij-break.wasm",
+                    "plugins/zellij-bridge/target/wasm32-wasip1/release/yeet-and-yoink-zellij-break.wasm",
                 )
                 .to_path_buf(),
             );
             candidates.push(
                 base.join(
-                    "plugins/zellij-break/target/wasm32-wasip1/release/yeet_and_yoink_zellij_break.wasm",
+                    "plugins/zellij-bridge/target/wasm32-wasip1/release/yeet_and_yoink_zellij_break.wasm",
                 )
                 .to_path_buf(),
             );
@@ -480,7 +481,7 @@ impl ZellijMuxProvider {
                 return Some(url);
             }
         }
-        None
+        Some(zellij_setup::release_wasm_url().to_string())
     }
 
     fn parse_client_pane_id(line: &str) -> Option<String> {
@@ -1003,7 +1004,7 @@ impl TerminalMultiplexerProvider for ZellijMuxProvider {
             );
         }
         let plugin_url = Self::break_plugin_url().with_context(|| {
-            "zellij break plugin not found; build plugins/zellij-break so plugins/zellij-break/target/wasm32-wasip1/release/yeet-and-yoink-zellij-break.wasm exists"
+            "zellij break plugin URL could not be resolved; run `yny setup zellij` or set [runtime.zellij].break_plugin to a local .wasm path"
         })?;
         if let Err(err) = Self::ensure_break_plugin_permissions(&plugin_url) {
             logging::debug(format!(
@@ -1065,7 +1066,7 @@ impl TopologyHandler for ZellijMuxProvider {
             .ok()
             .filter(|count| *count > 0);
         let plugin_url = Self::break_plugin_url().with_context(|| {
-            "zellij break plugin not found; build plugins/zellij-break so plugins/zellij-break/target/wasm32-wasip1/release/yeet-and-yoink-zellij-break.wasm exists"
+            "zellij break plugin URL could not be resolved; run `yny setup zellij` or set [runtime.zellij].break_plugin to a local .wasm path"
         })?;
         if let Err(err) = Self::ensure_break_plugin_permissions(&plugin_url) {
             logging::debug(format!(

@@ -29,8 +29,11 @@ debug = true
 focus_settle_ms = 50
 
 [runtime.zellij]
-break_plugin = "/path/to/yeet_and_yoink_zellij_break.wasm"
+# Optional local override for the hosted zellij break plugin.
+break_plugin = "/path/to/yeet-and-yoink-zellij-break.wasm"
 ```
+
+Run `yny setup zellij` to print the hosted `load_plugins { ... }` release URL snippet.
 
 ## Minimal config example
 
@@ -116,12 +119,11 @@ to raw TOML instead.
 
 ## Plugin packages
 
-App-facing integration assets now live under `plugins/` as git submodules that track dedicated
-plugin branches of this repository:
+Integration assets live under `plugins/`:
 
-- `plugins/firefox`: Firefox-family WebExtension source plus native-host installer template
-- `plugins/chrome`: Chromium-family unpacked extension plus native-host installer template
-- `plugins/kitty`: kitty config snippet package for remote-control setup
+- `plugins/firefox`: Firefox-family WebExtension source as a git submodule
+- `plugins/chrome`: Chromium-family unpacked extension source as a git submodule
+- `plugins/zellij-bridge`: source for the release-published zellij break plugin
 
 Clone with submodules enabled:
 

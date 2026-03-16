@@ -6,7 +6,3 @@
 	path = plugins/chrome
 	url = https://github.com/smallstepman/yeet-and-yoink.git
 	branch = plugin/chrome
-[submodule "plugins/kitty"]
-	path = plugins/kitty
-	url = https://github.com/smallstepman/yeet-and-yoink.git
-	branch = plugin/kitty
