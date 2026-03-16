@@ -588,7 +588,7 @@ fn summon_state_path() -> PathBuf {
     let base = std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("/tmp"));
-    base.join("yeet-and-yoink").join("summon-state.json")
+    base.join("yeetnyoink").join("summon-state.json")
 }
 
 fn load_summon_state() -> Result<SummonState> {
@@ -704,7 +704,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("system time should be after unix epoch")
             .as_nanos();
-        let path = std::env::temp_dir().join(format!("yeet-and-yoink-niri-test-{unique}"));
+        let path = std::env::temp_dir().join(format!("yeetnyoink-niri-test-{unique}"));
         fs::create_dir_all(&path).expect("temp dir should be created");
         path
     }

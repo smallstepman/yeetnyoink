@@ -26,7 +26,7 @@ mod tests {
     fn unique_temp_dir(prefix: &str) -> PathBuf {
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
-            "yeet-and-yoink-foot-config-{prefix}-{}-{id}",
+            "yeetnyoink-foot-config-{prefix}-{}-{id}",
             std::process::id()
         ));
         std::fs::create_dir_all(&path).expect("temp dir should be created");
@@ -47,7 +47,7 @@ mod tests {
     fn default_capabilities_follow_tmux_mux_backend() {
         let _guard = env_guard();
         let root = unique_temp_dir("default-tmux");
-        let config_dir = root.join("yeet-and-yoink");
+        let config_dir = root.join("yeetnyoink");
         fs::create_dir_all(&config_dir).expect("config dir should be created");
         fs::write(
             config_dir.join("config.toml"),
@@ -83,7 +83,7 @@ enabled = true
     fn zellij_backend_selects_attach_command_with_foot_prefix() {
         let _guard = env_guard();
         let root = unique_temp_dir("zellij-attach");
-        let config_dir = root.join("yeet-and-yoink");
+        let config_dir = root.join("yeetnyoink");
         fs::create_dir_all(&config_dir).expect("config dir should be created");
         fs::write(
             config_dir.join("config.toml"),

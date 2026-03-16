@@ -140,7 +140,7 @@ pub(crate) struct TmuxMuxProvider;
 
 pub(crate) static TMUX_MUX_PROVIDER: TmuxMuxProvider = TmuxMuxProvider;
 
-const DETACHED_SESSION_PREFIX: &str = "yeet-and-yoink-";
+const DETACHED_SESSION_PREFIX: &str = "yeetnyoink-";
 
 #[derive(Debug, Clone, Copy)]
 struct TmuxPaneGeom {

@@ -49,7 +49,7 @@ fn execute_app_then_wm_fallback_runs_wm_when_app_handler_returns_false() {
 Run:
 
 ```bash
-cd /Users/m/Projects/yeet-and-yoink/.worktrees/copilot-engine-simplify-20260315-060633 && cargo test --quiet with_focused_app_session_returns_none_when_focused_window_has_no_pid execute_app_then_wm_fallback_skips_wm_when_app_handler_returns_true execute_app_then_wm_fallback_runs_wm_when_app_handler_returns_false
+cd /Users/m/Projects/yeetnyoink/.worktrees/copilot-engine-simplify-20260315-060633 && cargo test --quiet with_focused_app_session_returns_none_when_focused_window_has_no_pid execute_app_then_wm_fallback_skips_wm_when_app_handler_returns_true execute_app_then_wm_fallback_runs_wm_when_app_handler_returns_false
 ```
 
 Expected: FAIL because the shared focused-app helper / generic fallback helper does not exist yet.
@@ -108,7 +108,7 @@ Then rewrite `focus.rs` and `resize.rs` to use the shared session rather than re
 Run:
 
 ```bash
-cd /Users/m/Projects/yeet-and-yoink/.worktrees/copilot-engine-simplify-20260315-060633 && cargo test --quiet with_focused_app_session_returns_none_when_focused_window_has_no_pid execute_app_then_wm_fallback_skips_wm_when_app_handler_returns_true execute_app_then_wm_fallback_runs_wm_when_app_handler_returns_false
+cd /Users/m/Projects/yeetnyoink/.worktrees/copilot-engine-simplify-20260315-060633 && cargo test --quiet with_focused_app_session_returns_none_when_focused_window_has_no_pid execute_app_then_wm_fallback_skips_wm_when_app_handler_returns_true execute_app_then_wm_fallback_runs_wm_when_app_handler_returns_false
 ```
 
 Expected: PASS.
@@ -116,7 +116,7 @@ Expected: PASS.
 **Step 5: Commit**
 
 ```bash
-cd /Users/m/Projects/yeet-and-yoink/.worktrees/copilot-engine-simplify-20260315-060633 && git add src/engine/actions/context.rs src/engine/actions/focus.rs src/engine/actions/resize.rs src/engine/actions/orchestrator.rs && git commit -m "refactor(engine): share focused app action session"
+cd /Users/m/Projects/yeetnyoink/.worktrees/copilot-engine-simplify-20260315-060633 && git add src/engine/actions/context.rs src/engine/actions/focus.rs src/engine/actions/resize.rs src/engine/actions/orchestrator.rs && git commit -m "refactor(engine): share focused app action session"
 ```
 
 ### Task 2: Consolidate directional probe semantics
@@ -149,7 +149,7 @@ fn directional_probe_keep_target_leaves_focus_on_target_window() {
 Run:
 
 ```bash
-cd /Users/m/Projects/yeet-and-yoink/.worktrees/copilot-engine-simplify-20260315-060633 && cargo test --quiet directional_probe_restore_source_returns_focus_to_source_window directional_probe_keep_target_leaves_focus_on_target_window
+cd /Users/m/Projects/yeetnyoink/.worktrees/copilot-engine-simplify-20260315-060633 && cargo test --quiet directional_probe_restore_source_returns_focus_to_source_window directional_probe_keep_target_leaves_focus_on_target_window
 ```
 
 Expected: FAIL until the probe helper is reshaped around the new clearer API.
@@ -187,7 +187,7 @@ Update merge, movement, and orchestrator callers to use the clearer probe entry 
 Run:
 
 ```bash
-cd /Users/m/Projects/yeet-and-yoink/.worktrees/copilot-engine-simplify-20260315-060633 && cargo test --quiet directional_probe_restore_source_returns_focus_to_source_window directional_probe_keep_target_leaves_focus_on_target_window
+cd /Users/m/Projects/yeetnyoink/.worktrees/copilot-engine-simplify-20260315-060633 && cargo test --quiet directional_probe_restore_source_returns_focus_to_source_window directional_probe_keep_target_leaves_focus_on_target_window
 ```
 
 Expected: PASS.
@@ -195,7 +195,7 @@ Expected: PASS.
 **Step 5: Commit**
 
 ```bash
-cd /Users/m/Projects/yeet-and-yoink/.worktrees/copilot-engine-simplify-20260315-060633 && git add src/engine/actions/probe.rs src/engine/actions/merge.rs src/engine/actions/orchestrator.rs src/engine/actions/movement.rs && git commit -m "refactor(engine): clarify directional probe helpers"
+cd /Users/m/Projects/yeetnyoink/.worktrees/copilot-engine-simplify-20260315-060633 && git add src/engine/actions/probe.rs src/engine/actions/merge.rs src/engine/actions/orchestrator.rs src/engine/actions/movement.rs && git commit -m "refactor(engine): clarify directional probe helpers"
 ```
 
 ### Task 3: Make move / merge / tear-out read as linear action flow
@@ -229,7 +229,7 @@ fn tear_out_wait_and_focus_returns_new_window_when_it_appears_late() {
 Run:
 
 ```bash
-cd /Users/m/Projects/yeet-and-yoink/.worktrees/copilot-engine-simplify-20260315-060633 && cargo test --quiet passthrough_move_prefers_merge_before_tear_out_or_wm_fallback tear_out_wait_and_focus_returns_new_window_when_it_appears_late
+cd /Users/m/Projects/yeetnyoink/.worktrees/copilot-engine-simplify-20260315-060633 && cargo test --quiet passthrough_move_prefers_merge_before_tear_out_or_wm_fallback tear_out_wait_and_focus_returns_new_window_when_it_appears_late
 ```
 
 Expected: FAIL before the new action contexts/helpers exist.
@@ -267,7 +267,7 @@ The implementation goal is that `movement.rs` reads as a small policy loop and `
 Run:
 
 ```bash
-cd /Users/m/Projects/yeet-and-yoink/.worktrees/copilot-engine-simplify-20260315-060633 && cargo test --quiet passthrough_move_prefers_merge_before_tear_out_or_wm_fallback tear_out_wait_and_focus_returns_new_window_when_it_appears_late
+cd /Users/m/Projects/yeetnyoink/.worktrees/copilot-engine-simplify-20260315-060633 && cargo test --quiet passthrough_move_prefers_merge_before_tear_out_or_wm_fallback tear_out_wait_and_focus_returns_new_window_when_it_appears_late
 ```
 
 Expected: PASS.
@@ -275,7 +275,7 @@ Expected: PASS.
 **Step 5: Commit**
 
 ```bash
-cd /Users/m/Projects/yeet-and-yoink/.worktrees/copilot-engine-simplify-20260315-060633 && git add src/engine/actions/movement.rs src/engine/actions/merge.rs src/engine/actions/tearout.rs src/engine/actions/mod.rs && git commit -m "refactor(engine): linearize move merge and tear-out flow"
+cd /Users/m/Projects/yeetnyoink/.worktrees/copilot-engine-simplify-20260315-060633 && git add src/engine/actions/movement.rs src/engine/actions/merge.rs src/engine/actions/tearout.rs src/engine/actions/mod.rs && git commit -m "refactor(engine): linearize move merge and tear-out flow"
 ```
 
 ### Task 4: Canonical engine imports and full verification
@@ -305,7 +305,7 @@ fn engine_action_modules_use_canonical_engine_imports() {
 Run:
 
 ```bash
-cd /Users/m/Projects/yeet-and-yoink/.worktrees/copilot-engine-simplify-20260315-060633 && cargo test --quiet engine_action_modules_use_canonical_engine_imports
+cd /Users/m/Projects/yeetnyoink/.worktrees/copilot-engine-simplify-20260315-060633 && cargo test --quiet engine_action_modules_use_canonical_engine_imports
 ```
 
 Expected: FAIL if you add the structural test.
@@ -315,13 +315,13 @@ Expected: FAIL if you add the structural test.
 Normalize touched engine files to use canonical engine layer imports where practical, then run the targeted action tests and the full suite:
 
 ```bash
-cd /Users/m/Projects/yeet-and-yoink/.worktrees/copilot-engine-simplify-20260315-060633 && cargo test --quiet passthrough_move_prefers_merge_before_tear_out_or_wm_fallback tear_out_wait_and_focus_returns_new_window_when_it_appears_late directional_probe_restore_source_returns_focus_to_source_window directional_probe_keep_target_leaves_focus_on_target_window
+cd /Users/m/Projects/yeetnyoink/.worktrees/copilot-engine-simplify-20260315-060633 && cargo test --quiet passthrough_move_prefers_merge_before_tear_out_or_wm_fallback tear_out_wait_and_focus_returns_new_window_when_it_appears_late directional_probe_restore_source_returns_focus_to_source_window directional_probe_keep_target_leaves_focus_on_target_window
 ```
 
 Then:
 
 ```bash
-cd /Users/m/Projects/yeet-and-yoink/.worktrees/copilot-engine-simplify-20260315-060633 && cargo test -q
+cd /Users/m/Projects/yeetnyoink/.worktrees/copilot-engine-simplify-20260315-060633 && cargo test -q
 ```
 
 Expected: PASS.
@@ -329,5 +329,5 @@ Expected: PASS.
 **Step 4: Commit**
 
 ```bash
-cd /Users/m/Projects/yeet-and-yoink/.worktrees/copilot-engine-simplify-20260315-060633 && git add src/engine && git commit -m "refactor(engine): simplify action orchestration structure"
+cd /Users/m/Projects/yeetnyoink/.worktrees/copilot-engine-simplify-20260315-060633 && git add src/engine && git commit -m "refactor(engine): simplify action orchestration structure"
 ```

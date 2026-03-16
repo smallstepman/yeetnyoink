@@ -1,8 +1,8 @@
 [submodule "plugins/firefox"]
 	path = plugins/firefox
-	url = https://github.com/smallstepman/yeet-and-yoink.git
+	url = https://github.com/smallstepman/yeetnyoink.git
 	branch = plugin/firefox
 [submodule "plugins/chrome"]
 	path = plugins/chrome
-	url = https://github.com/smallstepman/yeet-and-yoink.git
+	url = https://github.com/smallstepman/yeetnyoink.git
 	branch = plugin/chrome

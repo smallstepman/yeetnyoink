@@ -339,14 +339,14 @@ mod tests {
     fn terminal_app_ids_classify_to_terminal_domain() {
         let _guard = crate::utils::env_guard();
         let root = std::env::temp_dir().join(format!(
-            "yeet-and-yoink-domain-wezterm-{}-{}",
+            "yeetnyoink-domain-wezterm-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("clock should be monotonic")
                 .as_nanos()
         ));
-        let config_dir = root.join("yeet-and-yoink");
+        let config_dir = root.join("yeetnyoink");
         std::fs::create_dir_all(&config_dir).expect("config dir should be created");
         std::fs::write(
             config_dir.join("config.toml"),
@@ -371,14 +371,14 @@ enabled = true
     fn kitty_app_ids_classify_to_terminal_domain() {
         let _guard = crate::utils::env_guard();
         let root = std::env::temp_dir().join(format!(
-            "yeet-and-yoink-domain-kitty-{}-{}",
+            "yeetnyoink-domain-kitty-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("clock should be monotonic")
                 .as_nanos()
         ));
-        let config_dir = root.join("yeet-and-yoink");
+        let config_dir = root.join("yeetnyoink");
         std::fs::create_dir_all(&config_dir).expect("config dir should be created");
         std::fs::write(
             config_dir.join("config.toml"),
@@ -403,14 +403,14 @@ enabled = true
     fn foot_app_ids_classify_to_terminal_domain() {
         let _guard = crate::utils::env_guard();
         let root = std::env::temp_dir().join(format!(
-            "yeet-and-yoink-domain-foot-{}-{}",
+            "yeetnyoink-domain-foot-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("clock should be monotonic")
                 .as_nanos()
         ));
-        let config_dir = root.join("yeet-and-yoink");
+        let config_dir = root.join("yeetnyoink");
         std::fs::create_dir_all(&config_dir).expect("config dir should be created");
         std::fs::write(
             config_dir.join("config.toml"),
@@ -435,14 +435,14 @@ enabled = true
     fn alacritty_app_ids_classify_to_terminal_domain() {
         let _guard = crate::utils::env_guard();
         let root = std::env::temp_dir().join(format!(
-            "yeet-and-yoink-domain-alacritty-{}-{}",
+            "yeetnyoink-domain-alacritty-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("clock should be monotonic")
                 .as_nanos()
         ));
-        let config_dir = root.join("yeet-and-yoink");
+        let config_dir = root.join("yeetnyoink");
         std::fs::create_dir_all(&config_dir).expect("config dir should be created");
         std::fs::write(
             config_dir.join("config.toml"),
@@ -467,14 +467,14 @@ enabled = true
     fn ghostty_app_ids_classify_to_terminal_domain() {
         let _guard = crate::utils::env_guard();
         let root = std::env::temp_dir().join(format!(
-            "yeet-and-yoink-domain-ghostty-{}-{}",
+            "yeetnyoink-domain-ghostty-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("clock should be monotonic")
                 .as_nanos()
         ));
-        let config_dir = root.join("yeet-and-yoink");
+        let config_dir = root.join("yeetnyoink");
         std::fs::create_dir_all(&config_dir).expect("config dir should be created");
         std::fs::write(
             config_dir.join("config.toml"),

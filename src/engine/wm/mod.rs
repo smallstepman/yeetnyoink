@@ -203,7 +203,7 @@ mod tests {
     fn connect_selected_emits_legacy_adapter_span_name() {
         let _guard = crate::utils::env_guard();
         let root = unique_temp_dir("connect-selected-span");
-        let config_dir = root.join("yeet-and-yoink");
+        let config_dir = root.join("yeetnyoink");
         std::fs::create_dir_all(&config_dir).expect("config dir should be created");
         let config_path = config_dir.join("config.toml");
         std::fs::write(
@@ -248,7 +248,7 @@ enabled_integration = "{backend}"
     fn unique_temp_dir(prefix: &str) -> PathBuf {
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
-            "yeet-and-yoink-window-manager-{prefix}-{}-{id}",
+            "yeetnyoink-window-manager-{prefix}-{}-{id}",
             std::process::id()
         ));
         std::fs::create_dir_all(&path).expect("temp dir should be created");

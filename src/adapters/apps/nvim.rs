@@ -351,7 +351,7 @@ impl Nvim {
 
     fn target_socket_path() -> Result<std::path::PathBuf> {
         let runtime_dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_string());
-        let base_dir = std::path::PathBuf::from(runtime_dir).join("yeet-and-yoink-nvim");
+        let base_dir = std::path::PathBuf::from(runtime_dir).join("yeetnyoink-nvim");
         std::fs::create_dir_all(&base_dir).with_context(|| {
             format!("failed to create nvim tear-out dir: {}", base_dir.display())
         })?;
@@ -894,7 +894,7 @@ mod tests {
         fn new() -> Self {
             let unique = NEXT_ID.fetch_add(1, Ordering::Relaxed);
             let base = std::env::temp_dir().join(format!(
-                "yeet-and-yoink-nvim-test-{}-{unique}",
+                "yeetnyoink-nvim-test-{}-{unique}",
                 std::process::id()
             ));
             let bin_dir = base.join("bin");

@@ -13,14 +13,14 @@ use crate::engine::topology::Direction;
 pub const ADAPTER_NAME: &str = "librewolf";
 pub const ADAPTER_ALIASES: &[&str] = &["librewolf", "firefox", "librefox"];
 pub const APP_IDS: &[&str] = &["librewolf", "LibreWolf", "firefox", "Firefox"];
-pub const FIREFOX_EXTENSION_ID: &str = "browser-bridge@yeet-and-yoink";
-pub const FIREFOX_NATIVE_HOST_NAME: &str = "com.yeet_and_yoink.firefox_bridge";
+pub const FIREFOX_EXTENSION_ID: &str = "browser-bridge@yeetnyoink";
+pub const FIREFOX_NATIVE_HOST_NAME: &str = "com.yeetnyoink.firefox_bridge";
 
 const NATIVE_BRIDGE: NativeBrowserDescriptor = NativeBrowserDescriptor {
     socket_path_override: crate::config::firefox_native_socket_path,
     socket_basename: "firefox-bridge.sock",
     unavailable_browser_hint:
-        "Install/enable the yeet-and-yoink browser extension and keep LibreWolf/Firefox running.",
+        "Install/enable the yeetnyoink browser extension and keep LibreWolf/Firefox running.",
 };
 
 pub struct Librewolf;

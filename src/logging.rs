@@ -57,7 +57,7 @@ fn maybe_open_log_file(log_file: Option<&Path>, append: bool) -> Option<File> {
         Ok(file) => Some(file),
         Err(err) => {
             eprintln!(
-                "yeet-and-yoink: failed to open log file {}: {err}",
+                "yeetnyoink: failed to open log file {}: {err}",
                 path.display()
             );
             None

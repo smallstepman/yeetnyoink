@@ -29,13 +29,13 @@ pub const APP_IDS: &[&str] = &[
 ];
 pub const CHROMIUM_EXTENSION_ID: &str = "oigofebnnajpegmncnciacecfhlokkbp";
 pub const CHROMIUM_EXTENSION_ORIGIN: &str = "chrome-extension://oigofebnnajpegmncnciacecfhlokkbp/";
-pub const CHROMIUM_NATIVE_HOST_NAME: &str = "com.yeet_and_yoink.chromium_bridge";
+pub const CHROMIUM_NATIVE_HOST_NAME: &str = "com.yeetnyoink.chromium_bridge";
 
 const NATIVE_BRIDGE: NativeBrowserDescriptor = NativeBrowserDescriptor {
     socket_path_override: crate::config::chromium_native_socket_path,
     socket_basename: "chromium-bridge.sock",
     unavailable_browser_hint:
-        "Install/enable the yeet-and-yoink Chromium browser extension and keep Brave/Chromium running.",
+        "Install/enable the yeetnyoink Chromium browser extension and keep Brave/Chromium running.",
 };
 
 pub struct Chromium;

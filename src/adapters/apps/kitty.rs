@@ -139,7 +139,7 @@ mod tests {
     fn unique_temp_dir(prefix: &str) -> PathBuf {
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
-            "yeet-and-yoink-kitty-config-{prefix}-{}-{id}",
+            "yeetnyoink-kitty-config-{prefix}-{}-{id}",
             std::process::id()
         ));
         std::fs::create_dir_all(&path).expect("temp dir should be created");
@@ -170,7 +170,7 @@ mod tests {
         fn new(config_toml: &str) -> Self {
             let unique = NEXT_ID.fetch_add(1, Ordering::Relaxed);
             let base = std::env::temp_dir().join(format!(
-                "yeet-and-yoink-kitty-app-test-{}-{unique}",
+                "yeetnyoink-kitty-app-test-{}-{unique}",
                 std::process::id()
             ));
             let bin_dir = base.join("bin");
@@ -307,7 +307,7 @@ exit "$status"
     fn declares_explicit_capability_contract() {
         let _guard = env_guard();
         let root = unique_temp_dir("capabilities");
-        let config_dir = root.join("yeet-and-yoink");
+        let config_dir = root.join("yeetnyoink");
         fs::create_dir_all(&config_dir).expect("config dir should be created");
         fs::write(
             config_dir.join("config.toml"),
@@ -445,7 +445,7 @@ host_tabs = "native_full"
     fn zellij_backend_selects_attach_command_with_kitty_prefix() {
         let _guard = env_guard();
         let root = unique_temp_dir("zellij-attach");
-        let config_dir = root.join("yeet-and-yoink");
+        let config_dir = root.join("yeetnyoink");
         fs::create_dir_all(&config_dir).expect("config dir should be created");
         fs::write(
             config_dir.join("config.toml"),
@@ -477,7 +477,7 @@ mux_backend = "zellij"
     fn kitty_mux_backend_has_no_attach_spawn_command() {
         let _guard = env_guard();
         let root = unique_temp_dir("kitty-attach-none");
-        let config_dir = root.join("yeet-and-yoink");
+        let config_dir = root.join("yeetnyoink");
         fs::create_dir_all(&config_dir).expect("config dir should be created");
         fs::write(
             config_dir.join("config.toml"),

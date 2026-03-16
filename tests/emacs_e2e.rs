@@ -35,7 +35,7 @@ fn vm_eval(expr: &str) -> String {
     stdout
 }
 
-/// The wrapper yeet-and-yoink uses for read-only queries.
+/// The wrapper yeetnyoink uses for read-only queries.
 fn query(body: &str) -> String {
     let expr = format!(
         "(let* ((--f (car (filtered-frame-list (lambda (f) (frame-focus-state f))))) \
@@ -45,7 +45,7 @@ fn query(body: &str) -> String {
     vm_eval(&expr)
 }
 
-/// The wrapper yeet-and-yoink uses for mutations.
+/// The wrapper yeetnyoink uses for mutations.
 fn mutate(body: &str) -> String {
     let expr = format!(
         "(let* ((--f (car (filtered-frame-list (lambda (f) (frame-focus-state f))))) \

@@ -7,16 +7,16 @@ use std::sync::{Mutex, OnceLock};
 
 use anyhow::{anyhow, Result};
 
-use yeet_and_yoink::engine::topology::Direction;
-use yeet_and_yoink::engine::topology::Rect;
-use yeet_and_yoink::engine::PaneState;
-use yeet_and_yoink::engine::{ActionKind, ActionRequest, Orchestrator};
-use yeet_and_yoink::engine::{
+use yeetnyoink::engine::topology::Direction;
+use yeetnyoink::engine::topology::Rect;
+use yeetnyoink::engine::PaneState;
+use yeetnyoink::engine::{ActionKind, ActionRequest, Orchestrator};
+use yeetnyoink::engine::{
     ConfiguredWindowManager, FocusedWindowRecord, ResizeIntent, WindowManagerCapabilities,
     WindowManagerFeatures, WindowManagerSession, WindowRecord,
 };
-use yeet_and_yoink::engine::{DomainLeafSnapshot, DomainSnapshot, ErasedDomain};
-use yeet_and_yoink::engine::{EDITOR_DOMAIN_ID, TERMINAL_DOMAIN_ID, WM_DOMAIN_ID};
+use yeetnyoink::engine::{DomainLeafSnapshot, DomainSnapshot, ErasedDomain};
+use yeetnyoink::engine::{EDITOR_DOMAIN_ID, TERMINAL_DOMAIN_ID, WM_DOMAIN_ID};
 
 #[derive(Clone, Default)]
 struct DomainCounters {
@@ -145,19 +145,19 @@ fn env_guard() -> std::sync::MutexGuard<'static, ()> {
         .expect("env guard should lock")
 }
 
-fn load_config(path: &std::path::Path) -> yeet_and_yoink::config::Config {
-    let old = yeet_and_yoink::config::snapshot();
-    yeet_and_yoink::config::prepare_with_path(Some(path)).expect("config should load");
+fn load_config(path: &std::path::Path) -> yeetnyoink::config::Config {
+    let old = yeetnyoink::config::snapshot();
+    yeetnyoink::config::prepare_with_path(Some(path)).expect("config should load");
     old
 }
 
-fn restore_config(old: yeet_and_yoink::config::Config) {
-    yeet_and_yoink::config::install(old);
+fn restore_config(old: yeetnyoink::config::Config) {
+    yeetnyoink::config::install(old);
 }
 
 fn unique_temp_dir(prefix: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
-        "yeet-and-yoink-cross-domain-{prefix}-{}-{}",
+        "yeetnyoink-cross-domain-{prefix}-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -281,7 +281,7 @@ impl WindowManagerSession for FakeWindowManager {
 fn nvim_to_wezterm_cross_domain_move_uses_transfer_pipeline() {
     let _guard = env_guard();
     let root = unique_temp_dir("nvim-wezterm");
-    let config_dir = root.join("yeet-and-yoink");
+    let config_dir = root.join("yeetnyoink");
     fs::create_dir_all(&config_dir).expect("config dir should be created");
     let config_path = config_dir.join("config.toml");
     fs::write(
@@ -365,7 +365,7 @@ enabled = true
 fn wezterm_to_wm_cross_domain_move_falls_back_when_transfer_is_unsupported() {
     let _guard = env_guard();
     let root = unique_temp_dir("wezterm-wm");
-    let config_dir = root.join("yeet-and-yoink");
+    let config_dir = root.join("yeetnyoink");
     fs::create_dir_all(&config_dir).expect("config dir should be created");
     let config_path = config_dir.join("config.toml");
     fs::write(

@@ -1,7 +1,7 @@
-//! # WezTerm integration capability map (for yeet-and-yoink)
+//! # WezTerm integration capability map (for yeetnyoink)
 //!
 //! This module implements the WezTerm side of directional focus/move semantics used by
-//! `yeet-and-yoink`, including:
+//! `yeetnyoink`, including:
 //!
 //! - pane-local directional focus,
 //! - in-window pane rearrange,
@@ -22,7 +22,7 @@
 //! 3. **GUI plane** (`window`, `wezterm.gui.*`)
 //!    - Represents visible windows and focus state, and can be mapped to mux objects.
 //!
-//! yeet-and-yoink currently uses explicit CLI/socket control. Lua/mux APIs remain useful
+//! yeetnyoink currently uses explicit CLI/socket control. Lua/mux APIs remain useful
 //! background context, but the current integration does not require a WezTerm plugin.
 //!
 //! ## CLI capabilities relevant to this module
@@ -45,7 +45,7 @@
 //! - `$WEZTERM_UNIX_SOCKET` can force CLI commands to a specific running instance.
 //! - If `--pane-id` is omitted, CLI uses `$WEZTERM_PANE` or most-recent client focus
 //!   heuristics, which is often too implicit for cross-window orchestration.
-//! - `wezterm cli` can prefer the mux server with `--prefer-mux`; yeet-and-yoink currently
+//! - `wezterm cli` can prefer the mux server with `--prefer-mux`; yeetnyoink currently
 //!   relies primarily on explicit pane IDs and instance targeting instead.
 //!
 //! ## Lua/mux capabilities relevant to this problem
@@ -91,7 +91,7 @@
 //! - Workspace operations (`wezterm.mux.set_active_workspace`, etc.) can affect whether a
 //!   mux window has a GUI representation at a given moment.
 //!
-//! These matter if yeet-and-yoink is later extended to cross-domain or workspace-aware routing.
+//! These matter if yeetnyoink is later extended to cross-domain or workspace-aware routing.
 //!
 //! ## Practical edge cases this module must handle
 //!
@@ -291,7 +291,7 @@ mod tests {
     fn unique_temp_dir(prefix: &str) -> PathBuf {
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
-            "yeet-and-yoink-wezterm-config-{prefix}-{}-{id}",
+            "yeetnyoink-wezterm-config-{prefix}-{}-{id}",
             std::process::id()
         ));
         std::fs::create_dir_all(&path).expect("temp dir should be created");
@@ -346,7 +346,7 @@ mod tests {
     fn capabilities_follow_tmux_mux_backend() {
         let _guard = env_guard();
         let root = unique_temp_dir("caps-tmux");
-        let config_dir = root.join("yeet-and-yoink");
+        let config_dir = root.join("yeetnyoink");
         fs::create_dir_all(&config_dir).expect("config dir should be created");
         fs::write(
             config_dir.join("config.toml"),
@@ -376,7 +376,7 @@ mux_backend = "tmux"
     fn zellij_backend_selects_zellij_attach_command() {
         let _guard = env_guard();
         let root = unique_temp_dir("zellij-attach");
-        let config_dir = root.join("yeet-and-yoink");
+        let config_dir = root.join("yeetnyoink");
         fs::create_dir_all(&config_dir).expect("config dir should be created");
         fs::write(
             config_dir.join("config.toml"),
@@ -409,7 +409,7 @@ mux_backend = "zellij"
     fn wezterm_mux_backend_has_no_attach_spawn_command() {
         let _guard = env_guard();
         let root = unique_temp_dir("wezterm-attach-none");
-        let config_dir = root.join("yeet-and-yoink");
+        let config_dir = root.join("yeetnyoink");
         fs::create_dir_all(&config_dir).expect("config dir should be created");
         fs::write(
             config_dir.join("config.toml"),
@@ -451,7 +451,7 @@ mux_backend = "wezterm"
         fn with_config(pid: u32, config_toml: &str) -> Self {
             let unique = NEXT_ID.fetch_add(1, Ordering::Relaxed);
             let base =
-                std::env::temp_dir().join(format!("yeet-and-yoink-wezterm-test-{pid}-{unique}"));
+                std::env::temp_dir().join(format!("yeetnyoink-wezterm-test-{pid}-{unique}"));
             let bin_dir = base.join("bin");
             let runtime_dir = base.join("runtime");
             let responses_dir = base.join("responses");

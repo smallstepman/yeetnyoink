@@ -79,36 +79,34 @@ impl BrowserInstallTarget {
 
     fn manifest_name(self) -> &'static str {
         match self {
-            Self::Firefox => "com.yeet_and_yoink.firefox_bridge.json",
+            Self::Firefox => "com.yeetnyoink.firefox_bridge.json",
             Self::Chromium | Self::Chrome | Self::Brave | Self::Edge => {
-                "com.yeet_and_yoink.chromium_bridge.json"
+                "com.yeetnyoink.chromium_bridge.json"
             }
         }
     }
 
     fn wrapper_name(self) -> &'static str {
         match self {
-            Self::Firefox => "yeet-and-yoink-firefox-host",
-            Self::Chromium | Self::Chrome | Self::Brave | Self::Edge => {
-                "yeet-and-yoink-chromium-host"
-            }
+            Self::Firefox => "yeetnyoink-firefox-host",
+            Self::Chromium | Self::Chrome | Self::Brave | Self::Edge => "yeetnyoink-chromium-host",
         }
     }
 
     fn host_name(self) -> &'static str {
         match self {
-            Self::Firefox => "com.yeet_and_yoink.firefox_bridge",
+            Self::Firefox => "com.yeetnyoink.firefox_bridge",
             Self::Chromium | Self::Chrome | Self::Brave | Self::Edge => {
-                "com.yeet_and_yoink.chromium_bridge"
+                "com.yeetnyoink.chromium_bridge"
             }
         }
     }
 
     fn manifest_description(self) -> &'static str {
         match self {
-            Self::Firefox => "Native host for the yeet-and-yoink Firefox bridge",
+            Self::Firefox => "Native host for the yeetnyoink Firefox bridge",
             Self::Chromium | Self::Chrome | Self::Brave | Self::Edge => {
-                "Native host for the yeet-and-yoink Chromium bridge"
+                "Native host for the yeetnyoink Chromium bridge"
             }
         }
     }
@@ -122,7 +120,7 @@ impl BrowserInstallTarget {
 
     fn manifest_allow_values(self) -> &'static [&'static str] {
         match self {
-            Self::Firefox => &["browser-bridge@yeet-and-yoink"],
+            Self::Firefox => &["browser-bridge@yeetnyoink"],
             Self::Chromium | Self::Chrome | Self::Brave | Self::Edge => {
                 &["chrome-extension://oigofebnnajpegmncnciacecfhlokkbp/"]
             }
@@ -135,7 +133,7 @@ impl BrowserInstallTarget {
                 "Ensure the Yeet and Yoink Browser Bridge add-on is installed/enabled in Firefox or LibreWolf, then restart the browser."
             }
             Self::Chromium | Self::Chrome | Self::Brave | Self::Edge => {
-                "Ensure the yeet-and-yoink Chromium-family extension is loaded/enabled in the target browser, then restart the browser."
+                "Ensure the yeetnyoink Chromium-family extension is loaded/enabled in the target browser, then restart the browser."
             }
         }
     }
@@ -714,13 +712,13 @@ fn default_socket_root() -> PathBuf {
             .unwrap_or_else(|| PathBuf::from("/tmp"));
         home.join("Library")
             .join("Application Support")
-            .join("yeet-and-yoink")
+            .join("yeetnyoink")
     } else {
         std::env::var_os("XDG_RUNTIME_DIR")
             .filter(|value| !value.is_empty())
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("/tmp"))
-            .join("yeet-and-yoink")
+            .join("yeetnyoink")
     }
 }
 
@@ -797,10 +795,7 @@ fn native_host_manifest_json(target: BrowserInstallTarget, wrapper_path: &Path) 
     Ok(json)
 }
 
-pub(crate) fn write_native_message(
-    writer: &mut dyn Write,
-    payload: &impl Serialize,
-) -> Result<()> {
+pub(crate) fn write_native_message(writer: &mut dyn Write, payload: &impl Serialize) -> Result<()> {
     let body = serde_json::to_vec(payload).context("failed to encode browser native message")?;
     let len = u32::try_from(body.len()).context("browser native message was unexpectedly large")?;
     writer
@@ -966,8 +961,8 @@ mod tests {
         let report = install_native_host(BrowserInstallTarget::Firefox, &yny_path, Some(&temp_dir))
             .expect("firefox native host install should succeed");
 
-        let wrapper_path = temp_dir.join("yeet-and-yoink-firefox-host");
-        let manifest_path = temp_dir.join("com.yeet_and_yoink.firefox_bridge.json");
+        let wrapper_path = temp_dir.join("yeetnyoink-firefox-host");
+        let manifest_path = temp_dir.join("com.yeetnyoink.firefox_bridge.json");
         assert_eq!(report.browser, BrowserInstallTarget::Firefox);
         assert_eq!(report.yny_path, yny_path);
         assert!(report.written_paths.contains(&wrapper_path));
@@ -987,11 +982,11 @@ mod tests {
         assert_eq!(
             manifest,
             json!({
-                "name": "com.yeet_and_yoink.firefox_bridge",
-                "description": "Native host for the yeet-and-yoink Firefox bridge",
+                "name": "com.yeetnyoink.firefox_bridge",
+                "description": "Native host for the yeetnyoink Firefox bridge",
                 "path": wrapper_path,
                 "type": "stdio",
-                "allowed_extensions": ["browser-bridge@yeet-and-yoink"]
+                "allowed_extensions": ["browser-bridge@yeetnyoink"]
             })
         );
 
@@ -1007,8 +1002,8 @@ mod tests {
         install_native_host(BrowserInstallTarget::Brave, &yny_path, Some(&temp_dir))
             .expect("chromium native host install should succeed");
 
-        let wrapper_path = temp_dir.join("yeet-and-yoink-chromium-host");
-        let manifest_path = temp_dir.join("com.yeet_and_yoink.chromium_bridge.json");
+        let wrapper_path = temp_dir.join("yeetnyoink-chromium-host");
+        let manifest_path = temp_dir.join("com.yeetnyoink.chromium_bridge.json");
         assert_eq!(
             std::fs::read_to_string(&wrapper_path).expect("wrapper should read"),
             format!(
@@ -1024,8 +1019,8 @@ mod tests {
         assert_eq!(
             manifest,
             json!({
-                "name": "com.yeet_and_yoink.chromium_bridge",
-                "description": "Native host for the yeet-and-yoink Chromium bridge",
+                "name": "com.yeetnyoink.chromium_bridge",
+                "description": "Native host for the yeetnyoink Chromium bridge",
                 "path": wrapper_path,
                 "type": "stdio",
                 "allowed_origins": ["chrome-extension://oigofebnnajpegmncnciacecfhlokkbp/"]

@@ -1,3 +1,4 @@
+pub mod browser_host;
 pub mod focus;
 #[cfg(any(test, target_os = "linux"))]
 pub mod focus_or_cycle;

@@ -377,7 +377,7 @@ mod tests {
 
     fn unique_temp_dir(prefix: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
-            "yeet-and-yoink-orchestrator-{prefix}-{}-{}",
+            "yeetnyoink-orchestrator-{prefix}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -975,7 +975,7 @@ mod tests {
     fn move_prefers_cross_domain_transfer_when_payloads_are_compatible() {
         let _guard = crate::utils::env_guard();
         let root = unique_temp_dir("cross-domain-transfer");
-        let config_dir = root.join("yeet-and-yoink");
+        let config_dir = root.join("yeetnyoink");
         std::fs::create_dir_all(&config_dir).expect("config dir should be created");
         std::fs::write(
             config_dir.join("config.toml"),
@@ -1069,7 +1069,7 @@ enabled = true
     fn move_falls_back_to_wm_when_transfer_has_no_compatible_payload() {
         let _guard = crate::utils::env_guard();
         let root = unique_temp_dir("wm-fallback");
-        let config_dir = root.join("yeet-and-yoink");
+        let config_dir = root.join("yeetnyoink");
         std::fs::create_dir_all(&config_dir).expect("config dir should be created");
         std::fs::write(
             config_dir.join("config.toml"),
@@ -1155,7 +1155,7 @@ enabled = true
     fn move_merges_within_same_domain_when_supported() {
         let _guard = crate::utils::env_guard();
         let root = unique_temp_dir("same-domain-merge");
-        let config_dir = root.join("yeet-and-yoink");
+        let config_dir = root.join("yeetnyoink");
         std::fs::create_dir_all(&config_dir).expect("config dir should be created");
         std::fs::write(
             config_dir.join("config.toml"),
@@ -1536,7 +1536,7 @@ enabled = true
         // recognises the neighbor window correctly.
         let _guard = crate::utils::env_guard();
         let root = unique_temp_dir("merge-wins");
-        let config_dir = root.join("yeet-and-yoink");
+        let config_dir = root.join("yeetnyoink");
         std::fs::create_dir_all(&config_dir).expect("config dir should be created");
         std::fs::write(
             config_dir.join("config.toml"),

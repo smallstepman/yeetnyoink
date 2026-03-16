@@ -235,7 +235,7 @@ impl ZellijMuxProvider {
     }
 
     fn no_mirror_config_path() -> Option<String> {
-        let path = std::env::temp_dir().join("yeet-and-yoink-zellij-no-mirror.kdl");
+        let path = std::env::temp_dir().join("yeetnyoink-zellij-no-mirror.kdl");
         let contents = "mirror_session false\n";
         match std::fs::read_to_string(&path) {
             Ok(current) if current == contents => {}
@@ -384,31 +384,31 @@ impl ZellijMuxProvider {
 
         fn push_candidates(base: &Path, candidates: &mut Vec<std::path::PathBuf>) {
             candidates.push(
-                base.join("zellij/plugins/yeet-and-yoink-zellij-break.wasm")
+                base.join("zellij/plugins/yeetnyoink-zellij-break.wasm")
                     .to_path_buf(),
             );
             candidates.push(
-                base.join("zellij/plugins/yeet_and_yoink_zellij_break.wasm")
+                base.join("zellij/plugins/yeetnyoink_zellij_break.wasm")
                     .to_path_buf(),
             );
             candidates.push(
                 base.join(
-                    "plugins/zellij-bridge/target/wasm32-wasip1/release/yeet-and-yoink-zellij-break.wasm",
+                    "plugins/zellij-bridge/target/wasm32-wasip1/release/yeetnyoink-zellij-break.wasm",
                 )
                 .to_path_buf(),
             );
             candidates.push(
                 base.join(
-                    "plugins/zellij-bridge/target/wasm32-wasip1/release/yeet_and_yoink_zellij_break.wasm",
+                    "plugins/zellij-bridge/target/wasm32-wasip1/release/yeetnyoink_zellij_break.wasm",
                 )
                 .to_path_buf(),
             );
             candidates.push(
-                base.join("target/wasm32-wasip1/release/yeet-and-yoink-zellij-break.wasm")
+                base.join("target/wasm32-wasip1/release/yeetnyoink-zellij-break.wasm")
                     .to_path_buf(),
             );
             candidates.push(
-                base.join("target/wasm32-wasip1/release/yeet_and_yoink_zellij_break.wasm")
+                base.join("target/wasm32-wasip1/release/yeetnyoink_zellij_break.wasm")
                     .to_path_buf(),
             );
         }
@@ -420,12 +420,12 @@ impl ZellijMuxProvider {
             for entry in entries.flatten() {
                 let name = entry.file_name();
                 let name = name.to_string_lossy();
-                if !name.contains("yeet-and-yoink-zellij-break") {
+                if !name.contains("yeetnyoink-zellij-break") {
                     continue;
                 }
                 let base = entry.path();
-                candidates.push(base.join("yeet-and-yoink-zellij-break.wasm"));
-                candidates.push(base.join("yeet_and_yoink_zellij_break.wasm"));
+                candidates.push(base.join("yeetnyoink-zellij-break.wasm"));
+                candidates.push(base.join("yeetnyoink_zellij_break.wasm"));
             }
         }
 
@@ -566,7 +566,7 @@ impl ZellijMuxProvider {
                     "--plugin",
                     &plugin_url,
                     "--name",
-                    "yeet_and_yoink_break",
+                    "yeetnyoink_break",
                     "--args",
                     "action=query-pane-id",
                     "--",
@@ -666,7 +666,7 @@ impl ZellijMuxProvider {
                     "--plugin",
                     plugin_url,
                     "--name",
-                    "yeet_and_yoink_break",
+                    "yeetnyoink_break",
                     "--",
                     "break",
                 ],
@@ -681,7 +681,7 @@ impl ZellijMuxProvider {
                     "--plugin",
                     plugin_url,
                     "--name",
-                    "yeet_and_yoink_break",
+                    "yeetnyoink_break",
                     "--args",
                     &args_value,
                     "--",
@@ -729,7 +729,7 @@ impl ZellijMuxProvider {
                 "--plugin",
                 plugin_url,
                 "--name",
-                "yeet_and_yoink_break",
+                "yeetnyoink_break",
                 "--args",
                 &args_value,
                 "--",
@@ -1272,7 +1272,7 @@ mod tests {
         fn new() -> Self {
             let unique = NEXT_ID.fetch_add(1, Ordering::Relaxed);
             let base = std::env::temp_dir().join(format!(
-                "yeet-and-yoink-zellij-mux-test-{}-{unique}",
+                "yeetnyoink-zellij-mux-test-{}-{unique}",
                 std::process::id()
             ));
             let bin_dir = base.join("bin");
@@ -1684,14 +1684,14 @@ exit "$status"
     fn focused_pane_id_for_pid_uses_plugin_query_before_list_clients() {
         let _guard = env_guard();
         let harness = ZellijHarness::new();
-        let plugin_path = harness.base.join("yeet_and_yoink_zellij_break.wasm");
+        let plugin_path = harness.base.join("yeetnyoink_zellij_break.wasm");
         fs::write(&plugin_path, "fake wasm").expect("plugin placeholder should be written");
         let old_break_plugin = set_break_plugin_path(Some(plugin_path.clone()));
         ZellijMuxProvider::store_session_name(92, "query-pane");
         let plugin_url = ZellijMuxProvider::break_plugin_url().expect("plugin URL should resolve");
         harness.set_response(
             &format!(
-                "--session query-pane pipe --plugin {plugin_url} --name yeet_and_yoink_break --args action=query-pane-id -- query-pane-id"
+                "--session query-pane pipe --plugin {plugin_url} --name yeetnyoink_break --args action=query-pane-id -- query-pane-id"
             ),
             0,
             "terminal_19\n",
@@ -1712,17 +1712,17 @@ exit "$status"
     #[test]
     fn permission_block_contains_scans_all_matching_nodes() {
         let raw = r#"
-        "/tmp/yeet-and-yoink-zellij-break.wasm" {
+        "/tmp/yeetnyoink-zellij-break.wasm" {
             ChangeApplicationState
         }
-        "/tmp/yeet-and-yoink-zellij-break.wasm" {
+        "/tmp/yeetnyoink-zellij-break.wasm" {
             ChangeApplicationState
             ReadApplicationState
         }
         "#;
         assert!(ZellijMuxProvider::permission_block_contains(
             raw,
-            "/tmp/yeet-and-yoink-zellij-break.wasm",
+            "/tmp/yeetnyoink-zellij-break.wasm",
             "ReadApplicationState"
         ));
     }
@@ -1731,7 +1731,7 @@ exit "$status"
     fn move_out_uses_break_plugin_pipe_and_returns_attach_command() {
         let _guard = env_guard();
         let harness = ZellijHarness::new();
-        let plugin_path = harness.base.join("yeet_and_yoink_zellij_break.wasm");
+        let plugin_path = harness.base.join("yeetnyoink_zellij_break.wasm");
         fs::write(&plugin_path, "fake wasm").expect("plugin placeholder should be written");
         let old_break_plugin = set_break_plugin_path(Some(plugin_path.clone()));
         ZellijMuxProvider::store_session_name(42, "jumping-quasar");
@@ -1748,7 +1748,7 @@ exit "$status"
         let plugin_url = ZellijMuxProvider::break_plugin_url().expect("plugin URL should resolve");
         harness.set_response(
             &format!(
-                "--session jumping-quasar pipe --plugin {plugin_url} --name yeet_and_yoink_break --args pane_id=terminal_9,source_tab_index=0,source_client_count=1 -- break"
+                "--session jumping-quasar pipe --plugin {plugin_url} --name yeetnyoink_break --args pane_id=terminal_9,source_tab_index=0,source_client_count=1 -- break"
             ),
             0,
             "",
@@ -1794,7 +1794,7 @@ exit "$status"
     fn move_out_errors_when_break_plugin_does_not_detach_pane() {
         let _guard = env_guard();
         let harness = ZellijHarness::new();
-        let plugin_path = harness.base.join("yeet_and_yoink_zellij_break.wasm");
+        let plugin_path = harness.base.join("yeetnyoink_zellij_break.wasm");
         fs::write(&plugin_path, "fake wasm").expect("plugin placeholder should be written");
         let old_break_plugin = set_break_plugin_path(Some(plugin_path.clone()));
         ZellijMuxProvider::store_session_name(77, "glowing-zebra");
@@ -1810,7 +1810,7 @@ exit "$status"
         let plugin_url = ZellijMuxProvider::break_plugin_url().expect("plugin URL should resolve");
         harness.set_response(
             &format!(
-                "--session glowing-zebra pipe --plugin {plugin_url} --name yeet_and_yoink_break --args pane_id=terminal_4,source_tab_index=0,source_client_count=1 -- break"
+                "--session glowing-zebra pipe --plugin {plugin_url} --name yeetnyoink_break --args pane_id=terminal_4,source_tab_index=0,source_client_count=1 -- break"
             ),
             0,
             "",
@@ -1848,7 +1848,7 @@ exit "$status"
     fn move_out_retries_break_without_pane_id_when_list_clients_is_terminal_zero() {
         let _guard = env_guard();
         let harness = ZellijHarness::new();
-        let plugin_path = harness.base.join("yeet_and_yoink_zellij_break.wasm");
+        let plugin_path = harness.base.join("yeetnyoink_zellij_break.wasm");
         fs::write(&plugin_path, "fake wasm").expect("plugin placeholder should be written");
         let old_break_plugin = set_break_plugin_path(Some(plugin_path.clone()));
         ZellijMuxProvider::store_session_name(55, "wise-mouse");
@@ -1864,7 +1864,7 @@ exit "$status"
         let plugin_url = ZellijMuxProvider::break_plugin_url().expect("plugin URL should resolve");
         harness.set_response(
             &format!(
-                "--session wise-mouse pipe --plugin {plugin_url} --name yeet_and_yoink_break --args source_tab_index=0,source_client_count=1 -- break"
+                "--session wise-mouse pipe --plugin {plugin_url} --name yeetnyoink_break --args source_tab_index=0,source_client_count=1 -- break"
             ),
             0,
             "",
@@ -1891,7 +1891,7 @@ exit "$status"
         let log = harness.command_log();
         assert!(log.contains("action list-clients"));
         assert!(log.contains(
-            "--name yeet_and_yoink_break --args source_tab_index=0,source_client_count=1 -- break"
+            "--name yeetnyoink_break --args source_tab_index=0,source_client_count=1 -- break"
         ));
         assert!(!log.contains("--args pane_id=terminal_0"));
         restore_break_plugin_path(old_break_plugin);
@@ -1901,7 +1901,7 @@ exit "$status"
     fn merge_into_target_uses_plugin_merge_pipe_with_source_pane_metadata() {
         let _guard = env_guard();
         let harness = ZellijHarness::new();
-        let plugin_path = harness.base.join("yeet_and_yoink_zellij_break.wasm");
+        let plugin_path = harness.base.join("yeetnyoink_zellij_break.wasm");
         fs::write(&plugin_path, "fake wasm").expect("plugin placeholder should be written");
         let old_break_plugin = set_break_plugin_path(Some(plugin_path.clone()));
         ZellijMuxProvider::store_session_name(50, "merge-shared");
@@ -1930,7 +1930,7 @@ exit "$status"
         let plugin_url = ZellijMuxProvider::break_plugin_url().expect("plugin URL should resolve");
         harness.set_response(
             &format!(
-                "--session merge-shared pipe --plugin {plugin_url} --name yeet_and_yoink_break --args action=merge,source_pane_id=terminal_11,target_tab_index=0 -- merge"
+                "--session merge-shared pipe --plugin {plugin_url} --name yeetnyoink_break --args action=merge,source_pane_id=terminal_11,target_tab_index=0 -- merge"
             ),
             0,
             "",
@@ -1963,7 +1963,7 @@ exit "$status"
     fn merge_into_target_rejects_cross_session_merge() {
         let _guard = env_guard();
         let harness = ZellijHarness::new();
-        let plugin_path = harness.base.join("yeet_and_yoink_zellij_break.wasm");
+        let plugin_path = harness.base.join("yeetnyoink_zellij_break.wasm");
         fs::write(&plugin_path, "fake wasm").expect("plugin placeholder should be written");
         let old_break_plugin = set_break_plugin_path(Some(plugin_path.clone()));
         ZellijMuxProvider::store_session_name(70, "merge-source");

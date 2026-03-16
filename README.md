@@ -1,11 +1,11 @@
-# yeet-and-yoink
+# yeetnyoink
 
 <p align="center">
   <img src=".github/image.png" width="500" title="hover text">
 </p>
 
 
-`yeet-and-yoink` routes `focus`, `move`, and `resize` through a geometry-first orchestrator with
+`yeetnyoink` routes `focus`, `move`, and `resize` through a geometry-first orchestrator with
 domain plugins (WM / terminal / editor), plus a transfer pipeline for cross-domain moves.
 
 ## Config discovery
@@ -13,7 +13,7 @@ domain plugins (WM / terminal / editor), plus a transfer pipeline for cross-doma
 `config.toml` is loaded in this order:
 
 1. `--config <path>` (explicit file path)
-2. Platform config dir from `etcetera` (typically `$XDG_CONFIG_HOME/yeet-and-yoink/config.toml` on Linux)
+2. Platform config dir from `etcetera` (typically `$XDG_CONFIG_HOME/yeetnyoink/config.toml` on Linux)
 
 If no file is present, defaults from `src/config.rs` are used; app integrations stay disabled
 until their matching profiles set `enabled = true`.
@@ -30,7 +30,7 @@ focus_settle_ms = 50
 
 [runtime.zellij]
 # Optional local override for the hosted zellij break plugin.
-break_plugin = "/path/to/yeet-and-yoink-zellij-break.wasm"
+break_plugin = "/path/to/yeetnyoink-zellij-break.wasm"
 ```
 
 Run `yny setup zellij` to print the hosted `load_plugins { ... }` release URL snippet.
@@ -94,14 +94,14 @@ for native WezTerm/kitty mux backends.
 ## Home Manager module
 
 The flake exports `homeManagerModules.default`. Its
-`programs.yeet-and-yoink.config.*` options are typed to match `src/config.rs`,
-and Home Manager renders them to `~/.config/yeet-and-yoink/config.toml`.
+`programs.yeetnyoink.config.*` options are typed to match `src/config.rs`,
+and Home Manager renders them to `~/.config/yeetnyoink/config.toml`.
 
 ```nix
 {
-  imports = [ inputs.yeet-and-yoink.homeManagerModules.default ];
+  imports = [ inputs.yeetnyoink.homeManagerModules.default ];
 
-  programs.yeet-and-yoink = {
+  programs.yeetnyoink = {
     enable = true;
     config = {
       wm.enabled_integration = "niri";
@@ -128,7 +128,7 @@ and Home Manager renders them to `~/.config/yeet-and-yoink/config.toml`.
 }
 ```
 
-If you need to bypass the typed options, set `programs.yeet-and-yoink.config.raw`
+If you need to bypass the typed options, set `programs.yeetnyoink.config.raw`
 to raw TOML instead.
 
 ## Plugin packages
@@ -142,7 +142,7 @@ Integration assets live under `plugins/`:
 Clone with submodules enabled:
 
 ```sh
-git clone --recurse-submodules https://github.com/smallstepman/yeet-and-yoink.git
+git clone --recurse-submodules https://github.com/smallstepman/yeetnyoink.git
 ```
 
 Or initialize them after cloning:

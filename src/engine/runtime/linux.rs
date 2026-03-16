@@ -353,7 +353,7 @@ u_str ESTAB 0 0 /run/user/1000/zellij/0.43.1/implacable-oboe 458031 * 455551 use
     #[test]
     fn socket_path_for_pid_from_proc_net_unix_reads_proc_entries() {
         let base = std::env::temp_dir().join(format!(
-            "yeet-and-yoink-runtime-socket-test-{}",
+            "yeetnyoink-runtime-socket-test-{}",
             std::process::id()
         ));
         let socket_dir = base.join("zellij");

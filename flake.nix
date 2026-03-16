@@ -1,5 +1,5 @@
 {
-  description = "yeet-and-yoink package and home-manager module";
+  description = "yeetnyoink package and home-manager module";
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-25.11";
@@ -17,13 +17,13 @@
       forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f (import nixpkgs { inherit system; }));
 
       mkPackage = pkgs: pkgs.rustPlatform.buildRustPackage {
-        pname = "yeet-and-yoink";
+        pname = "yeetnyoink";
         version = "0.1.0";
         src = ./.;
         cargoLock.lockFile = ./Cargo.lock;
         meta = with pkgs.lib; {
           description = "Deep focus/move integration between niri and apps";
-          mainProgram = "yeet-and-yoink";
+          mainProgram = "yeetnyoink";
           platforms = platforms.all;
         };
       };
@@ -32,7 +32,7 @@
         let
           inherit (lib) literalExpression mkEnableOption mkOption mkIf;
           types = lib.types;
-          cfg = config.programs.yeet-and-yoink;
+          cfg = config.programs.yeetnyoink;
           tomlFormat = pkgs.formats.toml {};
           pathStringType = types.coercedTo types.path toString types.str;
 
@@ -390,22 +390,22 @@
             };
           };
 
-          generatedConfig = tomlFormat.generate "yeet-and-yoink-config.toml" (
+          generatedConfig = tomlFormat.generate "yeetnyoink-config.toml" (
             cleanToml (lib.removeAttrs cfg.config [ "raw" ])
           );
           configSource =
             if cfg.config.raw != null
-            then pkgs.writeText "yeet-and-yoink-config.toml" cfg.config.raw
+            then pkgs.writeText "yeetnyoink-config.toml" cfg.config.raw
             else generatedConfig;
         in {
-          options.programs.yeet-and-yoink = {
-            enable = mkEnableOption "yeet-and-yoink";
+          options.programs.yeetnyoink = {
+            enable = mkEnableOption "yeetnyoink";
 
             package = mkOption {
               type = types.package;
               default = self.packages.${pkgs.system}.default;
-              defaultText = literalExpression "inputs.yeet-and-yoink.packages.${pkgs.system}.default";
-              description = "yeet-and-yoink package to install.";
+              defaultText = literalExpression "inputs.yeetnyoink.packages.${pkgs.system}.default";
+              description = "yeetnyoink package to install.";
             };
 
             config = mkOption {
@@ -415,8 +415,8 @@
                     type = types.nullOr types.lines;
                     default = null;
                     description = ''
-                      Raw TOML for yeet-and-yoink written as-is. When non-null, this value
-                      overrides all other programs.yeet-and-yoink.config.* fields.
+                      Raw TOML for yeetnyoink written as-is. When non-null, this value
+                      overrides all other programs.yeetnyoink.config.* fields.
                     '';
                   };
 
@@ -426,24 +426,24 @@
                 };
               };
               default = {};
-              description = "yeet-and-yoink runtime configuration.";
+              description = "yeetnyoink runtime configuration.";
             };
           };
 
           config = mkIf cfg.enable {
             home.packages = [ cfg.package ];
-            xdg.configFile."yeet-and-yoink/config.toml".source = configSource;
+            xdg.configFile."yeetnyoink/config.toml".source = configSource;
           };
         };
     in {
       packages = forAllSystems (pkgs:
         rec {
-          yeet-and-yoink = mkPackage pkgs;
-          default = yeet-and-yoink;
+          yeetnyoink = mkPackage pkgs;
+          default = yeetnyoink;
         });
 
       overlays.default = final: prev: {
-        yeet-and-yoink = self.packages.${prev.system}.default;
+        yeetnyoink = self.packages.${prev.system}.default;
       };
 
       homeManagerModules.default = hmModule;

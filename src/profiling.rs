@@ -21,7 +21,7 @@ pub struct ProfileConfig {
 impl Default for ProfileConfig {
     fn default() -> Self {
         Self {
-            root: PathBuf::from("/tmp/yeet-and-yoink"),
+            root: PathBuf::from("/tmp/yeetnyoink"),
         }
     }
 }
@@ -486,7 +486,7 @@ mod tests {
 
     #[test]
     fn artifact_paths_live_under_requested_root() {
-        let root = std::env::temp_dir().join("yeet-and-yoink-profile-tests");
+        let root = std::env::temp_dir().join("yeetnyoink-profile-tests");
         let artifacts = ArtifactPaths::create(&root).expect("artifact paths should be created");
         assert!(artifacts.run_dir.starts_with(&root));
         assert_eq!(
@@ -502,7 +502,7 @@ mod tests {
             events: vec![
                 CompletedSpanEvent {
                     name: "vscode.request_value".to_string(),
-                    target: "yeet_and_yoink::adapters::apps::vscode".to_string(),
+                    target: "yeetnyoink::adapters::apps::vscode".to_string(),
                     fields: BTreeMap::from([("command".to_string(), "layout".to_string())]),
                     thread: "main".to_string(),
                     start_ns: 0,
@@ -511,7 +511,7 @@ mod tests {
                 },
                 CompletedSpanEvent {
                     name: "vscode.request_value".to_string(),
-                    target: "yeet_and_yoink::adapters::apps::vscode".to_string(),
+                    target: "yeetnyoink::adapters::apps::vscode".to_string(),
                     fields: BTreeMap::from([("command".to_string(), "focus".to_string())]),
                     thread: "main".to_string(),
                     start_ns: 11,
@@ -522,7 +522,7 @@ mod tests {
             total_runtime_ns: 50,
         };
         let artifacts = ArtifactPaths {
-            run_dir: PathBuf::from("/tmp/yeet-and-yoink/test"),
+            run_dir: PathBuf::from("/tmp/yeetnyoink/test"),
             chrome_trace: PathBuf::from("trace.json"),
             folded_trace: PathBuf::from("trace.folded"),
             flamegraph_svg: PathBuf::from("flamegraph.svg"),
@@ -586,7 +586,7 @@ mod tests {
 
     #[test]
     fn profiling_session_writes_trace_summary_and_flamegraph_artifacts() {
-        let root = std::env::temp_dir().join("yeet-and-yoink-profile-run-tests");
+        let root = std::env::temp_dir().join("yeetnyoink-profile-run-tests");
         let mut session = super::ProfilingSession::start(
             &super::ProfileConfig { root: root.clone() },
             vec![

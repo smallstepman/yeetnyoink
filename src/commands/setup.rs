@@ -8,9 +8,9 @@ use std::path::{Path, PathBuf};
 use crate::engine::browser_native::{self, BrowserInstallTarget};
 
 const SETUP_AFTER_HELP: &str = "Run `yny setup <installer> --help` for installer-specific options.";
-const MANAGED_SNIPPET_NAME: &str = "yeet-and-yoink.conf";
+const MANAGED_SNIPPET_NAME: &str = "yeetnyoink.conf";
 const MANAGED_SNIPPET: &str = "\
-# yeet-and-yoink kitty integration
+# yeetnyoink kitty integration
 allow_remote_control socket-only
 listen_on unix:@kitty-{kitty_pid}
 ";
@@ -111,16 +111,16 @@ pub fn run(args: SetupArgs) -> Result<()> {
 }
 
 pub(crate) fn zellij_release_wasm_url() -> &'static str {
-    "https://github.com/smallstepman/yeet-and-yoink/releases/download/zellij-plugin-latest/yeet-and-yoink-zellij-break.wasm"
+    "https://github.com/smallstepman/yeetnyoink/releases/download/zellij-plugin-latest/yeetnyoink-zellij-break.wasm"
 }
 
 fn zellij_release_page_url() -> &'static str {
-    "https://github.com/smallstepman/yeet-and-yoink/releases/tag/zellij-plugin-latest"
+    "https://github.com/smallstepman/yeetnyoink/releases/tag/zellij-plugin-latest"
 }
 
 fn zellij_instructions() -> String {
     format!(
-        "Zellij can load the yeet-and-yoink break plugin straight from GitHub Releases.\n\n\
+        "Zellij can load the yeetnyoink break plugin straight from GitHub Releases.\n\n\
 Add this to your `~/.config/zellij/config.kdl`:\n\n\
 load_plugins {{\n    {release_url}\n}}\n\n\
 If you already have a `load_plugins` block, add that URL inside it.\n\
@@ -410,13 +410,13 @@ mod tests {
     }
 
     const ZELLIJ_RELEASE_TAG: &str = "zellij-plugin-latest";
-    const ZELLIJ_RELEASE_ASSET_NAME: &str = "yeet-and-yoink-zellij-break.wasm";
-    const ZELLIJ_RELEASE_REPO: &str = "https://github.com/smallstepman/yeet-and-yoink";
+    const ZELLIJ_RELEASE_ASSET_NAME: &str = "yeetnyoink-zellij-break.wasm";
+    const ZELLIJ_RELEASE_REPO: &str = "https://github.com/smallstepman/yeetnyoink";
 
     fn unique_temp_dir(prefix: &str) -> PathBuf {
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
-            "yeet-and-yoink-kitty-setup-{prefix}-{}-{id}",
+            "yeetnyoink-kitty-setup-{prefix}-{}-{id}",
             std::process::id()
         ));
         fs::create_dir_all(&path).expect("temp dir should be created");

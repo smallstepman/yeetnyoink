@@ -707,7 +707,7 @@ fn resolve_config_path(explicit: Option<&Path>) -> Result<(PathBuf, bool)> {
     Ok((
         strategy
             .config_dir()
-            .join("yeet-and-yoink")
+            .join("yeetnyoink")
             .join("config.toml"),
         false,
     ))

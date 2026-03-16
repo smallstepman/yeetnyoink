@@ -4,11 +4,11 @@
 //! imported from this adapter module.
 //!
 //! ```compile_fail
-//! use yeet_and_yoink::adapters::window_managers::WindowManagerCapabilities;
+//! use yeetnyoink::adapters::window_managers::WindowManagerCapabilities;
 //! ```
 //!
 //! ```compile_fail
-//! use yeet_and_yoink::adapters::window_managers::plan_tear_out;
+//! use yeetnyoink::adapters::window_managers::plan_tear_out;
 //! ```
 //!
 #[cfg(target_os = "linux")]

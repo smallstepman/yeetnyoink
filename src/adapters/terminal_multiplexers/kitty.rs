@@ -637,7 +637,7 @@ mod tests {
         fn new() -> Self {
             let unique = NEXT_ID.fetch_add(1, Ordering::Relaxed);
             let base = std::env::temp_dir().join(format!(
-                "yeet-and-yoink-kitty-mux-test-{}-{unique}",
+                "yeetnyoink-kitty-mux-test-{}-{unique}",
                 std::process::id()
             ));
             let bin_dir = base.join("bin");

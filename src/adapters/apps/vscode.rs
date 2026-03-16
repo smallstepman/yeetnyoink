@@ -918,7 +918,7 @@ impl Vscode {
 
         let base = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_string());
         PathBuf::from(base)
-            .join("yeet-and-yoink")
+            .join("yeetnyoink")
             .join("vscode-state.json")
     }
 
@@ -1000,7 +1000,7 @@ impl Vscode {
 
     fn clipboard_probe_token() -> String {
         format!(
-            "__yeet_and_yoink_vscode_probe_{}_{}__",
+            "__yeetnyoink_vscode_probe_{}_{}__",
             std::process::id(),
             Self::now_ms()
         )
@@ -1655,7 +1655,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
-        std::env::temp_dir().join(format!("yeet-and-yoink-{label}-{stamp}"))
+        std::env::temp_dir().join(format!("yeetnyoink-{label}-{stamp}"))
     }
 
     fn update_vscode_runtime(mutator: impl FnOnce(&mut config::VscodeRuntimeConfig)) {

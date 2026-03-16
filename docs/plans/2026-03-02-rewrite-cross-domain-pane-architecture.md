@@ -1,6 +1,6 @@
 ## Why
 
-The current `yeet-and-yoink` architecture is a niri-centric planner/executor pipeline that relies on per-adapter edge probes and layer-order heuristics. It does not build one global topology for nested domains, so cross-domain focus/move/tear-off behavior is not deterministic across heterogeneous tiling models.
+The current `yeetnyoink` architecture is a niri-centric planner/executor pipeline that relies on per-adapter edge probes and layer-order heuristics. It does not build one global topology for nested domains, so cross-domain focus/move/tear-off behavior is not deterministic across heterogeneous tiling models.
 
 ## What Changes
 
@@ -32,7 +32,7 @@ The current `yeet-and-yoink` architecture is a niri-centric planner/executor pip
 
 ## Context
 
-`yeet-and-yoink` currently resolves actions by probing an ordered adapter chain (`resolve_chain`) and selecting the first supported operation in planner/executor fallback order. This model is tightly coupled to current app adapter contracts, only has one built-in WM adapter (`niri`), and does not maintain a global nested topology that can answer cross-domain routing deterministically.
+`yeetnyoink` currently resolves actions by probing an ordered adapter chain (`resolve_chain`) and selecting the first supported operation in planner/executor fallback order. This model is tightly coupled to current app adapter contracts, only has one built-in WM adapter (`niri`), and does not maintain a global nested topology that can answer cross-domain routing deterministically.
 
 The target architecture from `rectangularly dualizable graph vs binary space par.md` requires:
 - geometry-based directional solving across all panes/windows,

@@ -450,7 +450,7 @@ mod tests {
     fn unique_temp_dir(prefix: &str) -> PathBuf {
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
-            "yeet-and-yoink-chain-resolver-{prefix}-{}-{id}",
+            "yeetnyoink-chain-resolver-{prefix}-{}-{id}",
             std::process::id()
         ));
         fs::create_dir_all(&path).expect("temp dir should be created");
@@ -471,7 +471,7 @@ mod tests {
     fn foot_override_selects_foot_default_terminal_domain_adapter() {
         let _guard = env_guard();
         let root = unique_temp_dir("foot-default-domain");
-        let config_dir = root.join("yeet-and-yoink");
+        let config_dir = root.join("yeetnyoink");
         fs::create_dir_all(&config_dir).expect("config dir should be created");
         fs::write(
             config_dir.join("config.toml"),
@@ -500,7 +500,7 @@ enabled = true
     fn alacritty_override_selects_alacritty_default_terminal_domain_adapter() {
         let _guard = env_guard();
         let root = unique_temp_dir("alacritty-default-domain");
-        let config_dir = root.join("yeet-and-yoink");
+        let config_dir = root.join("yeetnyoink");
         fs::create_dir_all(&config_dir).expect("config dir should be created");
         fs::write(
             config_dir.join("config.toml"),
@@ -529,7 +529,7 @@ enabled = true
     fn ghostty_override_selects_ghostty_default_terminal_domain_adapter() {
         let _guard = env_guard();
         let root = unique_temp_dir("ghostty-default-domain");
-        let config_dir = root.join("yeet-and-yoink");
+        let config_dir = root.join("yeetnyoink");
         fs::create_dir_all(&config_dir).expect("config dir should be created");
         fs::write(
             config_dir.join("config.toml"),
@@ -558,7 +558,7 @@ enabled = true
     fn librewolf_browser_profile_enables_librewolf_direct_adapter() {
         let _guard = env_guard();
         let root = unique_temp_dir("librewolf-direct-adapter");
-        let config_dir = root.join("yeet-and-yoink");
+        let config_dir = root.join("yeetnyoink");
         fs::create_dir_all(&config_dir).expect("config dir should be created");
         fs::write(
             config_dir.join("config.toml"),
@@ -582,7 +582,7 @@ enabled = true
     fn brave_browser_profile_enables_chromium_direct_adapter() {
         let _guard = env_guard();
         let root = unique_temp_dir("brave-direct-adapter");
-        let config_dir = root.join("yeet-and-yoink");
+        let config_dir = root.join("yeetnyoink");
         fs::create_dir_all(&config_dir).expect("config dir should be created");
         fs::write(
             config_dir.join("config.toml"),
@@ -627,7 +627,7 @@ enabled = true
     fn direct_match_without_override_returns_adapter() {
         let _guard = env_guard();
         let root = unique_temp_dir("direct-match");
-        let config_dir = root.join("yeet-and-yoink");
+        let config_dir = root.join("yeetnyoink");
         fs::create_dir_all(&config_dir).expect("config dir should be created");
         fs::write(
             config_dir.join("config.toml"),
@@ -651,7 +651,7 @@ enabled = true
     fn other_editor_profiles_do_not_enable_unconfigured_direct_adapter_by_default() {
         let _guard = env_guard();
         let root = unique_temp_dir("override-filter");
-        let config_dir = root.join("yeet-and-yoink");
+        let config_dir = root.join("yeetnyoink");
         fs::create_dir_all(&config_dir).expect("config dir should be created");
         fs::write(
             config_dir.join("config.toml"),
@@ -675,7 +675,7 @@ enabled = true
     fn explicit_direct_adapter_disable_still_applies() {
         let _guard = env_guard();
         let root = unique_temp_dir("direct-disable");
-        let config_dir = root.join("yeet-and-yoink");
+        let config_dir = root.join("yeetnyoink");
         fs::create_dir_all(&config_dir).expect("config dir should be created");
         fs::write(
             config_dir.join("config.toml"),
@@ -699,7 +699,7 @@ enabled = false
     fn editor_profile_does_not_disable_terminal_chain_selection() {
         let _guard = env_guard();
         let root = unique_temp_dir("override-terminal");
-        let config_dir = root.join("yeet-and-yoink");
+        let config_dir = root.join("yeetnyoink");
         fs::create_dir_all(&config_dir).expect("config dir should be created");
         fs::write(
             config_dir.join("config.toml"),
@@ -732,7 +732,7 @@ app = "wezterm"
     fn kitty_terminal_app_id_resolves_terminal_chain() {
         let _guard = env_guard();
         let root = unique_temp_dir("kitty-terminal-chain");
-        let config_dir = root.join("yeet-and-yoink");
+        let config_dir = root.join("yeetnyoink");
         fs::create_dir_all(&config_dir).expect("config dir should be created");
         fs::write(
             config_dir.join("config.toml"),
@@ -759,7 +759,7 @@ enabled = true
     fn foot_terminal_app_id_resolves_terminal_chain() {
         let _guard = env_guard();
         let root = unique_temp_dir("foot-terminal-chain");
-        let config_dir = root.join("yeet-and-yoink");
+        let config_dir = root.join("yeetnyoink");
         fs::create_dir_all(&config_dir).expect("config dir should be created");
         fs::write(
             config_dir.join("config.toml"),
@@ -786,7 +786,7 @@ enabled = true
     fn alacritty_terminal_app_id_resolves_terminal_chain() {
         let _guard = env_guard();
         let root = unique_temp_dir("alacritty-terminal-chain");
-        let config_dir = root.join("yeet-and-yoink");
+        let config_dir = root.join("yeetnyoink");
         fs::create_dir_all(&config_dir).expect("config dir should be created");
         fs::write(
             config_dir.join("config.toml"),
@@ -813,7 +813,7 @@ enabled = true
     fn ghostty_terminal_app_id_resolves_terminal_chain() {
         let _guard = env_guard();
         let root = unique_temp_dir("ghostty-terminal-chain");
-        let config_dir = root.join("yeet-and-yoink");
+        let config_dir = root.join("yeetnyoink");
         fs::create_dir_all(&config_dir).expect("config dir should be created");
         fs::write(
             config_dir.join("config.toml"),

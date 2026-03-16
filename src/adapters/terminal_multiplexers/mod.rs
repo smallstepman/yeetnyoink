@@ -55,7 +55,7 @@ mod tests {
     fn unique_temp_dir(prefix: &str) -> PathBuf {
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
-            "yeet-and-yoink-terminal-mux-{prefix}-{}-{id}",
+            "yeetnyoink-terminal-mux-{prefix}-{}-{id}",
             std::process::id()
         ));
         fs::create_dir_all(&path).expect("temp dir should be created");
