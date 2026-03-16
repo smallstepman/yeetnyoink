@@ -15,7 +15,7 @@
   },
   "browser_specific_settings": {
     "gecko": {
-      "id": "browser-bridge@yeet-and-yoink.dev",
+      "id": "browser-bridge@yeet-and-yoink",
       "data_collection_permissions": {
         "required": [
           "none"

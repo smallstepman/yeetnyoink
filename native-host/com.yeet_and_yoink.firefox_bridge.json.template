@@ -4,6 +4,6 @@
   "path": "__YNY_BINARY__",
   "type": "stdio",
   "allowed_extensions": [
-    "browser-bridge@yeet-and-yoink.dev"
+    "browser-bridge@yeet-and-yoink"
   ]
 }
