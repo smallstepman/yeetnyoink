@@ -52,6 +52,12 @@ impl From<WeztermMuxFocusSelection> for u64 {
 pub(crate) struct WeztermMux;
 pub(crate) static WEZTERM_MUX_PROVIDER: WeztermMux = WeztermMux;
 
+#[derive(Debug, Clone, Copy)]
+struct WeztermHostTab {
+    tab_id: u64,
+    active_pane_id: u64,
+}
+
 impl WeztermMux {
     fn raw_panes_for_pid(&self, pid: u32) -> Result<Vec<WeztermMuxPane>> {
         self.cli_json_for_pid(
@@ -231,6 +237,115 @@ impl WeztermMux {
         }
 
         bail!("unable to resolve merge target pane (ambiguous)")
+    }
+
+    fn host_tabs_for_pid(&self, pid: u32) -> Result<(u64, Vec<WeztermHostTab>, usize)> {
+        let focused_pane_id = self.focused_pane_for_pid(pid)?;
+        let panes = self.raw_panes_for_pid(pid)?;
+        let focused = panes
+            .iter()
+            .find(|pane| pane.pane_id == focused_pane_id)
+            .context("focused pane is not present in wezterm pane list")?;
+
+        let mut tabs = Vec::new();
+        for pane in panes
+            .iter()
+            .filter(|pane| pane.window_id == focused.window_id)
+        {
+            if let Some(existing) = tabs
+                .iter_mut()
+                .find(|tab: &&mut WeztermHostTab| tab.tab_id == pane.tab_id)
+            {
+                if pane.is_active {
+                    existing.active_pane_id = pane.pane_id;
+                }
+                continue;
+            }
+            tabs.push(WeztermHostTab {
+                tab_id: pane.tab_id,
+                active_pane_id: pane.pane_id,
+            });
+        }
+
+        let current_idx = tabs
+            .iter()
+            .position(|tab| tab.tab_id == focused.tab_id)
+            .context("focused wezterm tab is not present in pane list")?;
+        Ok((focused_pane_id, tabs, current_idx))
+    }
+
+    fn adjacent_host_tab_for_pid(
+        &self,
+        pid: u32,
+        dir: Direction,
+    ) -> Result<Option<WeztermHostTab>> {
+        let (_, tabs, current_idx) = self.host_tabs_for_pid(pid)?;
+        let target_idx = match dir {
+            Direction::West if current_idx > 0 => Some(current_idx - 1),
+            Direction::East if current_idx + 1 < tabs.len() => Some(current_idx + 1),
+            _ => None,
+        };
+        Ok(target_idx.map(|idx| tabs[idx]))
+    }
+
+    pub(crate) fn can_focus_host_tab(&self, pid: u32, dir: Direction) -> Result<bool> {
+        Ok(self.adjacent_host_tab_for_pid(pid, dir)?.is_some())
+    }
+
+    pub(crate) fn focus_host_tab(&self, pid: u32, dir: Direction) -> Result<()> {
+        let (pane_id, _, _) = self.host_tabs_for_pid(pid)?;
+        self.adjacent_host_tab_for_pid(pid, dir)?
+            .context("no adjacent wezterm host tab exists in requested direction")?;
+        let pane_id_str = pane_id.to_string();
+        let relative = match dir {
+            Direction::West => "-1",
+            Direction::East => "1",
+            _ => bail!("wezterm host tabs only support west/east routing"),
+        };
+        self.cli_stdout_for_pid(
+            pid,
+            &[
+                "activate-tab",
+                "--tab-relative",
+                relative,
+                "--no-wrap",
+                "--pane-id",
+                &pane_id_str,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub(crate) fn can_move_to_host_tab(&self, pid: u32, dir: Direction) -> Result<bool> {
+        Ok(self.adjacent_host_tab_for_pid(pid, dir)?.is_some())
+    }
+
+    pub(crate) fn move_pane_to_host_tab(&self, pid: u32, dir: Direction) -> Result<()> {
+        let source_pane_id = self.focused_pane_for_pid(pid)?;
+        let target = self
+            .adjacent_host_tab_for_pid(pid, dir)?
+            .context("no adjacent wezterm host tab exists in requested direction")?;
+        if source_pane_id == target.active_pane_id {
+            bail!("source and target wezterm panes are the same");
+        }
+        let source_pane_id_str = source_pane_id.to_string();
+        let target_pane_id_str = target.active_pane_id.to_string();
+        let target_side = dir
+            .opposite()
+            .select("--left", "--right", "--top", "--bottom");
+        self.cli_stdout_for_pid(
+            pid,
+            &[
+                "split-pane",
+                "--pane-id",
+                &target_pane_id_str,
+                target_side,
+                "--move-pane-id",
+                &source_pane_id_str,
+            ],
+        )?;
+        self.cli_stdout_for_pid(pid, &["activate-pane", "--pane-id", &source_pane_id_str])?;
+        Ok(())
     }
 }
 

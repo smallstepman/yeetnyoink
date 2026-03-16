@@ -44,6 +44,8 @@ enabled_integration = "niri" # or "i3" on Linux
 [app.terminal.wezterm]
 enabled = true
 mux_backend = "wezterm"
+# Optional: let left/right edge focus step into adjacent WezTerm tabs.
+host_tabs = "focus"
 focus.internal_panes.enabled = true
 move.internal_panes.enabled = true
 resize.internal_panes.enabled = true
@@ -84,6 +86,11 @@ allow_remote_control socket-only
 listen_on unix:@kitty-{kitty_pid}
 ```
 
+`host_tabs` controls whether terminal host tabs participate in directional routing.
+Use `transparent` to keep current behavior, `focus` to let edge focus traverse adjacent
+host tabs on `left`/`right`, and `native_full` to additionally move panes across host tabs
+for native WezTerm/kitty mux backends.
+
 ## Home Manager module
 
 The flake exports `homeManagerModules.default`. Its
@@ -102,6 +109,7 @@ and Home Manager renders them to `~/.config/yeet-and-yoink/config.toml`.
       app.terminal.wezterm = {
         enabled = true;
         mux_backend = "wezterm";
+        host_tabs = "focus";
         focus.internal_panes.enabled = true;
         move.internal_panes.enabled = true;
         resize.internal_panes.enabled = true;

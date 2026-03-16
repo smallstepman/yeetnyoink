@@ -117,6 +117,15 @@ pub(crate) use delegate_topology_to_mux_provider;
 
 macro_rules! impl_terminal_host_backend {
     ($ty:ty, $launch_prefix:expr) => {
+        crate::adapters::apps::impl_terminal_host_app_adapter!($ty, $launch_prefix);
+        crate::adapters::apps::delegate_topology_to_mux_provider!($ty, $launch_prefix);
+    };
+}
+
+pub(crate) use impl_terminal_host_backend;
+
+macro_rules! impl_terminal_host_app_adapter {
+    ($ty:ty, $launch_prefix:expr) => {
         impl $ty {
             pub(crate) fn mux_provider(
             ) -> &'static dyn crate::engine::contracts::TerminalMultiplexerProvider {
@@ -149,12 +158,10 @@ macro_rules! impl_terminal_host_backend {
                 Self::mux_provider().capabilities()
             }
         }
-
-        crate::adapters::apps::delegate_topology_to_mux_provider!($ty, $launch_prefix);
     };
 }
 
-pub(crate) use impl_terminal_host_backend;
+pub(crate) use impl_terminal_host_app_adapter;
 
 pub mod alacritty;
 pub(crate) mod browser_common;
@@ -165,6 +172,7 @@ pub mod ghostty;
 pub mod kitty;
 pub mod librewolf;
 pub mod nvim;
+pub(crate) mod terminal_host_tabs;
 pub mod vscode;
 pub mod wezterm;
 

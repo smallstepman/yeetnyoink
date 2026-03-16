@@ -444,7 +444,8 @@ pub struct TerminalFocusConfig {
     #[serde(flatten)]
     pub pane: PaneFocusConfig,
 
-    /// If false, focusing past the edgemost pane moves to the next tab. Default true.
+    /// Legacy fallback for host-tab focus when `variant.host_tabs` is unset.
+    /// If false, focusing past the edgemost pane may move to the next host tab. Default true.
     #[serde(default = "default_true")]
     pub ignore_tabs: bool,
 }
@@ -463,7 +464,8 @@ pub struct TerminalMoveConfig {
     #[serde(flatten)]
     pub pane: PaneMoveConfig,
 
-    /// If false, moving past the edgemost pane sends the pane to the next tab. Default true.
+    /// Legacy fallback for host-tab move when `variant.host_tabs` is unset.
+    /// If false, moving past the edgemost pane may send the pane to the next host tab. Default true.
     #[serde(default = "default_true")]
     pub ignore_tabs: bool,
 }
@@ -505,6 +507,9 @@ pub struct TerminalVariantConfig {
     /// wezterm default: "wezterm"; kitty default: "kitty";
     /// foot/alacritty/ghostty/iterm2 default: "tmux".
     pub mux_backend: Option<TerminalMuxBackend>,
+
+    /// Whether terminal host tabs participate in edge focus/move routing.
+    pub host_tabs: Option<TerminalHostTabsMode>,
 
     /// Overrides the default tear-off scope (also settable via move.docking.tear_off.scope).
     pub tear_off_scope: Option<TerminalTearOffScope>,
@@ -630,6 +635,25 @@ pub enum TerminalTearOffScope {
     MuxWindow,
     MuxSession,
     TerminalTab,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TerminalHostTabsMode {
+    #[default]
+    Transparent,
+    Focus,
+    NativeFull,
+}
+
+impl TerminalHostTabsMode {
+    fn enables_focus(self) -> bool {
+        matches!(self, Self::Focus | Self::NativeFull)
+    }
+
+    fn enables_move(self) -> bool {
+        matches!(self, Self::NativeFull)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -1041,6 +1065,34 @@ fn pane_policy_from(cfg: &Config, section: AppSection, aliases: &[&str]) -> Pane
 
 pub fn pane_policy_for(section: AppSection, aliases: &[&str]) -> PanePolicy {
     pane_policy_from(&read_config(), section, aliases)
+}
+
+fn terminal_host_tabs_focus_from(cfg: &Config, aliases: &[&str]) -> bool {
+    let profile = profile_by_aliases(&cfg.app.terminal, aliases);
+    if let Some(mode) = profile.and_then(|profile| profile.variant.host_tabs) {
+        return mode.enables_focus();
+    }
+    profile
+        .map(|profile| !profile.focus.ignore_tabs)
+        .unwrap_or(false)
+}
+
+pub fn terminal_focus_host_tabs_for(aliases: &[&str]) -> bool {
+    terminal_host_tabs_focus_from(&read_config(), aliases)
+}
+
+fn terminal_host_tabs_move_from(cfg: &Config, aliases: &[&str]) -> bool {
+    let profile = profile_by_aliases(&cfg.app.terminal, aliases);
+    if let Some(mode) = profile.and_then(|profile| profile.variant.host_tabs) {
+        return mode.enables_move();
+    }
+    profile
+        .map(|profile| !profile.movement.ignore_tabs)
+        .unwrap_or(false)
+}
+
+pub fn terminal_move_host_tabs_for(aliases: &[&str]) -> bool {
+    terminal_host_tabs_move_from(&read_config(), aliases)
 }
 
 fn mux_policy_from(cfg: &Config, aliases: &[&str]) -> MuxPolicy {
@@ -1462,6 +1514,95 @@ enabled = true
 
         let wezterm_policy = mux_policy_from(&parsed, &["wezterm", "terminal"]);
         assert_eq!(wezterm_policy.backend, TerminalMuxBackend::Wezterm);
+    }
+
+    #[test]
+    fn terminal_host_tabs_defaults_to_transparent() {
+        let sample = r#"
+[app.terminal.wezterm]
+enabled = true
+"#;
+        let parsed: Config = toml::from_str(sample).expect("sample config should parse");
+        assert!(!terminal_host_tabs_focus_from(
+            &parsed,
+            &["wezterm", "terminal"]
+        ));
+        assert!(!terminal_host_tabs_move_from(
+            &parsed,
+            &["wezterm", "terminal"]
+        ));
+    }
+
+    #[test]
+    fn terminal_host_tabs_mode_controls_focus_and_move() {
+        let sample = r#"
+[app.terminal.wezterm]
+enabled = true
+host_tabs = "native_full"
+"#;
+        let parsed: Config = toml::from_str(sample).expect("sample config should parse");
+        assert!(terminal_host_tabs_focus_from(
+            &parsed,
+            &["wezterm", "terminal"]
+        ));
+        assert!(terminal_host_tabs_move_from(
+            &parsed,
+            &["wezterm", "terminal"]
+        ));
+
+        let sample = r#"
+[app.terminal.wezterm]
+enabled = true
+host_tabs = "focus"
+"#;
+        let parsed: Config = toml::from_str(sample).expect("sample config should parse");
+        assert!(terminal_host_tabs_focus_from(
+            &parsed,
+            &["wezterm", "terminal"]
+        ));
+        assert!(!terminal_host_tabs_move_from(
+            &parsed,
+            &["wezterm", "terminal"]
+        ));
+    }
+
+    #[test]
+    fn terminal_host_tabs_explicit_mode_beats_legacy_ignore_tabs() {
+        let sample = r#"
+[app.terminal.wezterm]
+enabled = true
+host_tabs = "transparent"
+focus.ignore_tabs = false
+move.ignore_tabs = false
+"#;
+        let parsed: Config = toml::from_str(sample).expect("sample config should parse");
+        assert!(!terminal_host_tabs_focus_from(
+            &parsed,
+            &["wezterm", "terminal"]
+        ));
+        assert!(!terminal_host_tabs_move_from(
+            &parsed,
+            &["wezterm", "terminal"]
+        ));
+    }
+
+    #[test]
+    fn terminal_host_tabs_falls_back_to_legacy_ignore_tabs() {
+        let sample = r#"
+[app.terminal.kitty]
+enabled = true
+focus.ignore_tabs = false
+move.ignore_tabs = false
+"#;
+        let parsed: Config = toml::from_str(sample).expect("sample config should parse");
+        assert!(terminal_host_tabs_focus_from(
+            &parsed,
+            &["kitty", "terminal"]
+        ));
+        assert!(terminal_host_tabs_move_from(
+            &parsed,
+            &["kitty", "terminal"]
+        ));
     }
 
     #[test]

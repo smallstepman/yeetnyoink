@@ -141,7 +141,14 @@
 //!
 //! Keep this comment aligned with upstream semantics whenever WezTerm changes CLI/mux APIs.
 //!
+use anyhow::{bail, Result};
+
+use crate::adapters::apps::terminal_host_tabs::{self, TerminalHostTabController};
 use crate::adapters::terminal_multiplexers;
+use crate::config::{self, TerminalMuxBackend};
+use crate::engine::contracts::{MergeExecutionMode, MergePreparation, TearResult, TopologyHandler};
+use crate::engine::runtime::ProcessId;
+use crate::engine::topology::Direction;
 
 /// Terminal app adapter surface (domain identity + integration helpers).
 pub struct WeztermBackend;
@@ -152,7 +159,111 @@ pub const APP_IDS: &[&str] = &["org.wezfurlong.wezterm"];
 /// Terminal launch prefix for composing spawn commands (e.g. `["wezterm", "-e"]`).
 pub const TERMINAL_LAUNCH_PREFIX: &[&str] = &["wezterm", "-e"];
 
-crate::adapters::apps::impl_terminal_host_backend!(WeztermBackend, TERMINAL_LAUNCH_PREFIX);
+crate::adapters::apps::impl_terminal_host_app_adapter!(WeztermBackend, TERMINAL_LAUNCH_PREFIX);
+
+impl WeztermBackend {
+    fn host_mux() -> &'static terminal_multiplexers::wezterm::WeztermMux {
+        &terminal_multiplexers::wezterm::WEZTERM_MUX_PROVIDER
+    }
+
+    fn host_tab_moves_are_native() -> bool {
+        matches!(
+            config::mux_policy_for(ADAPTER_ALIASES).backend,
+            TerminalMuxBackend::Wezterm
+        )
+    }
+}
+
+impl TerminalHostTabController for WeztermBackend {
+    fn can_focus_host_tab(&self, pid: u32, dir: Direction) -> Result<bool> {
+        Self::host_mux().can_focus_host_tab(pid, dir)
+    }
+
+    fn focus_host_tab(&self, pid: u32, dir: Direction) -> Result<()> {
+        Self::host_mux().focus_host_tab(pid, dir)
+    }
+
+    fn can_move_to_host_tab(&self, pid: u32, dir: Direction) -> Result<bool> {
+        if !Self::host_tab_moves_are_native() {
+            return Ok(false);
+        }
+        Self::host_mux().can_move_to_host_tab(pid, dir)
+    }
+
+    fn move_to_host_tab(&self, pid: u32, dir: Direction) -> Result<()> {
+        if !Self::host_tab_moves_are_native() {
+            bail!("wezterm host-tab move requires mux_backend = \"wezterm\"");
+        }
+        Self::host_mux().move_pane_to_host_tab(pid, dir)
+    }
+}
+
+impl TopologyHandler for WeztermBackend {
+    fn can_focus(&self, dir: Direction, pid: u32) -> Result<bool> {
+        terminal_host_tabs::can_focus(ADAPTER_ALIASES, Self::mux_provider(), self, dir, pid)
+    }
+
+    fn move_decision(
+        &self,
+        dir: Direction,
+        pid: u32,
+    ) -> Result<crate::engine::contracts::MoveDecision> {
+        terminal_host_tabs::move_decision(ADAPTER_ALIASES, Self::mux_provider(), self, dir, pid)
+    }
+
+    fn can_resize(&self, dir: Direction, grow: bool, pid: u32) -> Result<bool> {
+        Self::mux_provider().can_resize(dir, grow, pid)
+    }
+
+    fn focus(&self, dir: Direction, pid: u32) -> Result<()> {
+        terminal_host_tabs::focus(ADAPTER_ALIASES, Self::mux_provider(), self, dir, pid)
+    }
+
+    fn move_internal(&self, dir: Direction, pid: u32) -> Result<()> {
+        terminal_host_tabs::move_internal(ADAPTER_ALIASES, Self::mux_provider(), self, dir, pid)
+    }
+
+    fn resize_internal(&self, dir: Direction, grow: bool, step: i32, pid: u32) -> Result<()> {
+        Self::mux_provider().resize_internal(dir, grow, step, pid)
+    }
+
+    fn rearrange(&self, dir: Direction, pid: u32) -> Result<()> {
+        Self::mux_provider().rearrange(dir, pid)
+    }
+
+    fn move_out(&self, dir: Direction, pid: u32) -> Result<TearResult> {
+        Ok(terminal_multiplexers::prepend_terminal_launch_prefix(
+            TERMINAL_LAUNCH_PREFIX,
+            Self::mux_provider().move_out(dir, pid)?,
+        ))
+    }
+
+    fn merge_execution_mode(&self) -> MergeExecutionMode {
+        Self::mux_provider().merge_execution_mode()
+    }
+
+    fn prepare_merge(&self, source_pid: Option<ProcessId>) -> Result<MergePreparation> {
+        Self::mux_provider().prepare_merge(source_pid)
+    }
+
+    fn augment_merge_preparation_for_target(
+        &self,
+        preparation: MergePreparation,
+        target_window_id: Option<u64>,
+    ) -> MergePreparation {
+        Self::mux_provider().augment_merge_preparation_for_target(preparation, target_window_id)
+    }
+
+    fn merge_into_target(
+        &self,
+        dir: Direction,
+        source_pid: Option<ProcessId>,
+        target_pid: Option<ProcessId>,
+        preparation: MergePreparation,
+    ) -> Result<()> {
+        Self::mux_provider().merge_into_target(dir, source_pid, target_pid, preparation)
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -331,6 +442,13 @@ mux_backend = "wezterm"
 
     impl WeztermHarness {
         fn new(pid: u32) -> Self {
+            Self::with_config(
+                pid,
+                "[app.terminal.wezterm]\nenabled = true\nmux_backend = \"wezterm\"\n",
+            )
+        }
+
+        fn with_config(pid: u32, config_toml: &str) -> Self {
             let unique = NEXT_ID.fetch_add(1, Ordering::Relaxed);
             let base =
                 std::env::temp_dir().join(format!("yeet-and-yoink-wezterm-test-{pid}-{unique}"));
@@ -425,11 +543,7 @@ exit "$status"
             let config_dir = base.join("config");
             fs::create_dir_all(&config_dir).expect("config dir should be creatable");
             let config_path = config_dir.join("config.toml");
-            fs::write(
-                &config_path,
-                "[app.terminal.wezterm]\nenabled = true\nmux_backend = \"wezterm\"\n",
-            )
-            .expect("config file should be writable");
+            fs::write(&config_path, config_toml).expect("config file should be writable");
             crate::config::prepare_with_path(Some(&config_path)).expect("config should load");
 
             Self {
@@ -563,6 +677,112 @@ exit "$status"
             .can_focus(Direction::West, pid)
             .expect("can_focus should gracefully fall back");
         assert!(!can_focus);
+    }
+
+    #[test]
+    fn host_tabs_focus_switches_tabs_at_edge() {
+        let _env_guard = env_guard();
+        let pid = 5222;
+        let harness = WeztermHarness::with_config(
+            pid,
+            r#"
+[app.terminal.wezterm]
+enabled = true
+mux_backend = "wezterm"
+host_tabs = "focus"
+"#,
+        );
+
+        harness.set_response(
+            "list --format json",
+            0,
+            r#"
+            [
+              {"window_id":1,"pane_id":10,"tab_id":1,"is_active":true,"foreground_process_name":"zsh"},
+              {"window_id":1,"pane_id":20,"tab_id":2,"is_active":true,"foreground_process_name":"zsh"}
+            ]
+            "#,
+            "",
+        );
+        harness.set_response(
+            "list-clients --format json",
+            0,
+            r#"[{"pid":5222,"focused_pane_id":10}]"#,
+            "",
+        );
+        harness.set_response("get-pane-direction Right --pane-id 10", 1, "", "no pane");
+        harness.set_response(
+            "activate-tab --tab-relative 1 --no-wrap --pane-id 10",
+            0,
+            "",
+            "",
+        );
+
+        let app = WeztermBackend;
+        assert!(app
+            .can_focus(Direction::East, pid)
+            .expect("host tab focus should be available"));
+        app.focus(Direction::East, pid)
+            .expect("host tab focus should succeed");
+
+        let log = harness.command_log();
+        assert!(log.contains("activate-tab --tab-relative 1 --no-wrap --pane-id 10"));
+    }
+
+    #[test]
+    fn host_tabs_native_full_moves_into_adjacent_tab_and_keeps_focus() {
+        let _env_guard = env_guard();
+        let pid = 5333;
+        let harness = WeztermHarness::with_config(
+            pid,
+            r#"
+[app.terminal.wezterm]
+enabled = true
+mux_backend = "wezterm"
+host_tabs = "native_full"
+"#,
+        );
+
+        harness.set_response(
+            "list --format json",
+            0,
+            r#"
+            [
+              {"window_id":1,"pane_id":10,"tab_id":1,"is_active":true,"foreground_process_name":"zsh"},
+              {"window_id":1,"pane_id":20,"tab_id":2,"is_active":true,"foreground_process_name":"zsh"}
+            ]
+            "#,
+            "",
+        );
+        harness.set_response(
+            "list-clients --format json",
+            0,
+            r#"[{"pid":5333,"focused_pane_id":10}]"#,
+            "",
+        );
+        harness.set_response("get-pane-direction Right --pane-id 10", 1, "", "no pane");
+        harness.set_response("get-pane-direction Up --pane-id 10", 1, "", "no pane");
+        harness.set_response("get-pane-direction Down --pane-id 10", 1, "", "no pane");
+        harness.set_response(
+            "split-pane --pane-id 20 --left --move-pane-id 10",
+            0,
+            "",
+            "",
+        );
+        harness.set_response("activate-pane --pane-id 10", 0, "", "");
+
+        let app = WeztermBackend;
+        let decision = app
+            .move_decision(Direction::East, pid)
+            .expect("move_decision should succeed");
+        assert!(matches!(decision, MoveDecision::Internal));
+
+        app.move_internal(Direction::East, pid)
+            .expect("host-tab move should succeed");
+
+        let log = harness.command_log();
+        assert!(log.contains("split-pane --pane-id 20 --left --move-pane-id 10"));
+        assert!(log.contains("activate-pane --pane-id 10"));
     }
 
     #[test]

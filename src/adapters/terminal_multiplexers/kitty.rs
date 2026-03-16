@@ -53,6 +53,13 @@ pub struct KittyMux;
 
 pub(crate) static KITTY_MUX_PROVIDER: KittyMux = KittyMux;
 
+#[derive(Debug, Clone, Copy)]
+struct KittyHostTab {
+    tab_id: u64,
+    pane_count: usize,
+    active_pane_id: u64,
+}
+
 impl KittyPane {
     fn foreground_process_name(&self) -> Option<String> {
         let command = self
@@ -67,6 +74,41 @@ impl KittyPane {
 }
 
 impl KittyMux {
+    fn focused_os_window<'a>(&self, windows: &'a [KittyOsWindow]) -> Result<&'a KittyOsWindow> {
+        windows
+            .iter()
+            .find(|window| window.is_focused)
+            .or_else(|| {
+                windows.iter().find(|window| {
+                    window.tabs.iter().any(|tab| {
+                        tab.is_focused
+                            || tab
+                                .windows
+                                .iter()
+                                .any(|pane| pane.is_focused || pane.is_active)
+                    })
+                })
+            })
+            .or_else(|| windows.first())
+            .context("kitty did not report any windows")
+    }
+
+    fn focused_tab_in_window<'a>(&self, window: &'a KittyOsWindow) -> Result<&'a KittyTab> {
+        window
+            .tabs
+            .iter()
+            .find(|tab| tab.is_focused)
+            .or_else(|| {
+                window.tabs.iter().find(|tab| {
+                    tab.windows
+                        .iter()
+                        .any(|pane| pane.is_focused || pane.is_active)
+                })
+            })
+            .or_else(|| window.tabs.first())
+            .context("kitty focused window has no tabs")
+    }
+
     fn no_match(&self, stderr: &str) -> bool {
         let value = stderr.to_ascii_lowercase();
         value.contains("no matching window")
@@ -133,35 +175,8 @@ Original error: {stderr}"
             &["ls", "--output-format", "json"],
             "failed to parse kitty ls json",
         )?;
-        let window = windows
-            .iter()
-            .find(|window| window.is_focused)
-            .or_else(|| {
-                windows.iter().find(|window| {
-                    window.tabs.iter().any(|tab| {
-                        tab.is_focused
-                            || tab
-                                .windows
-                                .iter()
-                                .any(|pane| pane.is_focused || pane.is_active)
-                    })
-                })
-            })
-            .or_else(|| windows.first())
-            .context("kitty did not report any windows")?;
-        let tab = window
-            .tabs
-            .iter()
-            .find(|tab| tab.is_focused)
-            .or_else(|| {
-                window.tabs.iter().find(|tab| {
-                    tab.windows
-                        .iter()
-                        .any(|pane| pane.is_focused || pane.is_active)
-                })
-            })
-            .or_else(|| window.tabs.first())
-            .context("kitty focused window has no tabs")?;
+        let window = self.focused_os_window(&windows)?;
+        let tab = self.focused_tab_in_window(window)?;
         Ok(tab
             .windows
             .iter()
@@ -181,6 +196,106 @@ Original error: {stderr}"
             .first()
             .and_then(|pane| pane.tab_id)
             .context("kitty active tab is missing an id")
+    }
+
+    fn host_tabs_for_pid(&self, pid: u32) -> Result<(u64, Vec<KittyHostTab>, usize)> {
+        let windows: Vec<KittyOsWindow> = self.cli_json_for_pid(
+            pid,
+            &["ls", "--output-format", "json"],
+            "failed to parse kitty ls json",
+        )?;
+        let window = self.focused_os_window(&windows)?;
+        let focused_tab = self.focused_tab_in_window(window)?;
+        let tabs = window
+            .tabs
+            .iter()
+            .map(|tab| {
+                let active_pane_id = tab
+                    .windows
+                    .iter()
+                    .find(|pane| pane.is_focused || pane.is_active)
+                    .or_else(|| tab.windows.first())
+                    .map(|pane| pane.id)
+                    .context("kitty tab has no windows")?;
+                Ok(KittyHostTab {
+                    tab_id: tab.id,
+                    pane_count: tab.windows.len(),
+                    active_pane_id,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let current_idx = window
+            .tabs
+            .iter()
+            .position(|tab| tab.id == focused_tab.id)
+            .context("kitty focused tab is not present in tab list")?;
+        Ok((tabs[current_idx].active_pane_id, tabs, current_idx))
+    }
+
+    fn adjacent_host_tab_for_pid(&self, pid: u32, dir: Direction) -> Result<Option<KittyHostTab>> {
+        let (_, tabs, current_idx) = self.host_tabs_for_pid(pid)?;
+        let target_idx = match dir {
+            Direction::West if current_idx > 0 => Some(current_idx - 1),
+            Direction::East if current_idx + 1 < tabs.len() => Some(current_idx + 1),
+            _ => None,
+        };
+        Ok(target_idx.map(|idx| tabs[idx]))
+    }
+
+    pub(crate) fn can_focus_host_tab(&self, pid: u32, dir: Direction) -> Result<bool> {
+        Ok(self.adjacent_host_tab_for_pid(pid, dir)?.is_some())
+    }
+
+    pub(crate) fn focus_host_tab(&self, pid: u32, dir: Direction) -> Result<()> {
+        let target = self
+            .adjacent_host_tab_for_pid(pid, dir)?
+            .context("no adjacent kitty host tab exists in requested direction")?;
+        let matcher = format!("id:{}", target.tab_id);
+        self.cli_stdout_for_pid(pid, &["focus-tab", "--match", &matcher])?;
+        Ok(())
+    }
+
+    pub(crate) fn can_move_to_host_tab(&self, pid: u32, dir: Direction) -> Result<bool> {
+        Ok(self.adjacent_host_tab_for_pid(pid, dir)?.is_some())
+    }
+
+    pub(crate) fn move_pane_to_host_tab(&self, pid: u32, dir: Direction) -> Result<()> {
+        let source_pane_id = self.focused_pane_for_pid(pid)?;
+        let target = self
+            .adjacent_host_tab_for_pid(pid, dir)?
+            .context("no adjacent kitty host tab exists in requested direction")?;
+        let source_match = format!("id:{source_pane_id}");
+        let target_tab_match = format!("id:{}", target.tab_id);
+        if target.pane_count == 1 {
+            self.set_tab_layout(pid, target.tab_id, self.target_merge_layout(dir))?;
+        }
+        self.cli_stdout_for_pid(
+            pid,
+            &[
+                "detach-window",
+                "--match",
+                &source_match,
+                "--target-tab",
+                &target_tab_match,
+            ],
+        )?;
+        self.cli_stdout_for_pid(pid, &["focus-tab", "--match", &target_tab_match])?;
+
+        let target_side = dir.opposite();
+        if let Err(err) = self.run_action_for_pane(
+            pid,
+            source_pane_id,
+            &self.move_to_screen_edge_action(target_side),
+        ) {
+            logging::debug(format!(
+                "kitty: host-tab move post-placement move_to_screen_edge failed source_pane_id={} dir={} err={:#}",
+                source_pane_id,
+                target_side.positional(),
+                err
+            ));
+            self.run_action_for_pane(pid, source_pane_id, &self.move_window_action(target_side))?;
+        }
+        Ok(())
     }
 
     fn focus_pane_by_id(&self, pid: u32, pane_id: u64) -> Result<()> {

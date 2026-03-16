@@ -301,7 +301,7 @@
           terminalFocusConfigModule = {
             options = {
               internal_panes = optionalSubmoduleOption internalPaneDirectionConfigModule "Internal-pane focus behavior.";
-              ignore_tabs = optionalBoolOption "Whether edge focus should stay inside the current terminal tab. Rust defaults to true.";
+              ignore_tabs = optionalBoolOption "Legacy fallback for whether edge focus should stay inside the current terminal tab when host_tabs is unset. Rust defaults to true.";
             };
           };
 
@@ -309,7 +309,7 @@
             options = {
               internal_panes = optionalSubmoduleOption internalPaneDirectionConfigModule "Internal-pane move behavior.";
               docking = optionalSubmoduleOption dockingConfigModule "Terminal pane docking behavior.";
-              ignore_tabs = optionalBoolOption "Whether edge moves should stay inside the current terminal tab. Rust defaults to true.";
+              ignore_tabs = optionalBoolOption "Legacy fallback for whether edge moves should stay inside the current terminal tab when host_tabs is unset. Rust defaults to true.";
             };
           };
 
@@ -326,6 +326,11 @@
                 "wezterm"
                 "kitty"
               ] "Terminal mux backend.";
+              host_tabs = optionalEnumOption [
+                "transparent"
+                "focus"
+                "native_full"
+              ] "Whether terminal host tabs participate in edge focus/move routing.";
               tear_off_scope = optionalEnumOption [
                 "mux_pane"
                 "mux_window"
