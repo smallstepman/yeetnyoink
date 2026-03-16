@@ -1,13 +1,14 @@
 use anyhow::{Context, Result};
 
 use crate::adapters::apps::AppAdapter;
+use crate::engine::browser_native::{
+    self as native_bridge, BrowserTabState, NativeBrowserDescriptor,
+};
 use crate::engine::contracts::{
     AdapterCapabilities, AppKind, MergeExecutionMode, MergePreparation, MoveDecision, TearResult,
     TopologyHandler,
 };
 use crate::engine::topology::Direction;
-
-use super::librewolf::native_bridge::{self, BrowserTabState, NativeBrowserDescriptor};
 
 pub const ADAPTER_NAME: &str = "chromium";
 pub const ADAPTER_ALIASES: &[&str] = &["chromium", "chrome", "brave", "brave-browser"];

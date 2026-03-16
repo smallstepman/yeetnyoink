@@ -1,11 +1,12 @@
 use anyhow::{bail, Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use std::path::PathBuf;
 use yeet_and_yoink::commands;
 #[cfg(target_os = "linux")]
 use yeet_and_yoink::commands::focus_or_cycle::FocusOrCycleArgs;
 use yeet_and_yoink::commands::resize::ResizeMode;
 use yeet_and_yoink::config;
+use yeet_and_yoink::engine::browser_native::{self, BrowserInstallTarget};
 use yeet_and_yoink::engine::topology::Direction;
 use yeet_and_yoink::logging;
 use yeet_and_yoink::profiling::ProfileConfig;
@@ -67,6 +68,12 @@ enum Cmd {
         #[arg(value_parser = parse_browser_host_mode)]
         mode: BrowserHostMode,
     },
+    /// Install helper integrations like browser native hosts.
+    #[command(after_help = "Run `yny setup <installer> --help` for installer-specific options.")]
+    Setup {
+        #[command(subcommand)]
+        installer: SetupInstaller,
+    },
 }
 
 impl Cmd {
@@ -78,6 +85,57 @@ impl Cmd {
             #[cfg(target_os = "linux")]
             Self::FocusOrCycle { .. } => "focus-or-cycle",
             Self::BrowserHost { .. } => "browser-host",
+            Self::Setup { .. } => "setup",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Args)]
+struct SetupArgs {
+    /// Override the yny binary path recorded in the generated wrapper script.
+    #[arg(long, value_name = "PATH")]
+    yny_path: Option<PathBuf>,
+    /// Override the target native-messaging host directory.
+    #[arg(long, value_name = "DIR")]
+    manifest_dir: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Subcommand)]
+enum SetupInstaller {
+    /// Install the Firefox/LibreWolf native host manifest and wrapper.
+    #[command(visible_alias = "librewolf")]
+    Firefox(SetupArgs),
+    /// Install the Chromium native host manifest and wrapper.
+    Chromium(SetupArgs),
+    /// Install the Google Chrome native host manifest and wrapper.
+    #[command(visible_alias = "google-chrome")]
+    Chrome(SetupArgs),
+    /// Install the Brave native host manifest and wrapper.
+    #[command(visible_alias = "brave-browser")]
+    Brave(SetupArgs),
+    /// Install the Microsoft Edge native host manifest and wrapper.
+    #[command(visible_alias = "microsoft-edge")]
+    Edge(SetupArgs),
+}
+
+impl SetupInstaller {
+    fn target(&self) -> BrowserInstallTarget {
+        match self {
+            Self::Firefox(_) => BrowserInstallTarget::Firefox,
+            Self::Chromium(_) => BrowserInstallTarget::Chromium,
+            Self::Chrome(_) => BrowserInstallTarget::Chrome,
+            Self::Brave(_) => BrowserInstallTarget::Brave,
+            Self::Edge(_) => BrowserInstallTarget::Edge,
+        }
+    }
+
+    fn args(&self) -> &SetupArgs {
+        match self {
+            Self::Firefox(args)
+            | Self::Chromium(args)
+            | Self::Chrome(args)
+            | Self::Brave(args)
+            | Self::Edge(args) => args,
         }
     }
 }
@@ -116,6 +174,28 @@ fn parse_browser_host_mode(value: &str) -> std::result::Result<BrowserHostMode, 
     BrowserHostMode::parse(value).map_err(|err| err.to_string())
 }
 
+fn install_browser_native_host(
+    browser: BrowserInstallTarget,
+    yny_path: Option<&std::path::Path>,
+    manifest_dir: Option<&std::path::Path>,
+) -> Result<()> {
+    let yny_path = match yny_path {
+        Some(path) => path.to_path_buf(),
+        None => std::env::current_exe().context("failed to resolve the current yny path")?,
+    };
+    let report = browser_native::install_native_host(browser, &yny_path, manifest_dir)?;
+    println!(
+        "Installed {} native host for {}.",
+        report.browser.label(),
+        report.yny_path.display()
+    );
+    for path in report.written_paths {
+        println!("Wrote {}", path.display());
+    }
+    println!("{}", report.next_step_hint);
+    Ok(())
+}
+
 fn main() {
     let cli = Cli::parse();
 
@@ -125,6 +205,18 @@ fn main() {
                 mode.run()
                     .with_context(|| format!("{} browser native host failed", mode.label()))
             }) {
+                eprintln!("yeet-and-yoink: {err:#}");
+                std::process::exit(1);
+            }
+            return;
+        }
+        Cmd::Setup { installer } => {
+            let args = installer.args();
+            if let Err(err) = install_browser_native_host(
+                installer.target(),
+                args.yny_path.as_deref(),
+                args.manifest_dir.as_deref(),
+            ) {
                 eprintln!("yeet-and-yoink: {err:#}");
                 std::process::exit(1);
             }
@@ -168,6 +260,9 @@ fn main() {
             Cmd::BrowserHost { .. } => {
                 unreachable!("browser host mode returns before logging init")
             }
+            Cmd::Setup { .. } => {
+                unreachable!("setup mode returns before logging init")
+            }
         }
     };
 
@@ -190,8 +285,9 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{BrowserHostMode, Cli};
+    use super::{BrowserHostMode, Cli, Cmd, SetupInstaller};
     use clap::CommandFactory;
+    use clap::Parser;
 
     #[test]
     fn cli_help_describes_configured_wm_selection() {
@@ -239,5 +335,50 @@ mod tests {
     #[test]
     fn browser_host_mode_rejects_unknown_values() {
         assert!(BrowserHostMode::parse("safari").is_err());
+    }
+
+    #[test]
+    fn setup_help_lists_available_installers() {
+        let mut command = Cli::command();
+        let setup = command
+            .find_subcommand_mut("setup")
+            .expect("setup subcommand should exist");
+        let mut help = Vec::new();
+        setup
+            .write_long_help(&mut help)
+            .expect("setup help should render");
+        let help = String::from_utf8(help).expect("help text should be utf-8");
+
+        for installer in ["firefox", "chromium", "chrome", "brave", "edge"] {
+            assert!(
+                help.contains(installer),
+                "setup help should list {installer}: {help}"
+            );
+        }
+        assert!(
+            help.contains("Install the Firefox/LibreWolf native host manifest and wrapper"),
+            "setup help should describe firefox installer: {help}"
+        );
+    }
+
+    #[test]
+    fn setup_aliases_parse_to_expected_installers() {
+        let librewolf = Cli::try_parse_from(["yny", "setup", "librewolf"])
+            .expect("librewolf alias should parse");
+        assert!(matches!(
+            librewolf.command,
+            Cmd::Setup {
+                installer: SetupInstaller::Firefox(_)
+            }
+        ));
+
+        let chrome = Cli::try_parse_from(["yny", "setup", "google-chrome"])
+            .expect("google-chrome alias should parse");
+        assert!(matches!(
+            chrome.command,
+            Cmd::Setup {
+                installer: SetupInstaller::Chrome(_)
+            }
+        ));
     }
 }

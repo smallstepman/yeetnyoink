@@ -1,4 +1,5 @@
 pub(crate) mod actions;
+pub mod browser_native;
 pub(crate) mod contracts;
 pub(crate) mod resolution;
 pub mod runtime;
