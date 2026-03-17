@@ -442,7 +442,7 @@ impl ZellijMuxProvider {
             }
         }
 
-        if let Some(path) = crate::config::zellij_break_plugin_path() {
+        if let Some(path) = crate::config::any_terminal_zellij_break_plugin_path() {
             if let Some(url) = file_url(&path) {
                 return Some(url);
             }
@@ -1207,16 +1207,26 @@ mod tests {
     }
 
     fn set_break_plugin_path(path: Option<PathBuf>) -> Option<PathBuf> {
-        let old = crate::config::zellij_break_plugin_path();
+        let old = crate::config::any_terminal_zellij_break_plugin_path();
         crate::config::update(|cfg| {
-            cfg.runtime.zellij.break_plugin = path;
+            cfg.app
+                .terminal
+                .entry("alacritty".to_string())
+                .or_default()
+                .runtime
+                .zellij_break_plugin = path;
         });
         old
     }
 
     fn restore_break_plugin_path(old: Option<PathBuf>) {
         crate::config::update(|cfg| {
-            cfg.runtime.zellij.break_plugin = old;
+            cfg.app
+                .terminal
+                .entry("alacritty".to_string())
+                .or_default()
+                .runtime
+                .zellij_break_plugin = old;
         });
     }
 

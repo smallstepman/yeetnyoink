@@ -18,6 +18,7 @@ pub const FIREFOX_NATIVE_HOST_NAME: &str = "com.yeetnyoink.firefox_bridge";
 
 const NATIVE_BRIDGE: NativeBrowserDescriptor = NativeBrowserDescriptor {
     socket_path_override: crate::config::firefox_native_socket_path,
+    aliases: ADAPTER_ALIASES,
     socket_basename: "firefox-bridge.sock",
     unavailable_browser_hint:
         "Install/enable the yeetnyoink browser extension and keep LibreWolf/Firefox running.",
@@ -236,9 +237,14 @@ mod tests {
                 }
             });
 
-            let old_socket = crate::config::firefox_native_socket_path();
+            let old_socket = crate::config::firefox_native_socket_path(ADAPTER_ALIASES);
             crate::config::update(|cfg| {
-                cfg.runtime.browser_native.firefox_socket_path = Some(socket_path.clone());
+                cfg.app
+                    .browser
+                    .entry("librewolf".to_string())
+                    .or_default()
+                    .runtime
+                    .native_socket_path = Some(socket_path.clone());
             });
 
             Self {
@@ -265,7 +271,12 @@ mod tests {
             }
             let _ = std::fs::remove_file(&self.socket_path);
             crate::config::update(|cfg| {
-                cfg.runtime.browser_native.firefox_socket_path = self.old_socket.clone();
+                cfg.app
+                    .browser
+                    .entry("librewolf".to_string())
+                    .or_default()
+                    .runtime
+                    .native_socket_path = self.old_socket.clone();
             });
             assert!(
                 self.queue.lock().expect("queue mutex poisoned").is_empty(),
@@ -338,8 +349,12 @@ mod tests {
         let _guard = env_guard();
         let old = crate::config::snapshot();
         crate::config::update(|cfg| {
-            cfg.runtime.browser_native.firefox_socket_path =
-                Some(std::path::PathBuf::from("/tmp/yny-firefox-test.sock"));
+            cfg.app
+                .browser
+                .entry("librewolf".to_string())
+                .or_default()
+                .runtime
+                .native_socket_path = Some(std::path::PathBuf::from("/tmp/yny-firefox-test.sock"));
         });
 
         assert_eq!(

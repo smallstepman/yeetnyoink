@@ -29,7 +29,8 @@ impl LoggingSession {
 }
 
 fn debug_enabled() -> bool {
-    config::logging_debug_enabled()
+    let level = config::logging_level();
+    matches!(level, config::LogLevel::Debug | config::LogLevel::Trace)
 }
 
 fn open_log_file(path: &Path, append: bool) -> std::io::Result<File> {

@@ -1,0 +1,367 @@
+# Exhaustive reference config for yeetnyoink.
+#
+# This file is intentionally verbose. It is meant to unwind the current
+# `src/config.rs` surface into concrete TOML, not to be copied verbatim as a
+# daily-driver config. Keep only the profiles you actually use.
+#
+# Notes:
+# - Enum values use snake_case.
+# - The Rust field `movement` appears in TOML as `move`.
+# - Terminal `host_tabs` is the modern host-tab switch; if it is set, the legacy
+#   `focus.ignore_tabs` / `move.ignore_tabs` values are only documentary.
+# - Terminal tear-out scope is currently exposed in two places:
+#   `tear_off_scope` and `move.docking.tear_off.scope`. If you use both, keep
+#   them aligned.
+# - Direction lists accept values like `west`, `east`, `north`, `south`
+#   (single-letter aliases like `W`, `E`, `N`, `S` also parse).
+#
+
+[wm]
+enabled_integration = "niri" # niri | i3 | paneru | yabai
+
+# ---------------------------------------------------------------------------
+# Instrumentation (logging and profiling)
+# ---------------------------------------------------------------------------
+
+[instrumentation.logging]
+quiet = false
+level = "info" # error | info | debug | trace
+append_to_file = "/tmp/yeetnyoink.log" # optional, creates directory automatically
+stream_to = "stdout" # stdout | stderr | none
+
+[instrumentation.profiling]
+enabled = false
+dump_directory = "/tmp/yeetnyoink/profiles" # optional
+
+# ---------------------------------------------------------------------------
+# Browser profiles
+# ---------------------------------------------------------------------------
+
+[app.browser.librewolf]
+enabled = false
+anchor_app_window = false
+tab_axis = "horizontal" # horizontal | vertical | vertical_flipped
+
+[app.browser.librewolf.runtime]
+native_socket_path = "/tmp/yeetnyoink/firefox.sock"
+
+[app.browser.librewolf.focus]
+left = "focus_previous_tab" # ignore | focus_previous_tab | focus_next_tab | focus_first_tab | focus_last_tab
+right = "focus_next_tab"
+up = "ignore"
+down = "ignore"
+
+[app.browser.librewolf.move]
+left = "move_tab_backward" # ignore | move_tab_backward | move_tab_forward | move_tab_to_first_position | move_tab_to_last_position
+right = "move_tab_forward"
+up = "ignore"
+down = "ignore"
+
+[app.browser.librewolf.move.docking]
+snap_back = true
+
+[app.browser.librewolf.move.docking.tear_off]
+enabled = true
+strategy = "only_if_edgemost" # only_if_edgemost | once_it_neighbors_with_window_edge | always
+
+[app.browser.chromium]
+enabled = false
+anchor_app_window = true
+tab_axis = "vertical_flipped" # use "vertical" for non-flipped north/south tab routing
+
+[app.browser.chromium.runtime]
+native_socket_path = "/tmp/yeetnyoink/chromium.sock"
+
+[app.browser.chromium.focus]
+left = "focus_first_tab"
+right = "focus_last_tab"
+up = "focus_next_tab"
+down = "focus_previous_tab"
+
+[app.browser.chromium.move]
+left = "move_tab_to_first_position"
+right = "move_tab_to_last_position"
+up = "move_tab_forward"
+down = "move_tab_backward"
+
+[app.browser.chromium.move.docking]
+snap_back = false
+
+[app.browser.chromium.move.docking.tear_off]
+enabled = true
+strategy = "always"
+
+# ---------------------------------------------------------------------------
+# Terminal host profiles
+# ---------------------------------------------------------------------------
+
+[app.terminal.wezterm]
+enabled = false
+anchor_app_window = false
+mux_backend = "wezterm" # tmux | zellij | wezterm | kitty
+host_tabs = "native_full" # transparent | focus | native_full
+tear_off_scope = "terminal_tab" # mux_pane | mux_window | mux_session | terminal_tab
+
+[app.terminal.wezterm.focus]
+ignore_tabs = true
+
+[app.terminal.wezterm.focus.internal_panes]
+enabled = true
+allowed_directions = ["west", "east", "north", "south"]
+
+[app.terminal.wezterm.move]
+ignore_tabs = true
+
+[app.terminal.wezterm.move.internal_panes]
+enabled = true
+allowed_directions = ["west", "east", "north", "south"]
+
+[app.terminal.wezterm.move.docking]
+snap_back = true
+
+[app.terminal.wezterm.move.docking.tear_off]
+enabled = true
+strategy = "only_if_edgemost"
+scope = "terminal_tab"
+
+[app.terminal.wezterm.resize.internal_panes]
+enabled = true
+allowed_directions = ["west", "east", "north", "south"]
+
+[app.terminal.kitty]
+enabled = false
+anchor_app_window = false
+mux_backend = "kitty"
+host_tabs = "focus"
+tear_off_scope = "mux_pane"
+
+[app.terminal.kitty.focus]
+ignore_tabs = false
+
+[app.terminal.kitty.focus.internal_panes]
+enabled = true
+allowed_directions = ["west", "east"]
+
+[app.terminal.kitty.move]
+ignore_tabs = false
+
+[app.terminal.kitty.move.internal_panes]
+enabled = true
+allowed_directions = ["west", "east"]
+
+[app.terminal.kitty.move.docking]
+snap_back = true
+
+[app.terminal.kitty.move.docking.tear_off]
+enabled = true
+strategy = "once_it_neighbors_with_window_edge"
+
+[app.terminal.kitty.resize.internal_panes]
+enabled = true
+allowed_directions = ["west", "east"]
+
+[app.terminal.foot]
+enabled = false
+anchor_app_window = false
+mux_backend = "tmux"
+host_tabs = "transparent"
+tear_off_scope = "mux_session"
+
+[app.terminal.foot.focus]
+ignore_tabs = false
+
+[app.terminal.foot.focus.internal_panes]
+enabled = true
+allowed_directions = ["north", "south"]
+
+[app.terminal.foot.move]
+ignore_tabs = false
+
+[app.terminal.foot.move.internal_panes]
+enabled = true
+allowed_directions = ["north", "south"]
+
+[app.terminal.foot.move.docking]
+snap_back = false
+
+[app.terminal.foot.move.docking.tear_off]
+enabled = true
+strategy = "always"
+
+[app.terminal.foot.resize.internal_panes]
+enabled = true
+allowed_directions = ["north", "south"]
+
+[app.terminal.alacritty]
+enabled = false
+anchor_app_window = false
+mux_backend = "zellij"
+host_tabs = "transparent"
+tear_off_scope = "mux_window"
+
+[app.terminal.alacritty.runtime]
+zellij_break_plugin = "/path/to/yeetnyoink-zellij-break.wasm"
+
+[app.terminal.alacritty.focus]
+ignore_tabs = true
+
+[app.terminal.alacritty.focus.internal_panes]
+enabled = false
+allowed_directions = ["west", "east"]
+
+[app.terminal.alacritty.move]
+ignore_tabs = true
+
+[app.terminal.alacritty.move.internal_panes]
+enabled = false
+allowed_directions = ["west", "east"]
+
+[app.terminal.alacritty.move.docking]
+snap_back = false
+
+[app.terminal.alacritty.move.docking.tear_off]
+enabled = false
+strategy = "once_it_neighbors_with_window_edge"
+
+[app.terminal.alacritty.resize.internal_panes]
+enabled = false
+allowed_directions = ["west", "east"]
+
+[app.terminal.ghostty]
+enabled = false
+anchor_app_window = true
+mux_backend = "tmux"
+host_tabs = "transparent"
+tear_off_scope = "mux_pane"
+
+[app.terminal.ghostty.focus]
+ignore_tabs = true
+
+[app.terminal.ghostty.focus.internal_panes]
+enabled = true
+allowed_directions = ["west", "east", "north", "south"]
+
+[app.terminal.ghostty.move]
+ignore_tabs = true
+
+[app.terminal.ghostty.move.internal_panes]
+enabled = true
+allowed_directions = ["west", "east", "north", "south"]
+
+[app.terminal.ghostty.move.docking]
+snap_back = true
+
+[app.terminal.ghostty.move.docking.tear_off]
+enabled = true
+strategy = "only_if_edgemost"
+
+[app.terminal.ghostty.resize.internal_panes]
+enabled = true
+allowed_directions = ["west", "east", "north", "south"]
+
+# ---------------------------------------------------------------------------
+# Editor profiles
+# ---------------------------------------------------------------------------
+
+[app.editor.neovim]
+enabled = false
+anchor_app_window = false
+manage_terminal = false
+tear_off_scope = "buffer" # buffer | window | workspace
+
+[app.editor.neovim.focus.internal_panes]
+enabled = true
+allowed_directions = ["west", "east", "north", "south"]
+
+[app.editor.neovim.move.internal_panes]
+enabled = true
+allowed_directions = ["west", "east", "north", "south"]
+
+[app.editor.neovim.move.docking]
+snap_back = true
+
+[app.editor.neovim.move.docking.tear_off]
+enabled = true
+strategy = "only_if_edgemost"
+
+[app.editor.neovim.resize.internal_panes]
+enabled = true
+allowed_directions = ["west", "east", "north", "south"]
+
+[app.editor.neovim.ui.terminal]
+app = "wezterm"
+mux_backend = "inherit" # inherit | inherited | tmux | zellij | wezterm | kitty
+
+[app.editor.neovim.ui.graphical]
+app = "neovide"
+
+[app.editor.emacs]
+enabled = false
+anchor_app_window = false
+manage_terminal = false
+tear_off_scope = "window"
+
+[app.editor.emacs.focus.internal_panes]
+enabled = true
+allowed_directions = ["west", "east", "north", "south"]
+
+[app.editor.emacs.move.internal_panes]
+enabled = true
+allowed_directions = ["west", "east"]
+
+[app.editor.emacs.move.docking]
+snap_back = true
+
+[app.editor.emacs.move.docking.tear_off]
+enabled = true
+strategy = "once_it_neighbors_with_window_edge"
+
+[app.editor.emacs.resize.internal_panes]
+enabled = true
+allowed_directions = ["west", "east", "north", "south"]
+
+[app.editor.emacs.ui.terminal]
+app = "kitty"
+mux_backend = "kitty"
+
+[app.editor.emacs.ui.graphical]
+app = "emacs"
+
+[app.editor.vscode]
+enabled = false
+anchor_app_window = true
+manage_terminal = true
+tear_off_scope = "workspace"
+
+[app.editor.vscode.runtime]
+remote_control_host = "127.0.0.1"
+remote_control_port = 3710
+state_file = "/tmp/yeetnyoink/vscode-state.json"
+focus_settle_ms = 50
+test_clipboard_file = "/tmp/yeetnyoink/vscode-clipboard.txt"
+
+[app.editor.vscode.focus.internal_panes]
+enabled = true
+allowed_directions = ["west", "east", "north", "south"]
+
+[app.editor.vscode.move.internal_panes]
+enabled = true
+allowed_directions = ["west", "east", "north", "south"]
+
+[app.editor.vscode.move.docking]
+snap_back = true
+
+[app.editor.vscode.move.docking.tear_off]
+enabled = true
+strategy = "always"
+
+[app.editor.vscode.resize.internal_panes]
+enabled = true
+allowed_directions = ["west", "east", "north", "south"]
+
+[app.editor.vscode.ui.terminal]
+app = "alacritty"
+mux_backend = "zellij"
+
+[app.editor.vscode.ui.graphical]
+app = "vscode"

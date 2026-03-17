@@ -407,11 +407,11 @@ impl Vscode {
     }
 
     fn remote_control_host() -> String {
-        config::vscode_remote_control_host()
+        config::vscode_remote_control_host(ADAPTER_ALIASES)
     }
 
     fn focus_settle_delay() -> Duration {
-        config::vscode_focus_settle_delay()
+        config::vscode_focus_settle_delay(ADAPTER_ALIASES)
     }
 
     fn parse_port(value: &str, source: &str) -> Result<u16> {
@@ -451,7 +451,7 @@ impl Vscode {
 
     fn candidate_ports(pid: u32) -> Result<Vec<u16>> {
         let _span = tracing::debug_span!("vscode.candidate_ports", pid = pid).entered();
-        if let Some(port) = config::vscode_remote_control_port() {
+        if let Some(port) = config::vscode_remote_control_port(ADAPTER_ALIASES) {
             return Ok(vec![port]);
         }
 
@@ -912,7 +912,7 @@ impl Vscode {
     }
 
     fn state_file_path() -> PathBuf {
-        if let Some(path) = config::vscode_state_file_path() {
+        if let Some(path) = config::vscode_state_file_path(ADAPTER_ALIASES) {
             return path;
         }
 
@@ -1007,7 +1007,7 @@ impl Vscode {
     }
 
     fn clipboard_file_override() -> Option<PathBuf> {
-        config::vscode_test_clipboard_file()
+        config::vscode_test_clipboard_file(ADAPTER_ALIASES)
     }
 
     fn read_clipboard_text() -> Result<String> {
@@ -1635,7 +1635,7 @@ impl TopologyHandler for Vscode {
 mod tests {
     use super::{
         EditorLayout, FocusSurface, LayoutSnapshot, Vscode, VscodeMergePreparation,
-        VscodeWindowState,
+        VscodeWindowState, ADAPTER_ALIASES,
     };
     use crate::config::{self, EditorTearOffScope};
     use crate::engine::contracts::{AppAdapter, MergePreparation, MoveDecision, TopologyHandler};
@@ -1658,12 +1658,21 @@ mod tests {
         std::env::temp_dir().join(format!("yeetnyoink-{label}-{stamp}"))
     }
 
-    fn update_vscode_runtime(mutator: impl FnOnce(&mut config::VscodeRuntimeConfig)) {
-        config::update(|cfg| mutator(&mut cfg.runtime.vscode));
+    fn update_vscode_runtime(mutator: impl FnOnce(&mut config::EditorRuntimeConfig)) {
+        config::update(|cfg| {
+            mutator(
+                &mut cfg
+                    .app
+                    .editor
+                    .entry("vscode".to_string())
+                    .or_default()
+                    .runtime,
+            )
+        });
     }
 
     fn set_focus_settle_immediate() -> Option<u64> {
-        let old = config::snapshot().runtime.vscode.focus_settle_ms;
+        let old = config::vscode_runtime(ADAPTER_ALIASES).and_then(|r| r.focus_settle_ms);
         update_vscode_runtime(|runtime| runtime.focus_settle_ms = Some(0));
         old
     }
@@ -1673,7 +1682,7 @@ mod tests {
     }
 
     fn set_remote_control_port(port: u16) -> Option<u16> {
-        let old = config::snapshot().runtime.vscode.remote_control_port;
+        let old = config::vscode_runtime(ADAPTER_ALIASES).and_then(|r| r.remote_control_port);
         update_vscode_runtime(|runtime| runtime.remote_control_port = Some(port));
         old
     }
@@ -1683,7 +1692,7 @@ mod tests {
     }
 
     fn set_state_file(path: &PathBuf) -> Option<PathBuf> {
-        let old = config::snapshot().runtime.vscode.state_file.clone();
+        let old = config::vscode_runtime(ADAPTER_ALIASES).and_then(|r| r.state_file.clone());
         update_vscode_runtime(|runtime| runtime.state_file = Some(path.clone()));
         old
     }
@@ -1718,9 +1727,7 @@ mod tests {
         }
         fs::write(&config_path, config).expect("config file should be written");
         let old = config::snapshot();
-        let runtime = old.runtime.clone();
         config::prepare_with_path(Some(&config_path)).expect("config should load");
-        config::update(|cfg| cfg.runtime = runtime);
         old
     }
 
@@ -1729,11 +1736,8 @@ mod tests {
     }
 
     fn set_clipboard_file(path: &PathBuf) -> Option<PathBuf> {
-        let old = config::snapshot()
-            .runtime
-            .vscode
-            .test_clipboard_file
-            .clone();
+        let old =
+            config::vscode_runtime(ADAPTER_ALIASES).and_then(|r| r.test_clipboard_file.clone());
         update_vscode_runtime(|runtime| runtime.test_clipboard_file = Some(path.clone()));
         old
     }

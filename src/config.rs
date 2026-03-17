@@ -42,7 +42,7 @@ pub struct Config {
     pub app: AppConfig,
 
     #[serde(default)]
-    pub runtime: RuntimeConfig,
+    pub instrumentation: InstrumentationConfig,
 }
 
 // ---------------------------------------------------------------------------
@@ -121,69 +121,74 @@ pub struct AppConfig {
 
     #[serde(default)]
     pub editor: HashMap<String, EditorAppConfig>,
+
+    #[serde(default)]
+    pub instrumentation: InstrumentationConfig,
 }
 
 // ---------------------------------------------------------------------------
-// Runtime config
+// Instrumentation config
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct InstrumentationConfig {
+    #[serde(default)]
+    pub logging: LoggingConfig,
+
+    #[serde(default)]
+    pub profiling: ProfilingConfig,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct LoggingConfig {
+    #[serde(default)]
+    pub quiet: bool,
+
+    #[serde(default)]
+    pub level: LogLevel,
+
+    #[serde(default)]
+    pub append_to_file: Option<PathBuf>,
+
+    #[serde(default)]
+    pub stream_to: LogStreamTo,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LogLevel {
+    Error,
+    #[default]
+    Info,
+    Debug,
+    Trace,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LogStreamTo {
+    #[default]
+    Stdout,
+    Stderr,
+    None,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct ProfilingConfig {
+    #[serde(default)]
+    pub dump_directory: Option<PathBuf>,
+
+    #[serde(default)]
+    pub enabled: bool,
+}
+
+// ---------------------------------------------------------------------------
+// Runtime config (DEPRECATED - fields moved to app.*.*.runtime)
 // ---------------------------------------------------------------------------
 
 pub const DEFAULT_VSCODE_REMOTE_CONTROL_HOST: &str = "127.0.0.1";
 pub const DEFAULT_VSCODE_REMOTE_CONTROL_PORT: u16 = 3710;
 pub const DEFAULT_VSCODE_FOCUS_SETTLE_MS: u64 = 50;
-
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-pub struct RuntimeConfig {
-    #[serde(default)]
-    pub logging: LoggingRuntimeConfig,
-
-    #[serde(default)]
-    pub browser_native: BrowserNativeRuntimeConfig,
-
-    #[serde(default)]
-    pub vscode: VscodeRuntimeConfig,
-
-    #[serde(default)]
-    pub zellij: ZellijRuntimeConfig,
-}
-
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-pub struct LoggingRuntimeConfig {
-    #[serde(default)]
-    pub debug: bool,
-}
-
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-pub struct BrowserNativeRuntimeConfig {
-    #[serde(default)]
-    pub chromium_socket_path: Option<PathBuf>,
-
-    #[serde(default)]
-    pub firefox_socket_path: Option<PathBuf>,
-}
-
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-pub struct VscodeRuntimeConfig {
-    #[serde(default)]
-    pub remote_control_host: Option<String>,
-
-    #[serde(default)]
-    pub remote_control_port: Option<u16>,
-
-    #[serde(default)]
-    pub state_file: Option<PathBuf>,
-
-    #[serde(default)]
-    pub focus_settle_ms: Option<u64>,
-
-    #[serde(default)]
-    pub test_clipboard_file: Option<PathBuf>,
-}
-
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-pub struct ZellijRuntimeConfig {
-    #[serde(default)]
-    pub break_plugin: Option<PathBuf>,
-}
 
 // ---------------------------------------------------------------------------
 // Shared docking config
@@ -378,6 +383,15 @@ pub struct BrowserAppConfig {
 
     #[serde(rename = "move", default)]
     pub movement: DirectionalBrowserMove,
+
+    #[serde(default)]
+    pub runtime: BrowserRuntimeConfig,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct BrowserRuntimeConfig {
+    #[serde(default)]
+    pub native_socket_path: Option<PathBuf>,
 }
 
 // ---------------------------------------------------------------------------
@@ -479,7 +493,7 @@ impl Default for TerminalMoveConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct TerminalAppConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -499,6 +513,15 @@ pub struct TerminalAppConfig {
     /// terminal-host-specific fields flattened into the same section.
     #[serde(flatten)]
     pub variant: TerminalVariantConfig,
+
+    #[serde(default)]
+    pub runtime: TerminalRuntimeConfig,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct TerminalRuntimeConfig {
+    #[serde(default)]
+    pub zellij_break_plugin: Option<PathBuf>,
 }
 
 /// Fields that differ per terminal emulator.
@@ -519,7 +542,7 @@ pub struct TerminalVariantConfig {
 // Editor app config
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct EditorAppConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -544,6 +567,27 @@ pub struct EditorAppConfig {
 
     #[serde(default)]
     pub tear_off_scope: EditorTearOffScope,
+
+    #[serde(default)]
+    pub runtime: EditorRuntimeConfig,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct EditorRuntimeConfig {
+    #[serde(default)]
+    pub remote_control_host: Option<String>,
+
+    #[serde(default)]
+    pub remote_control_port: Option<u16>,
+
+    #[serde(default)]
+    pub state_file: Option<PathBuf>,
+
+    #[serde(default)]
+    pub focus_settle_ms: Option<u64>,
+
+    #[serde(default)]
+    pub test_clipboard_file: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -705,10 +749,7 @@ fn resolve_config_path(explicit: Option<&Path>) -> Result<(PathBuf, bool)> {
 
     let strategy = choose_base_strategy().context("failed to resolve config directory")?;
     Ok((
-        strategy
-            .config_dir()
-            .join("yeetnyoink")
-            .join("config.toml"),
+        strategy.config_dir().join("yeetnyoink").join("config.toml"),
         false,
     ))
 }
@@ -756,23 +797,60 @@ pub fn update(mutator: impl FnOnce(&mut Config)) {
     }
 }
 
-pub fn logging_debug_enabled() -> bool {
-    read_config().runtime.logging.debug
+// ---------------------------------------------------------------------------
+// Instrumentation helpers
+// ---------------------------------------------------------------------------
+
+pub fn instrumentation_logging() -> LoggingConfig {
+    read_config().instrumentation.logging
 }
 
-pub fn chromium_native_socket_path() -> Option<PathBuf> {
-    read_config().runtime.browser_native.chromium_socket_path
+pub fn instrumentation_profiling() -> ProfilingConfig {
+    read_config().instrumentation.profiling
 }
 
-pub fn firefox_native_socket_path() -> Option<PathBuf> {
-    read_config().runtime.browser_native.firefox_socket_path
+pub fn logging_level() -> LogLevel {
+    read_config().instrumentation.logging.level
 }
 
-pub fn vscode_remote_control_host() -> String {
-    read_config()
-        .runtime
-        .vscode
-        .remote_control_host
+pub fn logging_quiet_enabled() -> bool {
+    read_config().instrumentation.logging.quiet
+}
+
+pub fn profiling_enabled() -> bool {
+    read_config().instrumentation.profiling.enabled
+}
+
+pub fn profiling_dump_directory() -> Option<PathBuf> {
+    read_config().instrumentation.profiling.dump_directory
+}
+
+// ---------------------------------------------------------------------------
+// App runtime helpers
+// ---------------------------------------------------------------------------
+
+pub fn browser_native_socket_path(aliases: &[&str]) -> Option<PathBuf> {
+    let cfg = read_config();
+    profile_by_aliases(&cfg.app.browser, aliases)
+        .and_then(|profile| profile.runtime.native_socket_path.clone())
+}
+
+pub fn chromium_native_socket_path(aliases: &[&str]) -> Option<PathBuf> {
+    browser_native_socket_path(aliases)
+}
+
+pub fn firefox_native_socket_path(aliases: &[&str]) -> Option<PathBuf> {
+    browser_native_socket_path(aliases)
+}
+
+pub fn vscode_runtime(aliases: &[&str]) -> Option<EditorRuntimeConfig> {
+    let cfg = read_config();
+    profile_by_aliases(&cfg.app.editor, aliases).map(|profile| profile.runtime.clone())
+}
+
+pub fn vscode_remote_control_host(aliases: &[&str]) -> String {
+    vscode_runtime(aliases)
+        .and_then(|runtime| runtime.remote_control_host)
         .and_then(|value| {
             let trimmed = value.trim().to_string();
             (!trimmed.is_empty()).then_some(trimmed)
@@ -780,34 +858,41 @@ pub fn vscode_remote_control_host() -> String {
         .unwrap_or_else(|| DEFAULT_VSCODE_REMOTE_CONTROL_HOST.to_string())
 }
 
-pub fn vscode_remote_control_port() -> Option<u16> {
-    read_config()
-        .runtime
-        .vscode
-        .remote_control_port
+pub fn vscode_remote_control_port(aliases: &[&str]) -> Option<u16> {
+    vscode_runtime(aliases)
+        .and_then(|runtime| runtime.remote_control_port)
         .filter(|port| *port > 0)
 }
 
-pub fn vscode_state_file_path() -> Option<PathBuf> {
-    read_config().runtime.vscode.state_file
+pub fn vscode_state_file_path(aliases: &[&str]) -> Option<PathBuf> {
+    vscode_runtime(aliases).and_then(|runtime| runtime.state_file)
 }
 
-pub fn vscode_focus_settle_delay() -> Duration {
+pub fn vscode_focus_settle_delay(aliases: &[&str]) -> Duration {
     Duration::from_millis(
-        read_config()
-            .runtime
-            .vscode
-            .focus_settle_ms
+        vscode_runtime(aliases)
+            .and_then(|runtime| runtime.focus_settle_ms)
             .unwrap_or(DEFAULT_VSCODE_FOCUS_SETTLE_MS),
     )
 }
 
-pub fn vscode_test_clipboard_file() -> Option<PathBuf> {
-    read_config().runtime.vscode.test_clipboard_file
+pub fn vscode_test_clipboard_file(aliases: &[&str]) -> Option<PathBuf> {
+    vscode_runtime(aliases).and_then(|runtime| runtime.test_clipboard_file)
 }
 
-pub fn zellij_break_plugin_path() -> Option<PathBuf> {
-    read_config().runtime.zellij.break_plugin
+pub fn terminal_zellij_break_plugin_path(aliases: &[&str]) -> Option<PathBuf> {
+    let cfg = read_config();
+    profile_by_aliases(&cfg.app.terminal, aliases)
+        .and_then(|profile| profile.runtime.zellij_break_plugin.clone())
+}
+
+pub fn any_terminal_zellij_break_plugin_path() -> Option<PathBuf> {
+    let cfg = read_config();
+    cfg.app
+        .terminal
+        .values()
+        .filter_map(|profile| profile.runtime.zellij_break_plugin.clone())
+        .next()
 }
 
 fn normalize_override(value: &str) -> Option<String> {
@@ -1772,4 +1857,13 @@ app = "wezterm"
             WmBackend::Yabai
         );
     }
+}
+
+#[test]
+fn repo_config_example_toml_parses() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("config.example.toml");
+    let raw = std::fs::read_to_string(&path)
+        .unwrap_or_else(|err| panic!("failed to read {}: {err}", path.display()));
+    let _: Config = toml::from_str(&raw)
+        .unwrap_or_else(|err| panic!("failed to parse {}: {err}", path.display()));
 }

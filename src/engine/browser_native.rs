@@ -24,7 +24,8 @@ const ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct NativeBrowserDescriptor {
-    pub socket_path_override: fn() -> Option<PathBuf>,
+    pub socket_path_override: fn(&[&str]) -> Option<PathBuf>,
+    pub aliases: &'static [&'static str],
     pub socket_basename: &'static str,
     pub unavailable_browser_hint: &'static str,
 }
@@ -426,7 +427,7 @@ impl HostState {
 }
 
 pub(crate) fn browser_bridge_socket_path(config: &NativeBrowserDescriptor) -> PathBuf {
-    if let Some(value) = (config.socket_path_override)() {
+    if let Some(value) = (config.socket_path_override)(config.aliases) {
         return value;
     }
 

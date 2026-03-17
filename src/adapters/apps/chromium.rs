@@ -33,6 +33,7 @@ pub const CHROMIUM_NATIVE_HOST_NAME: &str = "com.yeetnyoink.chromium_bridge";
 
 const NATIVE_BRIDGE: NativeBrowserDescriptor = NativeBrowserDescriptor {
     socket_path_override: crate::config::chromium_native_socket_path,
+    aliases: ADAPTER_ALIASES,
     socket_basename: "chromium-bridge.sock",
     unavailable_browser_hint:
         "Install/enable the yeetnyoink Chromium browser extension and keep Brave/Chromium running.",
@@ -250,9 +251,14 @@ mod tests {
                 }
             });
 
-            let old_socket = crate::config::chromium_native_socket_path();
+            let old_socket = crate::config::chromium_native_socket_path(ADAPTER_ALIASES);
             crate::config::update(|cfg| {
-                cfg.runtime.browser_native.chromium_socket_path = Some(socket_path.clone());
+                cfg.app
+                    .browser
+                    .entry("chromium".to_string())
+                    .or_default()
+                    .runtime
+                    .native_socket_path = Some(socket_path.clone());
             });
 
             Self {
@@ -279,7 +285,12 @@ mod tests {
             }
             let _ = std::fs::remove_file(&self.socket_path);
             crate::config::update(|cfg| {
-                cfg.runtime.browser_native.chromium_socket_path = self.old_socket.clone();
+                cfg.app
+                    .browser
+                    .entry("chromium".to_string())
+                    .or_default()
+                    .runtime
+                    .native_socket_path = self.old_socket.clone();
             });
             assert!(
                 self.queue.lock().expect("queue mutex poisoned").is_empty(),
