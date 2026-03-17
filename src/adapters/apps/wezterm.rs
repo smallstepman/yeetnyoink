@@ -449,9 +449,9 @@ mux_backend = "wezterm"
         }
 
         fn with_config(pid: u32, config_toml: &str) -> Self {
+            crate::adapters::terminal_multiplexers::wezterm::WeztermMux::clear_query_cache_for_tests();
             let unique = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-            let base =
-                std::env::temp_dir().join(format!("yeetnyoink-wezterm-test-{pid}-{unique}"));
+            let base = std::env::temp_dir().join(format!("yeetnyoink-wezterm-test-{pid}-{unique}"));
             let bin_dir = base.join("bin");
             let runtime_dir = base.join("runtime");
             let responses_dir = base.join("responses");
@@ -594,6 +594,7 @@ exit "$status"
 
     impl Drop for WeztermHarness {
         fn drop(&mut self) {
+            crate::adapters::terminal_multiplexers::wezterm::WeztermMux::clear_query_cache_for_tests();
             if let Some(value) = &self.old_path {
                 std::env::set_var("PATH", value);
             } else {
@@ -650,6 +651,59 @@ exit "$status"
 
         let fg = WeztermBackend::mux_provider().active_foreground_process(pid);
         assert_eq!(fg.as_deref(), Some("tmux"));
+    }
+
+    #[test]
+    fn reuses_cached_wezterm_pane_queries_across_snapshot_reads() {
+        let _env_guard = env_guard();
+        let pid = 4343;
+        let harness = WeztermHarness::new(pid);
+
+        harness.set_response(
+            "list --format json",
+            0,
+            r#"
+            [
+              {"pane_id":11,"tab_id":1,"is_active":true,"foreground_process_name":"bash"},
+              {"pane_id":42,"tab_id":2,"is_active":true,"foreground_process_name":"tmux"}
+            ]
+            "#,
+            "",
+        );
+        harness.set_response(
+            "list-clients --format json",
+            0,
+            r#"[{"pid":9999,"focused_pane_id":11},{"pid":4343,"focused_pane_id":42}]"#,
+            "",
+        );
+
+        let mux = WeztermBackend::mux_provider();
+        assert_eq!(mux.active_foreground_process(pid).as_deref(), Some("tmux"));
+        assert_eq!(
+            mux.list_panes_for_pid(pid)
+                .expect("pane list should be available")
+                .len(),
+            2
+        );
+        assert_eq!(
+            mux.focused_pane_for_pid(pid)
+                .expect("focused pane should be available"),
+            42
+        );
+
+        let log = harness.command_log();
+        assert_eq!(
+            log.lines()
+                .filter(|line| *line == "list --format json")
+                .count(),
+            1
+        );
+        assert_eq!(
+            log.lines()
+                .filter(|line| *line == "list-clients --format json")
+                .count(),
+            2
+        );
     }
 
     #[test]
@@ -939,6 +993,128 @@ host_tabs = "native_full"
             .move_out(Direction::East, pid)
             .expect("move_out should succeed");
         assert!(tear.spawn_command.is_none());
+    }
+
+    #[test]
+    fn mutating_wezterm_commands_invalidate_cached_snapshots() {
+        let _env_guard = env_guard();
+        let pid = 8485;
+        let harness = WeztermHarness::new(pid);
+
+        harness.set_response(
+            "list --format json",
+            0,
+            r#"[{"pane_id":77,"tab_id":4,"is_active":true,"foreground_process_name":"zsh"}]"#,
+            "",
+        );
+        harness.set_response(
+            "list-clients --format json",
+            0,
+            r#"[{"pid":8485,"focused_pane_id":77}]"#,
+            "",
+        );
+
+        let mux = WeztermBackend::mux_provider();
+        assert_eq!(
+            mux.focused_pane_for_pid(pid)
+                .expect("focused pane should be cached"),
+            77
+        );
+        assert_eq!(
+            mux.list_panes_for_pid(pid)
+                .expect("pane list should be cached")[0]
+                .pane_id,
+            77
+        );
+
+        harness.set_response("move-pane-to-new-tab --new-window --pane-id 77", 0, "", "");
+        harness.set_response(
+            "list --format json",
+            0,
+            r#"[{"pane_id":88,"tab_id":5,"is_active":true,"foreground_process_name":"zsh"}]"#,
+            "",
+        );
+        harness.set_response(
+            "list-clients --format json",
+            0,
+            r#"[{"pid":8485,"focused_pane_id":88}]"#,
+            "",
+        );
+
+        mux.move_out(Direction::East, pid)
+            .expect("move_out should invalidate cached snapshots");
+        assert_eq!(
+            mux.list_panes_for_pid(pid)
+                .expect("pane list should be refreshed after mutation")[0]
+                .pane_id,
+            88
+        );
+
+        let log = harness.command_log();
+        assert_eq!(
+            log.lines()
+                .filter(|line| *line == "list --format json")
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn merge_uses_fresh_client_focus_after_same_pid_focus_hop() {
+        let _env_guard = env_guard();
+        let pid = 9909;
+        let harness = WeztermHarness::new(pid);
+
+        harness.set_response(
+            "list --format json",
+            0,
+            r#"[
+              {"window_id":0,"pane_id":2,"tab_id":6,"is_active":true,"foreground_process_name":"zsh"},
+              {"window_id":0,"pane_id":10,"tab_id":13,"is_active":true,"foreground_process_name":"zsh"},
+              {"window_id":0,"pane_id":11,"tab_id":14,"is_active":true,"foreground_process_name":"zsh"},
+              {"window_id":10,"pane_id":12,"tab_id":20,"is_active":true,"foreground_process_name":"zsh"}
+            ]"#,
+            "",
+        );
+        harness.set_response(
+            "list-clients --format json",
+            0,
+            r#"[{"pid":9909,"focused_pane_id":12}]"#,
+            "",
+        );
+
+        let mux = WeztermBackend::mux_provider();
+        assert_eq!(
+            mux.focused_pane_for_pid(pid)
+                .expect("initial focused pane should be available"),
+            12
+        );
+        assert_eq!(
+            mux.list_panes_for_pid(pid)
+                .expect("pane list should be available")
+                .len(),
+            4
+        );
+
+        harness.set_response(
+            "list-clients --format json",
+            0,
+            r#"[{"pid":9909,"focused_pane_id":11}]"#,
+            "",
+        );
+        harness.set_response("split-pane --pane-id 11 --top --move-pane-id 12", 0, "", "");
+
+        mux.merge_source_pane_into_focused_target(pid, 12, pid, Some(9), Direction::South)
+            .expect("merge should use fresh focused client pane after focus hop");
+
+        let log = harness.command_log();
+        assert!(log.contains("split-pane --pane-id 11 --top --move-pane-id 12"));
+        assert_eq!(
+            log.lines()
+                .filter(|line| *line == "list-clients --format json")
+                .count(),
+            2
+        );
     }
 
     #[test]

@@ -1,3 +1,5 @@
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
@@ -13,7 +15,7 @@ use crate::engine::runtime::{self, ProcessId};
 use crate::engine::topology::{Direction, DirectionalNeighbors};
 use crate::logging;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct WeztermMuxPane {
     #[serde(default)]
     window_id: u64,
@@ -27,10 +29,20 @@ struct WeztermMuxPane {
     tty_name: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct WeztermMuxClient {
     pid: u32,
     focused_pane_id: u64,
+}
+
+#[derive(Debug, Clone, Default)]
+struct WeztermMuxQueryCache {
+    panes: Option<Vec<WeztermMuxPane>>,
+}
+
+thread_local! {
+    static WEZTERM_QUERY_CACHE: RefCell<HashMap<u32, WeztermMuxQueryCache>> =
+        RefCell::new(HashMap::new());
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,11 +72,25 @@ struct WeztermHostTab {
 
 impl WeztermMux {
     fn raw_panes_for_pid(&self, pid: u32) -> Result<Vec<WeztermMuxPane>> {
-        self.cli_json_for_pid(
+        if let Some(panes) = WEZTERM_QUERY_CACHE.with(|cache| {
+            cache
+                .borrow()
+                .get(&pid)
+                .and_then(|entry| entry.panes.clone())
+        }) {
+            logging::debug(format!("wezterm: pid={} pane list cache hit", pid));
+            return Ok(panes);
+        }
+
+        let panes: Vec<WeztermMuxPane> = self.cli_json_for_pid(
             pid,
             &["list", "--format", "json"],
             "failed to parse wezterm pane list json",
-        )
+        )?;
+        WEZTERM_QUERY_CACHE.with(|cache| {
+            cache.borrow_mut().entry(pid).or_default().panes = Some(panes.clone());
+        });
+        Ok(panes)
     }
 
     fn normalized_process_name(name: &str) -> Option<String> {
@@ -118,7 +144,29 @@ impl WeztermMux {
             return Ok(vec![]);
         }
 
-        serde_json::from_str(&stdout).context("failed to parse wezterm client list json")
+        let clients: Vec<WeztermMuxClient> =
+            serde_json::from_str(&stdout).context("failed to parse wezterm client list json")?;
+        Ok(clients)
+    }
+
+    fn preserves_query_cache(args: &[&str]) -> bool {
+        matches!(
+            args,
+            ["list", "--format", "json"]
+                | ["list-clients", "--format", "json"]
+                | ["get-pane-direction", ..]
+        )
+    }
+
+    fn invalidate_query_cache(&self, pid: u32) {
+        WEZTERM_QUERY_CACHE.with(|cache| {
+            cache.borrow_mut().remove(&pid);
+        });
+    }
+
+    #[cfg(test)]
+    pub(crate) fn clear_query_cache_for_tests() {
+        WEZTERM_QUERY_CACHE.with(|cache| cache.borrow_mut().clear());
     }
 
     fn select_client_focused_pane<F>(
@@ -357,6 +405,9 @@ impl TerminalMultiplexerProvider for WeztermMux {
         if !sock_path.exists() {
             bail!("wezterm socket not found: {}", sock_path.display());
         }
+        if !Self::preserves_query_cache(args) {
+            self.invalidate_query_cache(pid);
+        }
         let sock = sock_path.to_string_lossy().to_string();
         logging::debug(format!(
             "wezterm: pid={} cli {:?} via WEZTERM_UNIX_SOCKET",
@@ -522,6 +573,7 @@ impl TerminalMultiplexerProvider for WeztermMux {
             const POLL_DELAY: Duration = Duration::from_millis(10);
             let mut transitioned_pane = None;
             for attempt in 0..POLL_ATTEMPTS {
+                self.invalidate_query_cache(target_pid);
                 let panes = self.list_panes_for_pid(target_pid)?;
                 let clients = self.list_clients(target_pid)?;
                 let pane_exists = |pane_id: u64| panes.iter().any(|p| p.pane_id == pane_id);

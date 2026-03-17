@@ -5,7 +5,7 @@ use crate::engine::contracts::{
     TearResult, TopologyHandler,
 };
 use crate::engine::runtime::{self, CommandContext, ProcessId};
-use crate::engine::topology::Direction;
+use crate::engine::topology::{Direction, DirectionalNeighbors, MoveSurface};
 
 pub struct EmacsBackend;
 pub const APP_IDS: &[&str] = &["emacs", "Emacs", "org.gnu.emacs"];
@@ -14,6 +14,12 @@ pub const ADAPTER_ALIASES: &[&str] = &["emacs", "editor"];
 
 struct EmacsMergePreparation {
     frame_id: String,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct EmacsMoveSurface {
+    window_count: u32,
+    neighbors: DirectionalNeighbors,
 }
 
 fn emacs_eval(expr: &str) -> Result<String> {
@@ -53,8 +59,59 @@ fn eval_in_frame_mut(body: &str) -> Result<String> {
         "(let* ((--f (car (filtered-frame-list (lambda (f) (frame-focus-state f))))) \
                 (--w (and --f (frame-selected-window --f)))) \
            (if --w (progn (select-frame-set-input-focus --f) (select-window --w) {body}) \
-             (error \"no focused frame\")))"
+              (error \"no focused frame\")))"
     ))
+}
+
+fn parse_emacs_bool(value: &str) -> Result<bool> {
+    match value {
+        "t" => Ok(true),
+        "nil" => Ok(false),
+        other => bail!("unexpected emacs boolean value: {other}"),
+    }
+}
+
+fn move_surface_snapshot() -> Result<EmacsMoveSurface> {
+    let raw = eval_in_frame(
+        "(let* ((selected (selected-window)) \
+                (count (length (window-list nil 'no-minibuf))) \
+                (movable (lambda (dir) \
+                           (let ((w (window-in-direction dir selected nil nil nil))) \
+                             (and w \
+                                  (not (window-minibuffer-p w)) \
+                                  (not (window-parameter w 'window-side)) \
+                                  (not (eq (window-dedicated-p w) 'popup)) \
+                                  (not (and (fboundp '+popup-window-p) (+popup-window-p w))))))) \
+                (left (funcall movable 'left)) \
+                (right (funcall movable 'right)) \
+                (up (funcall movable 'above)) \
+                (down (funcall movable 'below))) \
+           (format \"yeetnyoink-move-surface|%s|%s|%s|%s|%s\" count left right up down))",
+    )?;
+    let raw = raw.trim().trim_matches('"');
+    let mut parts = raw.split('|');
+    let marker = parts.next().unwrap_or_default();
+    if marker != "yeetnyoink-move-surface" {
+        bail!("unexpected emacs move surface payload: {raw}");
+    }
+    let count = parts
+        .next()
+        .context("missing emacs move surface window_count")?
+        .parse()
+        .context("invalid emacs move surface window_count")?;
+    let neighbors = DirectionalNeighbors {
+        west: parse_emacs_bool(parts.next().context("missing emacs move surface left")?)?,
+        east: parse_emacs_bool(parts.next().context("missing emacs move surface right")?)?,
+        north: parse_emacs_bool(parts.next().context("missing emacs move surface up")?)?,
+        south: parse_emacs_bool(parts.next().context("missing emacs move surface down")?)?,
+    };
+    if parts.next().is_some() {
+        bail!("unexpected trailing emacs move surface fields: {raw}");
+    }
+    Ok(EmacsMoveSurface {
+        window_count: count,
+        neighbors,
+    })
 }
 
 impl AppAdapter for EmacsBackend {
@@ -101,6 +158,15 @@ impl TopologyHandler for EmacsBackend {
 
     fn can_focus(&self, dir: Direction, pid: u32) -> Result<bool> {
         Ok(!self.at_side(dir, pid)?)
+    }
+
+    fn move_surface(&self, _pid: u32) -> Result<MoveSurface> {
+        let surface = move_surface_snapshot()?;
+        Ok(MoveSurface {
+            pane_count: surface.window_count,
+            neighbors: surface.neighbors,
+            supports_rearrange: self.supports_rearrange_decision(),
+        })
     }
 
     fn move_decision(&self, dir: Direction, pid: u32) -> Result<MoveDecision> {
@@ -330,9 +396,14 @@ mod tests {
 
     struct EmacsHarness {
         base: PathBuf,
+        log_file: PathBuf,
         old_path: Option<OsString>,
         old_log_file: Option<OsString>,
         old_window_count: Option<OsString>,
+        old_move_left: Option<OsString>,
+        old_move_right: Option<OsString>,
+        old_move_up: Option<OsString>,
+        old_move_down: Option<OsString>,
         old_left: Option<OsString>,
         old_right: Option<OsString>,
         old_top: Option<OsString>,
@@ -358,6 +429,14 @@ set -eu
 expr="${2-}"
 printf '%s\n' "$expr" >> "${EMACS_TEST_LOG}"
 case "$expr" in
+  *"yeetnyoink-move-surface"*)
+    printf '"yeetnyoink-move-surface|%s|%s|%s|%s|%s"\n' \
+      "${EMACS_TEST_WINDOW_COUNT:-1}" \
+      "${EMACS_TEST_MOVE_LEFT:-nil}" \
+      "${EMACS_TEST_MOVE_RIGHT:-nil}" \
+      "${EMACS_TEST_MOVE_UP:-nil}" \
+      "${EMACS_TEST_MOVE_DOWN:-nil}"
+    ;;
   *"(length (window-list nil 'no-minibuf))"*)
     printf '%s\n' "${EMACS_TEST_WINDOW_COUNT:-1}"
     ;;
@@ -391,6 +470,10 @@ esac
             let old_path = std::env::var_os("PATH");
             let old_log_file = std::env::var_os("EMACS_TEST_LOG");
             let old_window_count = std::env::var_os("EMACS_TEST_WINDOW_COUNT");
+            let old_move_left = std::env::var_os("EMACS_TEST_MOVE_LEFT");
+            let old_move_right = std::env::var_os("EMACS_TEST_MOVE_RIGHT");
+            let old_move_up = std::env::var_os("EMACS_TEST_MOVE_UP");
+            let old_move_down = std::env::var_os("EMACS_TEST_MOVE_DOWN");
             let old_left = std::env::var_os("EMACS_TEST_AT_LEFT");
             let old_right = std::env::var_os("EMACS_TEST_AT_RIGHT");
             let old_top = std::env::var_os("EMACS_TEST_AT_TOP");
@@ -406,9 +489,14 @@ esac
 
             Self {
                 base,
+                log_file,
                 old_path,
                 old_log_file,
                 old_window_count,
+                old_move_left,
+                old_move_right,
+                old_move_up,
+                old_move_down,
                 old_left,
                 old_right,
                 old_top,
@@ -429,6 +517,20 @@ esac
             };
             std::env::set_var(key, if at_side { "t" } else { "nil" });
         }
+
+        fn set_move_neighbor(&self, dir: Direction, exists: bool) {
+            let key = match dir {
+                Direction::West => "EMACS_TEST_MOVE_LEFT",
+                Direction::East => "EMACS_TEST_MOVE_RIGHT",
+                Direction::North => "EMACS_TEST_MOVE_UP",
+                Direction::South => "EMACS_TEST_MOVE_DOWN",
+            };
+            std::env::set_var(key, if exists { "t" } else { "nil" });
+        }
+
+        fn command_log(&self) -> String {
+            fs::read_to_string(&self.log_file).unwrap_or_default()
+        }
     }
 
     impl Drop for EmacsHarness {
@@ -447,6 +549,10 @@ esac
 
             for (key, value) in [
                 ("EMACS_TEST_WINDOW_COUNT", self.old_window_count.as_ref()),
+                ("EMACS_TEST_MOVE_LEFT", self.old_move_left.as_ref()),
+                ("EMACS_TEST_MOVE_RIGHT", self.old_move_right.as_ref()),
+                ("EMACS_TEST_MOVE_UP", self.old_move_up.as_ref()),
+                ("EMACS_TEST_MOVE_DOWN", self.old_move_down.as_ref()),
                 ("EMACS_TEST_AT_LEFT", self.old_left.as_ref()),
                 ("EMACS_TEST_AT_RIGHT", self.old_right.as_ref()),
                 ("EMACS_TEST_AT_TOP", self.old_top.as_ref()),
@@ -487,10 +593,9 @@ esac
         let _guard = env_guard();
         let harness = EmacsHarness::new();
         harness.set_window_count(4);
-        harness.set_at_side(Direction::East, true);
-        harness.set_at_side(Direction::West, false);
-        harness.set_at_side(Direction::North, false);
-        harness.set_at_side(Direction::South, false);
+        harness.set_move_neighbor(Direction::East, false);
+        harness.set_move_neighbor(Direction::North, true);
+        harness.set_move_neighbor(Direction::South, true);
 
         let app = EmacsBackend;
         let decision = app
@@ -498,5 +603,47 @@ esac
             .expect("move_decision should succeed");
         assert_eq!(decision, MoveDecision::TearOut);
         assert!(!TopologyHandler::supports_rearrange_decision(&app));
+    }
+
+    #[test]
+    fn move_decision_batches_emacs_topology_query_into_one_eval() {
+        let _guard = env_guard();
+        let harness = EmacsHarness::new();
+        harness.set_window_count(3);
+        harness.set_move_neighbor(Direction::East, false);
+        harness.set_move_neighbor(Direction::North, true);
+
+        let app = EmacsBackend;
+        let decision = app
+            .move_decision(Direction::East, 0)
+            .expect("move_decision should succeed");
+        assert_eq!(decision, MoveDecision::TearOut);
+
+        let log = harness.command_log();
+        assert_eq!(
+            log.lines().count(),
+            1,
+            "move_decision should use a single emacsclient round-trip: {log}"
+        );
+        assert!(
+            log.contains("yeetnyoink-move-surface"),
+            "batched topology query should use the pane surface payload: {log}"
+        );
+    }
+
+    #[test]
+    fn move_decision_tears_out_when_popup_breaks_swap_target() {
+        let _guard = env_guard();
+        let harness = EmacsHarness::new();
+        harness.set_window_count(3);
+        harness.set_at_side(Direction::South, false);
+        harness.set_move_neighbor(Direction::South, false);
+        harness.set_move_neighbor(Direction::North, true);
+
+        let app = EmacsBackend;
+        let decision = app
+            .move_decision(Direction::South, 0)
+            .expect("move_decision should succeed");
+        assert_eq!(decision, MoveDecision::TearOut);
     }
 }
