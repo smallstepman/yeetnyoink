@@ -1,3 +1,7 @@
 target/
 .DS_Store
 .worktrees/
+site-dist/
+site/remotion/node_modules/
+site/assets/generated/**/*.mp4
+/.agent-shell/

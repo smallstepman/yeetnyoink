@@ -1,0 +1,13 @@
+<svg width="1280" height="720" viewBox="0 0 1280 720" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="1280" height="720" rx="48" fill="#171B24"/>
+  <rect x="120" y="120" width="560" height="420" rx="32" fill="#F4F1EA"/>
+  <rect x="180" y="190" width="190" height="130" rx="20" fill="#DBE1FF"/>
+  <rect x="390" y="190" width="230" height="130" rx="20" fill="#5E67FF"/>
+  <rect x="180" y="340" width="440" height="140" rx="20" fill="#202737"/>
+  <rect x="760" y="180" width="380" height="300" rx="32" fill="#F4F1EA"/>
+  <rect x="820" y="240" width="260" height="180" rx="24" fill="#7CE3C2"/>
+  <path d="M650 300H760" stroke="#7CE3C2" stroke-width="18" stroke-linecap="round"/>
+  <path d="M730 268L770 300L730 332" stroke="#7CE3C2" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="120" y="610" fill="#F4F1EA" font-family="Inter, sans-serif" font-size="56" font-weight="700">Focus routing</text>
+  <text x="120" y="660" fill="#A9B1C8" font-family="Inter, sans-serif" font-size="28">Stay in the pane graph, then cross the window edge.</text>
+</svg>

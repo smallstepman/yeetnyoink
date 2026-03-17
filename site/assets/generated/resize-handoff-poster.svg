@@ -1,0 +1,11 @@
+<svg width="1280" height="720" viewBox="0 0 1280 720" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="1280" height="720" rx="48" fill="#171B24"/>
+  <rect x="170" y="150" width="860" height="400" rx="32" fill="#F4F1EA"/>
+  <rect x="240" y="220" width="420" height="260" rx="24" fill="#5E67FF"/>
+  <rect x="690" y="220" width="270" height="260" rx="24" fill="#202737"/>
+  <path d="M1030 350H1140" stroke="#7CE3C2" stroke-width="18" stroke-linecap="round"/>
+  <path d="M1110 318L1150 350L1110 382" stroke="#7CE3C2" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M660 180V520" stroke="#7CE3C2" stroke-width="12" stroke-dasharray="18 18"/>
+  <text x="120" y="610" fill="#F4F1EA" font-family="Inter, sans-serif" font-size="56" font-weight="700">Resize handoff</text>
+  <text x="120" y="660" fill="#A9B1C8" font-family="Inter, sans-serif" font-size="28">Grow the split first, then hand off to the window edge.</text>
+</svg>

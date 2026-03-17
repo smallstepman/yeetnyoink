@@ -1,0 +1,73 @@
+name: docs-pages
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/docs-pages.yml"
+      - "scripts/build-docs.py"
+      - "scripts/docs-manifest.mjs"
+      - "site/**"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/docs-pages.yml"
+      - "scripts/build-docs.py"
+      - "scripts/docs-manifest.mjs"
+      - "site/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install animation dependencies
+        working-directory: site/remotion
+        run: npm install --no-fund --no-audit
+
+      - name: Render Remotion animations
+        working-directory: site/remotion
+        run: npm run render
+
+      - name: Build static docs artifact
+        run: python3 scripts/build-docs.py --out-dir site-dist --require-rendered-videos
+
+      - name: Configure GitHub Pages
+        if: github.event_name != 'pull_request'
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site-dist
+
+  deploy:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

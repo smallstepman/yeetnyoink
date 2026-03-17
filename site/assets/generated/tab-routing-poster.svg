@@ -1,0 +1,13 @@
+<svg width="1280" height="720" viewBox="0 0 1280 720" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="1280" height="720" rx="48" fill="#171B24"/>
+  <rect x="160" y="150" width="960" height="400" rx="32" fill="#F4F1EA"/>
+  <rect x="220" y="200" width="180" height="72" rx="20" fill="#DBE1FF"/>
+  <rect x="420" y="200" width="180" height="72" rx="20" fill="#5E67FF"/>
+  <rect x="620" y="200" width="180" height="72" rx="20" fill="#DBE1FF"/>
+  <rect x="820" y="200" width="180" height="72" rx="20" fill="#DBE1FF"/>
+  <rect x="250" y="320" width="770" height="160" rx="24" fill="#202737"/>
+  <path d="M420 236H560" stroke="#7CE3C2" stroke-width="18" stroke-linecap="round"/>
+  <path d="M530 204L570 236L530 268" stroke="#7CE3C2" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="120" y="610" fill="#F4F1EA" font-family="Inter, sans-serif" font-size="56" font-weight="700">Tab-aware routing</text>
+  <text x="120" y="660" fill="#A9B1C8" font-family="Inter, sans-serif" font-size="28">Directional intent can map to browser or host tabs.</text>
+</svg>

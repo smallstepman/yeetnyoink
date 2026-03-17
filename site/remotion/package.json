@@ -1,0 +1,16 @@
+{
+  "name": "yeetnyoink-docs-animations",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "render": "node src/render-all.mjs"
+  },
+  "dependencies": {
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "remotion": "4.0.330"
+  },
+  "devDependencies": {
+    "@remotion/cli": "4.0.330"
+  }
+}
