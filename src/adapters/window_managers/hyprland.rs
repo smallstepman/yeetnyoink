@@ -172,6 +172,8 @@ impl WindowManagerSession for HyprlandAdapter {
     }
 
     fn spawn(&mut self, command: Vec<String>) -> Result<()> {
+        // Guard against accidental empty command vectors.
+        anyhow::ensure!(!command.is_empty(), "spawn command must not be empty");
         let joined = command.iter().map(|arg| shell_quote(arg)).collect::<Vec<_>>().join(" ");
         self.transport.execute(
             "spawn",
@@ -470,6 +472,14 @@ mod tests {
             calls.as_slice(),
             &[vec!["dispatch", "exec", "bash -c 'echo hello world'"]]
         );
+    }
+
+    #[test]
+    fn hyprland_spawn_errors_on_empty_command() {
+        let (mut adapter, _calls) = test_adapter();
+        let res = adapter.spawn(vec![]);
+        assert!(res.is_err());
+        assert!(res.unwrap_err().to_string().contains("must not be empty"));
     }
 
     #[test]
