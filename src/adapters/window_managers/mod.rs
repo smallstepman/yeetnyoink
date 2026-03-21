@@ -39,6 +39,7 @@ use crate::adapters::window_managers::paneru::PANERU_SPEC;
 use crate::adapters::window_managers::yabai::YABAI_SPEC;
 use crate::config::WmBackend;
 use crate::engine::wm::configured::WindowManagerSpec;
+#[cfg(not(target_os = "linux"))]
 pub(crate) use crate::engine::wm::configured::UNSUPPORTED_I3_SPEC;
 #[cfg(not(target_os = "linux"))]
 pub(crate) use crate::engine::wm::configured::UNSUPPORTED_NIRI_SPEC;
