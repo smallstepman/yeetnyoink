@@ -5,7 +5,6 @@
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
-use std::any::Any;
 
 use crate::config::WmBackend;
 use crate::engine::runtime::ProcessId;
@@ -46,7 +45,6 @@ impl WindowManagerSpec for HyprlandSpec {
 /// Default runtime uses real hyprctl; tests inject a mock transport.
 pub trait HyprlandTransport: Send {
     fn execute(&mut self, args: Vec<String>) -> Result<String>;
-    fn as_any_mut(&mut self) -> &mut dyn Any;
 }
 
 /// Real transport: executes `hyprctl` with arguments.
@@ -65,10 +63,6 @@ impl HyprlandTransport for RealTransport {
             );
         }
         Ok(String::from_utf8(output.stdout)?)
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn Any {
-        self
     }
 }
 
@@ -110,6 +104,12 @@ impl WindowManagerSession for HyprlandAdapter {
         let output = self.transport.execute(vec!["-j".into(), "activewindow".into()])?;
         let active: HyprlandClient = serde_json::from_str(&output)
             .context("failed to parse activewindow JSON")?;
+        
+        // Check if this is the null sentinel (empty workspace case)
+        if is_null_activewindow(&active) {
+            anyhow::bail!("no focused window");
+        }
+        
         let id = parse_window_address(&active.address)?;
         let pid = active.process_id();
         Ok(FocusedWindowRecord {
@@ -210,7 +210,13 @@ pub fn parse_clients_with_focus(
 ) -> Result<Vec<WindowRecord>> {
     let active: HyprlandClient = serde_json::from_str(active_json)
         .context("failed to parse active window JSON")?;
-    let active_addr = parse_window_address(&active.address)?;
+    
+    // Determine the focused window ID, if any
+    let active_addr = if is_null_activewindow(&active) {
+        None
+    } else {
+        Some(parse_window_address(&active.address)?)
+    };
 
     let clients: Vec<HyprlandClient> = serde_json::from_str(clients_json)
         .context("failed to parse clients JSON")?;
@@ -220,8 +226,12 @@ pub fn parse_clients_with_focus(
         if client.mapped == Some(false) {
             continue;
         }
+        // Skip the null sentinel if it appears in the clients list
+        if is_null_activewindow(&client) {
+            continue;
+        }
         let id = parse_window_address(&client.address)?;
-        let is_focused = id == active_addr;
+        let is_focused = active_addr == Some(id);
         let pid = client.process_id();
         windows.push(WindowRecord {
             id,
@@ -233,6 +243,12 @@ pub fn parse_clients_with_focus(
         });
     }
     Ok(windows)
+}
+
+/// Returns true if the client represents Hyprland's null activewindow sentinel
+/// (appears on empty workspaces with address "((null))" and mapped = false).
+fn is_null_activewindow(client: &HyprlandClient) -> bool {
+    client.address.contains("((null))") && client.mapped == Some(false)
 }
 
 // Hyprland (Wayland compositor) uses a coordinate system where the Y axis
@@ -279,17 +295,15 @@ mod tests {
     use super::*;
     use crate::engine::topology::Direction;
     use crate::engine::wm::ResizeKind;
-    use std::any::Any;
-    use std::cell::RefCell;
 
     #[derive(Default)]
     struct MockTransport {
-        calls: RefCell<Vec<Vec<String>>>,
+        calls: Vec<Vec<String>>,
     }
 
     impl HyprlandTransport for MockTransport {
         fn execute(&mut self, args: Vec<String>) -> Result<String> {
-            self.calls.borrow_mut().push(args.clone());
+            self.calls.push(args.clone());
             // dispatch commands don't need a response
             if args.first().map(|s| s.as_str()) == Some("dispatch") {
                 Ok(String::new())
@@ -297,25 +311,32 @@ mod tests {
                 anyhow::bail!("unexpected non-dispatch command in mock: {:?}", args)
             }
         }
+    }
 
-        fn as_any_mut(&mut self) -> &mut dyn Any {
-            self
-        }
+    fn test_adapter_with_transport(transport: MockTransport) -> (HyprlandAdapter, MockTransport) {
+        let calls = transport.calls.clone();
+        (
+            HyprlandAdapter {
+                transport: Box::new(transport),
+            },
+            MockTransport { calls },
+        )
     }
 
     fn test_adapter() -> HyprlandAdapter {
-        HyprlandAdapter {
-            transport: Box::new(MockTransport::default()),
-        }
+        test_adapter_with_transport(MockTransport::default()).0
     }
 
-    impl HyprlandAdapter {
-        fn take_status_calls(&mut self) -> Vec<Vec<String>> {
-            if let Some(mock) = self.transport.as_any_mut().downcast_mut::<MockTransport>() {
-                std::mem::take(&mut *mock.calls.borrow_mut())
-            } else {
-                vec![]
-            }
+    fn extract_calls(adapter: HyprlandAdapter) -> Vec<Vec<String>> {
+        // Extract calls by downcasting the transport
+        let transport = adapter.transport;
+        let raw_ptr = Box::into_raw(transport);
+        unsafe {
+            let mock = raw_ptr as *mut MockTransport;
+            let calls = (*mock).calls.clone();
+            // Reconstruct the box to properly drop it
+            let _ = Box::from_raw(raw_ptr);
+            calls
         }
     }
 
@@ -332,8 +353,9 @@ mod tests {
     fn hyprland_close_window_by_id_dispatches_expected_command() {
         let mut adapter = test_adapter();
         adapter.close_window_by_id(0x2a).unwrap();
+        let calls = extract_calls(adapter);
         assert_eq!(
-            adapter.take_status_calls(),
+            calls,
             vec![vec!["dispatch", "closewindow", "address:0x2a"]]
         );
     }
@@ -344,8 +366,9 @@ mod tests {
         adapter
             .resize_with_intent(ResizeIntent::new(Direction::East, ResizeKind::Grow, 40))
             .unwrap();
+        let calls = extract_calls(adapter);
         assert_eq!(
-            adapter.take_status_calls(),
+            calls,
             vec![vec!["dispatch", "resizeactive", "40", "0"]]
         );
     }
@@ -355,8 +378,9 @@ mod tests {
         let mut adapter = test_adapter();
         adapter.move_direction(Direction::East).unwrap();
         adapter.spawn(vec!["foot".into(), "--app-id".into(), "smoke".into()]).unwrap();
+        let calls = extract_calls(adapter);
         assert_eq!(
-            adapter.take_status_calls(),
+            calls,
             vec![
                 vec!["dispatch", "movewindow", "r"],
                 vec!["dispatch", "exec", "foot --app-id smoke"],
@@ -455,5 +479,65 @@ mod tests {
         assert_eq!(window.address, "0x1234");
         assert_eq!(window.pid, None);
         assert_eq!(window.process_id(), None);
+    }
+
+    #[test]
+    fn hyprland_parse_clients_tolerates_null_activewindow_sentinel() {
+        let active = r#"{"address":"((null))","mapped":false,"class":null,"title":null,"pid":null}"#;
+        let clients = r#"[{"address":"0x10","class":"firefox","title":"docs","pid":100,"mapped":true}]"#;
+
+        let windows = parse_clients_with_focus(active, clients).unwrap();
+        assert_eq!(windows.len(), 1);
+        assert_eq!(windows[0].id, 0x10);
+        assert!(!windows[0].is_focused); // No focused window
+    }
+
+    #[test]
+    fn hyprland_parse_clients_skips_null_sentinel_in_clients_list() {
+        let active = r#"{"address":"0x20","class":"foot","title":"shell","pid":200,"mapped":true}"#;
+        let clients = r#"[
+            {"address":"0x10","class":"firefox","title":"docs","pid":100,"mapped":true},
+            {"address":"((null))","mapped":false,"class":null,"title":null,"pid":null},
+            {"address":"0x20","class":"foot","title":"shell","pid":200,"mapped":true}
+        ]"#;
+
+        let windows = parse_clients_with_focus(active, clients).unwrap();
+        assert_eq!(windows.len(), 2);
+        assert!(windows.iter().any(|w| w.id == 0x10));
+        assert!(windows.iter().any(|w| w.id == 0x20 && w.is_focused));
+        // Verify null sentinel was filtered out (only 2 windows, not 3)
+    }
+
+    #[test]
+    fn hyprland_parse_clients_with_empty_workspace_returns_empty_list() {
+        let active = r#"{"address":"((null))","mapped":false,"class":null,"title":null,"pid":null}"#;
+        let clients = r#"[]"#;
+
+        let windows = parse_clients_with_focus(active, clients).unwrap();
+        assert!(windows.is_empty());
+    }
+
+    #[test]
+    fn hyprland_is_null_activewindow_recognizes_sentinel() {
+        let null_window = HyprlandClient {
+            address: "((null))".into(),
+            class: None,
+            title: None,
+            pid: None,
+            mapped: Some(false),
+        };
+        assert!(is_null_activewindow(&null_window));
+    }
+
+    #[test]
+    fn hyprland_is_null_activewindow_rejects_real_windows() {
+        let real_window = HyprlandClient {
+            address: "0x1234".into(),
+            class: Some("foot".into()),
+            title: Some("shell".into()),
+            pid: Some(100),
+            mapped: Some(true),
+        };
+        assert!(!is_null_activewindow(&real_window));
     }
 }
