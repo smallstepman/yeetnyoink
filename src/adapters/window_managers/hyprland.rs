@@ -29,9 +29,13 @@ pub fn resize_delta(direction: Direction, grow: bool, step: i32) -> (i32, i32) {
 #[derive(Debug, Deserialize)]
 pub struct HyprlandClient {
     pub address: String,
+    #[serde(default)]
     pub class: Option<String>,
+    #[serde(default)]
     pub title: Option<String>,
+    #[serde(default)]
     pub pid: Option<u32>,
+    #[serde(default)]
     pub mapped: Option<bool>,
 }
 
@@ -46,14 +50,31 @@ mod tests {
     }
 
     #[test]
+    fn hyprland_parses_window_address_bare_hex() {
+        assert_eq!(parse_window_address("2a").unwrap(), 0x2a);
+        assert_eq!(parse_window_address("  2a  ").unwrap(), 0x2a);
+    }
+
+    #[test]
     fn hyprland_formats_window_selector() {
         assert_eq!(format_window_selector(0x2a), "address:0x2a");
     }
 
     #[test]
     fn hyprland_resize_delta_matches_direction_and_intent() {
-        assert_eq!(resize_delta(Direction::East, true, 40), (40, 0));
-        assert_eq!(resize_delta(Direction::North, false, 40), (0, 40));
+        let s = 40;
+        // East
+        assert_eq!(resize_delta(Direction::East, true, s), (s, 0));
+        assert_eq!(resize_delta(Direction::East, false, s), (-s, 0));
+        // West
+        assert_eq!(resize_delta(Direction::West, true, s), (-s, 0));
+        assert_eq!(resize_delta(Direction::West, false, s), (s, 0));
+        // North
+        assert_eq!(resize_delta(Direction::North, true, s), (0, -s));
+        assert_eq!(resize_delta(Direction::North, false, s), (0, s));
+        // South
+        assert_eq!(resize_delta(Direction::South, true, s), (0, s));
+        assert_eq!(resize_delta(Direction::South, false, s), (0, -s));
     }
 
     #[test]
