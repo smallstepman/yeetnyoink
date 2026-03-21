@@ -114,10 +114,13 @@ impl WindowManagerSession for HyprlandAdapter {
         
         let id = parse_window_address(&active.address)?;
         let pid = active.process_id();
+        // Normalize empty strings to None for downstream consumers
+        let app_id = active.class.and_then(|s| if s.trim().is_empty() { None } else { Some(s) });
+        let title = active.title.and_then(|s| if s.trim().is_empty() { None } else { Some(s) });
         Ok(FocusedWindowRecord {
             id,
-            app_id: active.class,
-            title: active.title,
+            app_id,
+            title,
             pid,
             original_tile_index: 1,
         })
@@ -252,10 +255,13 @@ fn parse_clients_with_focus(
         let id = parse_window_address(&client.address)?;
         let is_focused = active_addr == Some(id);
         let pid = client.process_id();
+        // Normalize empty strings to None for app_id/title
+        let app_id = client.class.and_then(|s| if s.trim().is_empty() { None } else { Some(s) });
+        let title = client.title.and_then(|s| if s.trim().is_empty() { None } else { Some(s) });
         windows.push(WindowRecord {
             id,
-            app_id: client.class,
-            title: client.title,
+            app_id,
+            title,
             pid,
             original_tile_index: 1,
             is_focused,
@@ -631,6 +637,35 @@ mod tests {
         assert_eq!(focused.id, 0x20);
         assert_eq!(focused.app_id.as_deref(), Some("foot"));
         assert_eq!(focused.title.as_deref(), Some("shell"));
+
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls.as_slice(), &[vec!["-j", "activewindow"]]);
+    }
+
+    #[test]
+    fn hyprland_empty_class_and_title_normalize_to_none() {
+        // active window and clients contain empty class/title strings
+        let active = r#"{"address":"0x20","class":"","title":"","pid":200,"mapped":true}"#;
+        let clients = r#"[{"address":"0x20","class":"","title":"","pid":200,"mapped":true}]"#;
+
+        let windows = parse_clients_with_focus(active, clients).unwrap();
+        assert_eq!(windows.len(), 1);
+        assert_eq!(windows[0].id, 0x20);
+        assert!(windows[0].is_focused);
+        assert!(windows[0].app_id.is_none());
+        assert!(windows[0].title.is_none());
+
+        // Also verify focused_window mapping
+        let responses = Arc::new(Mutex::new(std::collections::HashMap::from([
+            (vec!["-j".into(), "activewindow".into()],
+             r#"{"address":"0x20","class":"","title":"","pid":200,"mapped":true}"#.into()),
+        ])));
+        let (mut adapter, calls) = test_adapter_with_responses(responses);
+
+        let focused = adapter.focused_window().unwrap();
+        assert_eq!(focused.id, 0x20);
+        assert!(focused.app_id.is_none());
+        assert!(focused.title.is_none());
 
         let calls = calls.lock().unwrap();
         assert_eq!(calls.as_slice(), &[vec!["-j", "activewindow"]]);
