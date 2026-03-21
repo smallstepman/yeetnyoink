@@ -43,7 +43,7 @@ impl WindowManagerSpec for HyprlandSpec {
 
 /// Trait for dispatching Hyprland commands.
 /// Default runtime uses real hyprctl; tests inject a mock transport.
-pub trait HyprlandTransport: Send {
+pub(crate) trait HyprlandTransport: Send {
     fn execute(&mut self, args: Vec<String>) -> Result<String>;
 }
 
@@ -298,6 +298,8 @@ mod tests {
 
     type CallLog = Arc<Mutex<Vec<Vec<String>>>>;
 
+    // MockTransport is dispatch-only: it records dispatched commands for assertions.
+    // Query parsing (JSON -> structs) is exercised by pure helper tests (parse_clients_with_focus, etc.).
     struct MockTransport {
         calls: CallLog,
     }
@@ -345,6 +347,28 @@ mod tests {
         assert_eq!(
             calls.as_slice(),
             &[vec!["dispatch", "closewindow", "address:0x2a"]]
+        );
+    }
+
+    #[test]
+    fn hyprland_focus_direction_dispatches_movefocus_north() {
+        let (mut adapter, calls) = test_adapter();
+        adapter.focus_direction(Direction::North).unwrap();
+        let calls = calls.lock().unwrap();
+        assert_eq!(
+            calls.as_slice(),
+            &[vec!["dispatch", "movefocus", "u"]]
+        );
+    }
+
+    #[test]
+    fn hyprland_focus_window_by_id_dispatches_expected_command() {
+        let (mut adapter, calls) = test_adapter();
+        adapter.focus_window_by_id(0x1ff).unwrap();
+        let calls = calls.lock().unwrap();
+        assert_eq!(
+            calls.as_slice(),
+            &[vec!["dispatch", "focuswindow", "address:0x1ff"]]
         );
     }
 
