@@ -104,7 +104,10 @@ impl WindowManagerSession for HyprlandAdapter {
         let active: HyprlandClient = serde_json::from_str(&output)
             .context("failed to parse activewindow JSON")?;
         
-        // Check if this is the null sentinel (empty workspace case)
+        // Check if this is the null sentinel (empty workspace case).
+        // Note: This returns early with an error rather than filtering like windows()
+        // does, which is acceptable because callers expect at least one focused window
+        // or an error, not an empty list.
         if is_null_activewindow(&active) {
             anyhow::bail!("no focused window");
         }
@@ -185,16 +188,16 @@ impl WindowManagerSession for HyprlandAdapter {
     }
 }
 
-pub fn parse_window_address(raw: &str) -> Result<u64> {
+fn parse_window_address(raw: &str) -> Result<u64> {
     let trimmed = raw.trim().strip_prefix("0x").unwrap_or(raw.trim());
     u64::from_str_radix(trimmed, 16).context("invalid Hyprland window address")
 }
 
-pub fn format_window_selector(id: u64) -> String {
+fn format_window_selector(id: u64) -> String {
     format!("address:0x{id:x}")
 }
 
-pub fn direction_to_hyprland(dir: Direction) -> &'static str {
+fn direction_to_hyprland(dir: Direction) -> &'static str {
     match dir {
         Direction::West => "l",
         Direction::East => "r",
@@ -203,7 +206,7 @@ pub fn direction_to_hyprland(dir: Direction) -> &'static str {
     }
 }
 
-pub fn parse_clients_with_focus(
+fn parse_clients_with_focus(
     active_json: &str,
     clients_json: &str,
 ) -> Result<Vec<WindowRecord>> {
@@ -222,11 +225,8 @@ pub fn parse_clients_with_focus(
 
     let mut windows = Vec::new();
     for client in clients {
-        if client.mapped == Some(false) {
-            continue;
-        }
-        // Skip the null sentinel if it appears in the clients list
-        if is_null_activewindow(&client) {
+        // Skip unmapped windows and the null sentinel (empty workspace indicator)
+        if client.mapped == Some(false) || is_null_activewindow(&client) {
             continue;
         }
         let id = parse_window_address(&client.address)?;
@@ -253,7 +253,7 @@ fn is_null_activewindow(client: &HyprlandClient) -> bool {
 // Hyprland (Wayland compositor) uses a coordinate system where the Y axis
 // grows downward (positive Y points down). Therefore when we "grow" north
 // (i.e., expand the window upward) we must apply a negative Y delta.
-pub fn resize_delta(direction: Direction, grow: bool, step: i32) -> (i32, i32) {
+fn resize_delta(direction: Direction, grow: bool, step: i32) -> (i32, i32) {
     let step = step.abs().max(1);
     match (direction, grow) {
         (Direction::West, true) => (-step, 0),
@@ -268,22 +268,22 @@ pub fn resize_delta(direction: Direction, grow: bool, step: i32) -> (i32, i32) {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct HyprlandClient {
-    pub address: String,
+struct HyprlandClient {
+    address: String,
     #[serde(default)]
-    pub class: Option<String>,
+    class: Option<String>,
     #[serde(default)]
-    pub title: Option<String>,
+    title: Option<String>,
     #[serde(default)]
-    pub pid: Option<u32>,
+    pid: Option<u32>,
     #[serde(default)]
-    pub mapped: Option<bool>,
+    mapped: Option<bool>,
 }
 
 impl HyprlandClient {
     /// Convert the raw pid (u32) from Hyprland into a domain ProcessId.
     /// Returns None when pid is missing or zero.
-    pub fn process_id(&self) -> Option<ProcessId> {
+    fn process_id(&self) -> Option<ProcessId> {
         self.pid.and_then(ProcessId::new)
     }
 }
@@ -297,27 +297,36 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     type CallLog = Arc<Mutex<Vec<Vec<String>>>>;
+    type ResponseMap = Arc<Mutex<std::collections::HashMap<Vec<String>, String>>>;
 
-    // MockTransport is dispatch-only: it records dispatched commands for assertions.
-    // Query parsing (JSON -> structs) is exercised by pure helper tests (parse_clients_with_focus, etc.).
+    // MockTransport records dispatched commands and can serve canned query responses.
     struct MockTransport {
         calls: CallLog,
+        responses: ResponseMap,
     }
 
     impl MockTransport {
         fn new(calls: CallLog) -> Self {
-            Self { calls }
+            Self { calls, responses: Arc::new(Mutex::new(std::collections::HashMap::new())) }
+        }
+
+        fn with_responses(calls: CallLog, responses: ResponseMap) -> Self {
+            Self { calls, responses }
         }
     }
 
     impl HyprlandTransport for MockTransport {
         fn execute(&mut self, args: Vec<String>) -> Result<String> {
             self.calls.lock().unwrap().push(args.clone());
+            // Check if we have a canned response for this query
+            if let Some(response) = self.responses.lock().unwrap().get(&args) {
+                return Ok(response.clone());
+            }
             // dispatch commands don't need a response
             if args.first().map(|s| s.as_str()) == Some("dispatch") {
                 Ok(String::new())
             } else {
-                anyhow::bail!("unexpected non-dispatch command in mock: {:?}", args)
+                anyhow::bail!("unexpected query command in mock without canned response: {:?}", args)
             }
         }
     }
@@ -326,6 +335,14 @@ mod tests {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let adapter = HyprlandAdapter {
             transport: Box::new(MockTransport::new(Arc::clone(&calls))),
+        };
+        (adapter, calls)
+    }
+
+    fn test_adapter_with_responses(responses: ResponseMap) -> (HyprlandAdapter, CallLog) {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let adapter = HyprlandAdapter {
+            transport: Box::new(MockTransport::with_responses(Arc::clone(&calls), responses)),
         };
         (adapter, calls)
     }
@@ -551,5 +568,57 @@ mod tests {
             mapped: Some(true),
         };
         assert!(!is_null_activewindow(&real_window));
+    }
+
+    #[test]
+    fn hyprland_focused_window_queries_activewindow() {
+        let responses = Arc::new(Mutex::new(std::collections::HashMap::from([
+            (vec!["-j".into(), "activewindow".into()],
+             r#"{"address":"0x20","class":"foot","title":"shell","pid":200,"mapped":true}"#.into()),
+        ])));
+        let (mut adapter, calls) = test_adapter_with_responses(responses);
+
+        let focused = adapter.focused_window().unwrap();
+        assert_eq!(focused.id, 0x20);
+        assert_eq!(focused.app_id.as_deref(), Some("foot"));
+        assert_eq!(focused.title.as_deref(), Some("shell"));
+
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls.as_slice(), &[vec!["-j", "activewindow"]]);
+    }
+
+    #[test]
+    fn hyprland_focused_window_errors_on_null_activewindow() {
+        let responses = Arc::new(Mutex::new(std::collections::HashMap::from([
+            (vec!["-j".into(), "activewindow".into()],
+             r#"{"address":"((null))","mapped":false,"class":null,"title":null,"pid":null}"#.into()),
+        ])));
+        let (mut adapter, _calls) = test_adapter_with_responses(responses);
+
+        let result = adapter.focused_window();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("no focused window"));
+    }
+
+    #[test]
+    fn hyprland_windows_queries_activewindow_then_clients() {
+        let responses = Arc::new(Mutex::new(std::collections::HashMap::from([
+            (vec!["-j".into(), "activewindow".into()],
+             r#"{"address":"0x20","class":"foot","title":"shell","pid":200,"mapped":true}"#.into()),
+            (vec!["-j".into(), "clients".into()],
+             r#"[{"address":"0x10","class":"firefox","title":"docs","pid":100,"mapped":true},{"address":"0x20","class":"foot","title":"shell","pid":200,"mapped":true}]"#.into()),
+        ])));
+        let (mut adapter, calls) = test_adapter_with_responses(responses);
+
+        let windows = adapter.windows().unwrap();
+        assert_eq!(windows.len(), 2);
+        assert!(windows.iter().any(|w| w.id == 0x10 && !w.is_focused));
+        assert!(windows.iter().any(|w| w.id == 0x20 && w.is_focused));
+
+        let calls = calls.lock().unwrap();
+        assert_eq!(
+            calls.as_slice(),
+            &[vec!["-j", "activewindow"], vec!["-j", "clients"]]
+        );
     }
 }
