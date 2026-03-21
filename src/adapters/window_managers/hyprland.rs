@@ -43,20 +43,20 @@ impl WindowManagerSpec for HyprlandSpec {
 
 /// Trait for dispatching Hyprland commands.
 /// Default runtime uses real hyprctl; tests inject a mock transport.
-pub(crate) trait HyprlandTransport: Send {
-    fn execute(&mut self, args: Vec<String>) -> Result<String>;
+trait HyprlandTransport: Send {
+    fn execute(&mut self, action: &'static str, args: Vec<String>) -> Result<String>;
 }
 
 /// Real transport: executes `hyprctl` with arguments.
 struct RealTransport;
 
 impl HyprlandTransport for RealTransport {
-    fn execute(&mut self, args: Vec<String>) -> Result<String> {
+    fn execute(&mut self, action: &'static str, args: Vec<String>) -> Result<String> {
         let args_strs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
         let output = runtime::run_command_output(
             "hyprctl",
             &args_strs,
-            &CommandContext::new(HyprlandAdapter::NAME, "execute"),
+            &CommandContext::new(HyprlandAdapter::NAME, action),
         )?;
         if !output.status.success() {
             anyhow::bail!("hyprctl failed: {}", runtime::stderr_text(&output));
@@ -100,7 +100,7 @@ impl WindowManagerSession for HyprlandAdapter {
     }
 
     fn focused_window(&mut self) -> Result<FocusedWindowRecord> {
-        let output = self.transport.execute(vec!["-j".into(), "activewindow".into()])?;
+        let output = self.transport.execute("windows_activewindow", vec!["-j".into(), "activewindow".into()])?;
         let active: HyprlandClient = serde_json::from_str(&output)
             .context("failed to parse activewindow JSON")?;
         
@@ -124,66 +124,84 @@ impl WindowManagerSession for HyprlandAdapter {
     }
 
     fn windows(&mut self) -> Result<Vec<WindowRecord>> {
-        let active_json = self.transport.execute(vec!["-j".into(), "activewindow".into()])?;
-        let clients_json = self.transport.execute(vec!["-j".into(), "clients".into()])?;
+        let active_json = self.transport.execute("windows_activewindow", vec!["-j".into(), "activewindow".into()])?;
+        let clients_json = self.transport.execute("windows_clients", vec!["-j".into(), "clients".into()])?;
         parse_clients_with_focus(&active_json, &clients_json)
     }
 
     fn focus_direction(&mut self, direction: Direction) -> Result<()> {
-        self.transport.execute(vec![
-            "dispatch".into(),
-            "movefocus".into(),
-            direction_to_hyprland(direction).into(),
-        ])?;
+        self.transport.execute(
+            "focus_direction",
+            vec![
+                "dispatch".into(),
+                "movefocus".into(),
+                direction_to_hyprland(direction).into(),
+            ],
+        )?;
         Ok(())
     }
 
     fn move_direction(&mut self, direction: Direction) -> Result<()> {
-        self.transport.execute(vec![
-            "dispatch".into(),
-            "movewindow".into(),
-            direction_to_hyprland(direction).into(),
-        ])?;
+        self.transport.execute(
+            "move_direction",
+            vec![
+                "dispatch".into(),
+                "movewindow".into(),
+                direction_to_hyprland(direction).into(),
+            ],
+        )?;
         Ok(())
     }
 
     fn resize_with_intent(&mut self, intent: ResizeIntent) -> Result<()> {
         let grow = matches!(intent.kind, ResizeKind::Grow);
         let (dx, dy) = resize_delta(intent.direction, grow, intent.step);
-        self.transport.execute(vec![
-            "dispatch".into(),
-            "resizeactive".into(),
-            dx.to_string(),
-            dy.to_string(),
-        ])?;
+        self.transport.execute(
+            "resize_with_intent",
+            vec![
+                "dispatch".into(),
+                "resizeactive".into(),
+                dx.to_string(),
+                dy.to_string(),
+            ],
+        )?;
         Ok(())
     }
 
     fn spawn(&mut self, command: Vec<String>) -> Result<()> {
         let joined = command.join(" ");
-        self.transport.execute(vec![
-            "dispatch".into(),
-            "exec".into(),
-            joined,
-        ])?;
+        self.transport.execute(
+            "spawn",
+            vec![
+                "dispatch".into(),
+                "exec".into(),
+                joined,
+            ],
+        )?;
         Ok(())
     }
 
     fn focus_window_by_id(&mut self, id: u64) -> Result<()> {
-        self.transport.execute(vec![
-            "dispatch".into(),
-            "focuswindow".into(),
-            format_window_selector(id),
-        ])?;
+        self.transport.execute(
+            "focus_window_by_id",
+            vec![
+                "dispatch".into(),
+                "focuswindow".into(),
+                format_window_selector(id),
+            ],
+        )?;
         Ok(())
     }
 
     fn close_window_by_id(&mut self, id: u64) -> Result<()> {
-        self.transport.execute(vec![
-            "dispatch".into(),
-            "closewindow".into(),
-            format_window_selector(id),
-        ])?;
+        self.transport.execute(
+            "close_window_by_id",
+            vec![
+                "dispatch".into(),
+                "closewindow".into(),
+                format_window_selector(id),
+            ],
+        )?;
         Ok(())
     }
 }
@@ -225,8 +243,9 @@ fn parse_clients_with_focus(
 
     let mut windows = Vec::new();
     for client in clients {
-        // Skip unmapped windows and the null sentinel (empty workspace indicator)
-        if client.mapped == Some(false) || is_null_activewindow(&client) {
+        // Skip the null sentinel (Hyprland's empty workspace indicator with address "((null))") 
+        // and unmapped windows.
+        if client.address == "((null))" || client.mapped == Some(false) {
             continue;
         }
         let id = parse_window_address(&client.address)?;
@@ -245,9 +264,9 @@ fn parse_clients_with_focus(
 }
 
 /// Returns true if the client represents Hyprland's null activewindow sentinel
-/// (appears on empty workspaces with address "((null))" and mapped = false).
+/// (appears on empty workspaces with address "((null))").
 fn is_null_activewindow(client: &HyprlandClient) -> bool {
-    client.address == "((null))" && client.mapped == Some(false)
+    client.address == "((null))"
 }
 
 // Hyprland (Wayland compositor) uses a coordinate system where the Y axis
@@ -316,7 +335,7 @@ mod tests {
     }
 
     impl HyprlandTransport for MockTransport {
-        fn execute(&mut self, args: Vec<String>) -> Result<String> {
+        fn execute(&mut self, _action: &'static str, args: Vec<String>) -> Result<String> {
             self.calls.lock().unwrap().push(args.clone());
             // Check if we have a canned response for this query
             if let Some(response) = self.responses.lock().unwrap().get(&args) {
