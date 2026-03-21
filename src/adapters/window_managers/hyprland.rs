@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 
 use crate::engine::topology::Direction;
+use crate::engine::runtime::ProcessId;
 
 pub fn parse_window_address(raw: &str) -> Result<u64> {
     let trimmed = raw.trim().strip_prefix("0x").unwrap_or(raw.trim());
@@ -12,6 +13,9 @@ pub fn format_window_selector(id: u64) -> String {
     format!("address:0x{id:x}")
 }
 
+// Hyprland (Wayland compositor) uses a coordinate system where the Y axis
+// grows downward (positive Y points down). Therefore when we "grow" north
+// (i.e., expand the window upward) we must apply a negative Y delta.
 pub fn resize_delta(direction: Direction, grow: bool, step: i32) -> (i32, i32) {
     let step = step.abs().max(1);
     match (direction, grow) {
@@ -37,6 +41,14 @@ pub struct HyprlandClient {
     pub pid: Option<u32>,
     #[serde(default)]
     pub mapped: Option<bool>,
+}
+
+impl HyprlandClient {
+    /// Convert the raw pid (u32) from Hyprland into a domain ProcessId.
+    /// Returns None when pid is missing or zero.
+    pub fn process_id(&self) -> Option<ProcessId> {
+        self.pid.and_then(ProcessId::new)
+    }
 }
 
 #[cfg(test)]
@@ -112,5 +124,7 @@ mod tests {
         assert_eq!(window.title.as_deref(), Some("Investigating Hyprland"));
         assert_eq!(window.pid, Some(9316));
         assert_eq!(window.mapped, Some(true));
+        // helper should convert to a domain ProcessId
+        assert_eq!(window.process_id(), ProcessId::new(9316));
     }
 }
