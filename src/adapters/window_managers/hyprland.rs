@@ -59,20 +59,37 @@ mod tests {
     #[test]
     fn hyprland_parses_activewindow_json() {
         let sample = r#"{
-            "address": "0x2a",
-            "class": "foot",
-            "title": "shell",
-            "pid": 123,
+            "address": "0xaaaae329c5d0",
             "mapped": true,
-            "geometry": {"x": 100, "y": 200, "w": 800, "h": 600},
-            "monitor": {"name": "DP-1", "scale": 1},
-            "properties": {"urgent": false, "sticky": false},
-            "workspaces": ["1", "2"],
-            "layer": "top",
-            "decorations": {"borders": true, "rounded": false}
+            "hidden": false,
+            "at": [910, 18],
+            "size": [872, 1094],
+            "workspace": { "id": 1, "name": "1" },
+            "floating": false,
+            "pseudo": false,
+            "monitor": 0,
+            "class": "foot",
+            "title": "Investigating Hyprland",
+            "initialClass": "foot",
+            "initialTitle": "foot",
+            "pid": 9316,
+            "xwayland": false,
+            "pinned": false,
+            "fullscreen": 0,
+            "fullscreenClient": 0,
+            "grouped": [],
+            "tags": [],
+            "swallowing": "0x0",
+            "focusHistoryID": 0,
+            "inhibitingIdle": false,
+            "xdgTag": "",
+            "xdgDescription": ""
         }"#;
         let window: HyprlandClient = serde_json::from_str(sample).unwrap();
-        assert_eq!(window.address, "0x2a");
+        assert_eq!(window.address, "0xaaaae329c5d0");
         assert_eq!(window.class.as_deref(), Some("foot"));
+        assert_eq!(window.title.as_deref(), Some("Investigating Hyprland"));
+        assert_eq!(window.pid, Some(9316));
+        assert_eq!(window.mapped, Some(true));
     }
 }
