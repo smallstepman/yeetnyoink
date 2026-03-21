@@ -169,7 +169,7 @@ impl WindowManagerSession for HyprlandAdapter {
     }
 
     fn spawn(&mut self, command: Vec<String>) -> Result<()> {
-        let joined = command.join(" ");
+        let joined = command.iter().map(|arg| shell_quote(arg)).collect::<Vec<_>>().join(" ");
         self.transport.execute(
             "spawn",
             vec![
@@ -244,6 +244,8 @@ fn parse_clients_with_focus(
     let mut windows = Vec::new();
     for client in clients {
         // Skip the null sentinel (Hyprland's empty workspace indicator) and unmapped windows.
+        // Only mapped == Some(false) is excluded; mapped: None is allowed for compatibility
+        // with Hyprland payloads that omit the field.
         if is_null_activewindow(&client) || client.mapped == Some(false) {
             continue;
         }
@@ -304,6 +306,20 @@ impl HyprlandClient {
     fn process_id(&self) -> Option<ProcessId> {
         self.pid.and_then(ProcessId::new)
     }
+}
+
+/// Safely quotes a string argument for shell execution.
+/// Wraps the argument in single quotes and escapes any embedded single quotes.
+fn shell_quote(arg: &str) -> String {
+    if arg.is_empty() {
+        return "''".to_string();
+    }
+    // If the argument contains no special characters, return it as-is.
+    if arg.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-' || c == '.' || c == '/') {
+        return arg.to_string();
+    }
+    // Otherwise, wrap in single quotes and escape any embedded single quotes.
+    format!("'{}'", arg.replace('\'', "'\\''"))
 }
 
 
@@ -432,6 +448,21 @@ mod tests {
                 vec!["dispatch", "movewindow", "r"],
                 vec!["dispatch", "exec", "foot --app-id smoke"],
             ]
+        );
+    }
+
+    #[test]
+    fn hyprland_spawn_quotes_arguments_with_spaces() {
+        let (mut adapter, calls) = test_adapter();
+        adapter.spawn(vec![
+            "bash".into(),
+            "-c".into(),
+            "echo hello world".into(),
+        ]).unwrap();
+        let calls = calls.lock().unwrap();
+        assert_eq!(
+            calls.as_slice(),
+            &[vec!["dispatch", "exec", "bash -c 'echo hello world'"]]
         );
     }
 
