@@ -65,6 +65,7 @@ Files touched:
 - `snake_case` TOML name: `hyprland`
 - Linux-only `supported_on_current_platform() == true`
 - participation in `spec_for_backend(...)` and built-in spec tests
+- non-Linux unsupported wiring that matches the existing backend pattern (`UNSUPPORTED_HYPRLAND_SPEC`)
 
 The first cut will keep Hyprland on the same contract boundary as `i3`: a WM session core only, without extra WM-owned features.
 
@@ -109,6 +110,7 @@ Window identity mapping:
 - Hyprland identifies windows by hex `address` strings such as `0xaaaae329c5d0`.
 - The adapter will parse that value into the engine’s required `u64` id by trimming the `0x` prefix and decoding hex.
 - When targeting a specific window again, the adapter formats the id back to Hyprland syntax as `address:0x{id:x}`.
+- These ids are session-scoped runtime handles, not persistent identities across compositor restarts.
 
 Metadata mapping:
 
