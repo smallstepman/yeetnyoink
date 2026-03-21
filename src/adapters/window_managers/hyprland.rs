@@ -100,7 +100,7 @@ impl WindowManagerSession for HyprlandAdapter {
     }
 
     fn focused_window(&mut self) -> Result<FocusedWindowRecord> {
-        let output = self.transport.execute("windows_activewindow", vec!["-j".into(), "activewindow".into()])?;
+        let output = self.transport.execute("focused_window", vec!["-j".into(), "activewindow".into()])?;
         let active: HyprlandClient = serde_json::from_str(&output)
             .context("failed to parse activewindow JSON")?;
         
@@ -243,9 +243,8 @@ fn parse_clients_with_focus(
 
     let mut windows = Vec::new();
     for client in clients {
-        // Skip the null sentinel (Hyprland's empty workspace indicator with address "((null))") 
-        // and unmapped windows.
-        if client.address == "((null))" || client.mapped == Some(false) {
+        // Skip the null sentinel (Hyprland's empty workspace indicator) and unmapped windows.
+        if is_null_activewindow(&client) || client.mapped == Some(false) {
             continue;
         }
         let id = parse_window_address(&client.address)?;
