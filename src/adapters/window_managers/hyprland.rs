@@ -58,7 +58,19 @@ mod tests {
 
     #[test]
     fn hyprland_parses_activewindow_json() {
-        let sample = r#"{"address":"0x2a","class":"foot","title":"shell","pid":123,"mapped":true}"#;
+        let sample = r#"{
+            "address": "0x2a",
+            "class": "foot",
+            "title": "shell",
+            "pid": 123,
+            "mapped": true,
+            "geometry": {"x": 100, "y": 200, "w": 800, "h": 600},
+            "monitor": {"name": "DP-1", "scale": 1},
+            "properties": {"urgent": false, "sticky": false},
+            "workspaces": ["1", "2"],
+            "layer": "top",
+            "decorations": {"borders": true, "rounded": false}
+        }"#;
         let window: HyprlandClient = serde_json::from_str(sample).unwrap();
         assert_eq!(window.address, "0x2a");
         assert_eq!(window.class.as_deref(), Some("foot"));
