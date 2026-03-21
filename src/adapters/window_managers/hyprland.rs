@@ -5,6 +5,7 @@
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
+use std::any::Any;
 
 use crate::config::WmBackend;
 use crate::engine::runtime::ProcessId;
@@ -12,11 +13,13 @@ use crate::engine::topology::Direction;
 use crate::engine::wm::{
     validate_declared_capabilities, CapabilitySupport, ConfiguredWindowManager,
     DirectionalCapability, FocusedWindowRecord, PrimitiveWindowManagerCapabilities, ResizeIntent,
-    WindowManagerCapabilities, WindowManagerCapabilityDescriptor, WindowManagerFeatures,
-    WindowManagerSession, WindowManagerSpec, WindowRecord,
+    ResizeKind, WindowManagerCapabilities, WindowManagerCapabilityDescriptor,
+    WindowManagerFeatures, WindowManagerSession, WindowManagerSpec, WindowRecord,
 };
 
-pub struct HyprlandAdapter;
+pub struct HyprlandAdapter {
+    transport: Box<dyn HyprlandTransport>,
+}
 
 pub struct HyprlandSpec;
 
@@ -39,11 +42,43 @@ impl WindowManagerSpec for HyprlandSpec {
     }
 }
 
+/// Trait for dispatching Hyprland commands.
+/// Default runtime uses real hyprctl; tests inject a mock transport.
+pub trait HyprlandTransport: Send {
+    fn execute(&mut self, args: Vec<String>) -> Result<String>;
+    fn as_any_mut(&mut self) -> &mut dyn Any;
+}
+
+/// Real transport: executes `hyprctl` with arguments.
+struct RealTransport;
+
+impl HyprlandTransport for RealTransport {
+    fn execute(&mut self, args: Vec<String>) -> Result<String> {
+        let output = std::process::Command::new("hyprctl")
+            .args(&args)
+            .output()
+            .context("failed to execute hyprctl")?;
+        if !output.status.success() {
+            anyhow::bail!(
+                "hyprctl failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        Ok(String::from_utf8(output.stdout)?)
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+}
+
 impl HyprlandAdapter {
     pub fn connect() -> Result<Self> {
         validate_declared_capabilities::<Self>()?;
         // TODO: Verify hyprctl is available and Hyprland is running
-        Ok(Self)
+        Ok(Self {
+            transport: Box::new(RealTransport),
+        })
     }
 }
 
@@ -72,35 +107,82 @@ impl WindowManagerSession for HyprlandAdapter {
     }
 
     fn focused_window(&mut self) -> Result<FocusedWindowRecord> {
-        todo!("hyprland: focused_window - Task 3")
+        let output = self.transport.execute(vec!["-j".into(), "activewindow".into()])?;
+        let active: HyprlandClient = serde_json::from_str(&output)
+            .context("failed to parse activewindow JSON")?;
+        let id = parse_window_address(&active.address)?;
+        let pid = active.process_id();
+        Ok(FocusedWindowRecord {
+            id,
+            app_id: active.class,
+            title: active.title,
+            pid,
+            original_tile_index: 1,
+        })
     }
 
     fn windows(&mut self) -> Result<Vec<WindowRecord>> {
-        todo!("hyprland: windows - Task 3")
+        let active_json = self.transport.execute(vec!["-j".into(), "activewindow".into()])?;
+        let clients_json = self.transport.execute(vec!["-j".into(), "clients".into()])?;
+        parse_clients_with_focus(&active_json, &clients_json)
     }
 
-    fn focus_direction(&mut self, _direction: Direction) -> Result<()> {
-        todo!("hyprland: focus_direction - Task 3")
+    fn focus_direction(&mut self, direction: Direction) -> Result<()> {
+        self.transport.execute(vec![
+            "dispatch".into(),
+            "movefocus".into(),
+            direction_to_hyprland(direction).into(),
+        ])?;
+        Ok(())
     }
 
-    fn move_direction(&mut self, _direction: Direction) -> Result<()> {
-        todo!("hyprland: move_direction - Task 3")
+    fn move_direction(&mut self, direction: Direction) -> Result<()> {
+        self.transport.execute(vec![
+            "dispatch".into(),
+            "movewindow".into(),
+            direction_to_hyprland(direction).into(),
+        ])?;
+        Ok(())
     }
 
-    fn resize_with_intent(&mut self, _intent: ResizeIntent) -> Result<()> {
-        todo!("hyprland: resize_with_intent - Task 3")
+    fn resize_with_intent(&mut self, intent: ResizeIntent) -> Result<()> {
+        let grow = matches!(intent.kind, ResizeKind::Grow);
+        let (dx, dy) = resize_delta(intent.direction, grow, intent.step);
+        self.transport.execute(vec![
+            "dispatch".into(),
+            "resizeactive".into(),
+            dx.to_string(),
+            dy.to_string(),
+        ])?;
+        Ok(())
     }
 
-    fn spawn(&mut self, _command: Vec<String>) -> Result<()> {
-        todo!("hyprland: spawn - Task 3")
+    fn spawn(&mut self, command: Vec<String>) -> Result<()> {
+        let joined = command.join(" ");
+        self.transport.execute(vec![
+            "dispatch".into(),
+            "exec".into(),
+            joined,
+        ])?;
+        Ok(())
     }
 
-    fn focus_window_by_id(&mut self, _id: u64) -> Result<()> {
-        todo!("hyprland: focus_window_by_id - Task 3")
+    fn focus_window_by_id(&mut self, id: u64) -> Result<()> {
+        self.transport.execute(vec![
+            "dispatch".into(),
+            "focuswindow".into(),
+            format_window_selector(id),
+        ])?;
+        Ok(())
     }
 
-    fn close_window_by_id(&mut self, _id: u64) -> Result<()> {
-        todo!("hyprland: close_window_by_id - Task 3")
+    fn close_window_by_id(&mut self, id: u64) -> Result<()> {
+        self.transport.execute(vec![
+            "dispatch".into(),
+            "closewindow".into(),
+            format_window_selector(id),
+        ])?;
+        Ok(())
     }
 }
 
@@ -111,6 +193,46 @@ pub fn parse_window_address(raw: &str) -> Result<u64> {
 
 pub fn format_window_selector(id: u64) -> String {
     format!("address:0x{id:x}")
+}
+
+pub fn direction_to_hyprland(dir: Direction) -> &'static str {
+    match dir {
+        Direction::West => "l",
+        Direction::East => "r",
+        Direction::North => "u",
+        Direction::South => "d",
+    }
+}
+
+pub fn parse_clients_with_focus(
+    active_json: &str,
+    clients_json: &str,
+) -> Result<Vec<WindowRecord>> {
+    let active: HyprlandClient = serde_json::from_str(active_json)
+        .context("failed to parse active window JSON")?;
+    let active_addr = parse_window_address(&active.address)?;
+
+    let clients: Vec<HyprlandClient> = serde_json::from_str(clients_json)
+        .context("failed to parse clients JSON")?;
+
+    let mut windows = Vec::new();
+    for client in clients {
+        if client.mapped == Some(false) {
+            continue;
+        }
+        let id = parse_window_address(&client.address)?;
+        let is_focused = id == active_addr;
+        let pid = client.process_id();
+        windows.push(WindowRecord {
+            id,
+            app_id: client.class,
+            title: client.title,
+            pid,
+            original_tile_index: 1,
+            is_focused,
+        });
+    }
+    Ok(windows)
 }
 
 // Hyprland (Wayland compositor) uses a coordinate system where the Y axis
@@ -156,6 +278,91 @@ impl HyprlandClient {
 mod tests {
     use super::*;
     use crate::engine::topology::Direction;
+    use crate::engine::wm::ResizeKind;
+    use std::any::Any;
+    use std::cell::RefCell;
+
+    #[derive(Default)]
+    struct MockTransport {
+        calls: RefCell<Vec<Vec<String>>>,
+    }
+
+    impl HyprlandTransport for MockTransport {
+        fn execute(&mut self, args: Vec<String>) -> Result<String> {
+            self.calls.borrow_mut().push(args.clone());
+            // dispatch commands don't need a response
+            if args.first().map(|s| s.as_str()) == Some("dispatch") {
+                Ok(String::new())
+            } else {
+                anyhow::bail!("unexpected non-dispatch command in mock: {:?}", args)
+            }
+        }
+
+        fn as_any_mut(&mut self) -> &mut dyn Any {
+            self
+        }
+    }
+
+    fn test_adapter() -> HyprlandAdapter {
+        HyprlandAdapter {
+            transport: Box::new(MockTransport::default()),
+        }
+    }
+
+    impl HyprlandAdapter {
+        fn take_status_calls(&mut self) -> Vec<Vec<String>> {
+            if let Some(mock) = self.transport.as_any_mut().downcast_mut::<MockTransport>() {
+                std::mem::take(&mut *mock.calls.borrow_mut())
+            } else {
+                vec![]
+            }
+        }
+    }
+
+    #[test]
+    fn hyprland_marks_focused_client_from_activewindow_address() {
+        let active = r#"{"address":"0x20","class":"foot","title":"shell","pid":200}"#;
+        let clients = r#"[{"address":"0x10","class":"firefox","title":"docs","pid":100,"mapped":true},{"address":"0x20","class":"foot","title":"shell","pid":200,"mapped":true}]"#;
+
+        let windows = parse_clients_with_focus(active, clients).unwrap();
+        assert!(windows.iter().any(|window| window.id == 0x20 && window.is_focused));
+    }
+
+    #[test]
+    fn hyprland_close_window_by_id_dispatches_expected_command() {
+        let mut adapter = test_adapter();
+        adapter.close_window_by_id(0x2a).unwrap();
+        assert_eq!(
+            adapter.take_status_calls(),
+            vec![vec!["dispatch", "closewindow", "address:0x2a"]]
+        );
+    }
+
+    #[test]
+    fn hyprland_resize_with_intent_dispatches_signed_resizeactive_delta() {
+        let mut adapter = test_adapter();
+        adapter
+            .resize_with_intent(ResizeIntent::new(Direction::East, ResizeKind::Grow, 40))
+            .unwrap();
+        assert_eq!(
+            adapter.take_status_calls(),
+            vec![vec!["dispatch", "resizeactive", "40", "0"]]
+        );
+    }
+
+    #[test]
+    fn hyprland_move_and_spawn_dispatch_expected_commands() {
+        let mut adapter = test_adapter();
+        adapter.move_direction(Direction::East).unwrap();
+        adapter.spawn(vec!["foot".into(), "--app-id".into(), "smoke".into()]).unwrap();
+        assert_eq!(
+            adapter.take_status_calls(),
+            vec![
+                vec!["dispatch", "movewindow", "r"],
+                vec!["dispatch", "exec", "foot --app-id smoke"],
+            ]
+        );
+    }
 
     #[test]
     fn hyprland_parses_window_address_hex() {
