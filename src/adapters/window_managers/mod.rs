@@ -15,7 +15,7 @@
 pub mod i3;
 #[cfg(any(test, target_os = "linux"))]
 pub mod niri;
-#[cfg(target_os = "linux")]
+#[cfg(any(test, target_os = "linux"))]
 pub mod hyprland;
 #[cfg(target_os = "macos")]
 pub mod paneru;
