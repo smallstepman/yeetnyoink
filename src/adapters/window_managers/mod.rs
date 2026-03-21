@@ -21,6 +21,8 @@ pub mod hyprland;
 pub mod paneru;
 #[cfg(target_os = "macos")]
 pub mod yabai;
+#[cfg(target_os = "macos")]
+pub(crate) mod macos_native;
 
 #[cfg(any(test, target_os = "linux"))]
 pub use self::niri::NiriAdapter;
@@ -37,7 +39,6 @@ use crate::adapters::window_managers::paneru::PANERU_SPEC;
 use crate::adapters::window_managers::yabai::YABAI_SPEC;
 use crate::config::WmBackend;
 use crate::engine::wm::configured::WindowManagerSpec;
-#[cfg(not(target_os = "linux"))]
 pub(crate) use crate::engine::wm::configured::UNSUPPORTED_I3_SPEC;
 #[cfg(not(target_os = "linux"))]
 pub(crate) use crate::engine::wm::configured::UNSUPPORTED_NIRI_SPEC;
@@ -153,5 +154,17 @@ mod tests {
         assert_eq!(capabilities.tear_out.west, CapabilitySupport::Composed);
         assert!(capabilities.primitives.move_column);
         assert!(capabilities.primitives.consume_into_column_and_move);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_native_space_kind_symbols_are_exposed() {
+        use crate::adapters::window_managers::macos_native::SpaceKind;
+
+        assert_eq!(SpaceKind::Desktop.as_str(), "desktop");
+        assert_eq!(
+            SpaceKind::StageManagerOpaque.as_str(),
+            "stage_manager_opaque"
+        );
     }
 }
