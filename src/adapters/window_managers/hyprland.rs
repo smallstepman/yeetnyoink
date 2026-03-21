@@ -137,6 +137,7 @@ pub struct HyprlandClient {
     pub class: Option<String>,
     #[serde(default)]
     pub title: Option<String>,
+    #[serde(default)]
     pub pid: Option<u32>,
     #[serde(default)]
     pub mapped: Option<bool>,
@@ -149,7 +150,6 @@ impl HyprlandClient {
         self.pid.and_then(ProcessId::new)
     }
 }
-
 
 
 #[cfg(test)]
@@ -234,5 +234,19 @@ mod tests {
         use crate::engine::wm::validate_declared_capabilities;
         validate_declared_capabilities::<HyprlandAdapter>()
             .expect("hyprland capability descriptor should be valid");
+    }
+
+    #[test]
+    fn hyprland_parses_json_without_pid() {
+        let sample = r#"{
+            "address": "0x1234",
+            "mapped": false,
+            "class": "foot",
+            "title": "No PID"
+        }"#;
+        let window: HyprlandClient = serde_json::from_str(sample).unwrap();
+        assert_eq!(window.address, "0x1234");
+        assert_eq!(window.pid, None);
+        assert_eq!(window.process_id(), None);
     }
 }
