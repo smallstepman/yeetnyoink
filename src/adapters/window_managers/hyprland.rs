@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 
 use crate::config::WmBackend;
-use crate::engine::runtime::ProcessId;
+use crate::engine::runtime::{self, CommandContext, ProcessId};
 use crate::engine::topology::Direction;
 use crate::engine::wm::{
     validate_declared_capabilities, CapabilitySupport, ConfiguredWindowManager,
@@ -52,17 +52,16 @@ struct RealTransport;
 
 impl HyprlandTransport for RealTransport {
     fn execute(&mut self, args: Vec<String>) -> Result<String> {
-        let output = std::process::Command::new("hyprctl")
-            .args(&args)
-            .output()
-            .context("failed to execute hyprctl")?;
+        let args_strs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        let output = runtime::run_command_output(
+            "hyprctl",
+            &args_strs,
+            &CommandContext::new(HyprlandAdapter::NAME, "execute"),
+        )?;
         if !output.status.success() {
-            anyhow::bail!(
-                "hyprctl failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
+            anyhow::bail!("hyprctl failed: {}", runtime::stderr_text(&output));
         }
-        Ok(String::from_utf8(output.stdout)?)
+        Ok(runtime::stdout_text(&output))
     }
 }
 
@@ -248,7 +247,7 @@ pub fn parse_clients_with_focus(
 /// Returns true if the client represents Hyprland's null activewindow sentinel
 /// (appears on empty workspaces with address "((null))" and mapped = false).
 fn is_null_activewindow(client: &HyprlandClient) -> bool {
-    client.address.contains("((null))") && client.mapped == Some(false)
+    client.address == "((null))" && client.mapped == Some(false)
 }
 
 // Hyprland (Wayland compositor) uses a coordinate system where the Y axis
@@ -295,15 +294,23 @@ mod tests {
     use super::*;
     use crate::engine::topology::Direction;
     use crate::engine::wm::ResizeKind;
+    use std::sync::{Arc, Mutex};
 
-    #[derive(Default)]
+    type CallLog = Arc<Mutex<Vec<Vec<String>>>>;
+
     struct MockTransport {
-        calls: Vec<Vec<String>>,
+        calls: CallLog,
+    }
+
+    impl MockTransport {
+        fn new(calls: CallLog) -> Self {
+            Self { calls }
+        }
     }
 
     impl HyprlandTransport for MockTransport {
         fn execute(&mut self, args: Vec<String>) -> Result<String> {
-            self.calls.push(args.clone());
+            self.calls.lock().unwrap().push(args.clone());
             // dispatch commands don't need a response
             if args.first().map(|s| s.as_str()) == Some("dispatch") {
                 Ok(String::new())
@@ -313,31 +320,12 @@ mod tests {
         }
     }
 
-    fn test_adapter_with_transport(transport: MockTransport) -> (HyprlandAdapter, MockTransport) {
-        let calls = transport.calls.clone();
-        (
-            HyprlandAdapter {
-                transport: Box::new(transport),
-            },
-            MockTransport { calls },
-        )
-    }
-
-    fn test_adapter() -> HyprlandAdapter {
-        test_adapter_with_transport(MockTransport::default()).0
-    }
-
-    fn extract_calls(adapter: HyprlandAdapter) -> Vec<Vec<String>> {
-        // Extract calls by downcasting the transport
-        let transport = adapter.transport;
-        let raw_ptr = Box::into_raw(transport);
-        unsafe {
-            let mock = raw_ptr as *mut MockTransport;
-            let calls = (*mock).calls.clone();
-            // Reconstruct the box to properly drop it
-            let _ = Box::from_raw(raw_ptr);
-            calls
-        }
+    fn test_adapter() -> (HyprlandAdapter, CallLog) {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let adapter = HyprlandAdapter {
+            transport: Box::new(MockTransport::new(Arc::clone(&calls))),
+        };
+        (adapter, calls)
     }
 
     #[test]
@@ -351,37 +339,37 @@ mod tests {
 
     #[test]
     fn hyprland_close_window_by_id_dispatches_expected_command() {
-        let mut adapter = test_adapter();
+        let (mut adapter, calls) = test_adapter();
         adapter.close_window_by_id(0x2a).unwrap();
-        let calls = extract_calls(adapter);
+        let calls = calls.lock().unwrap();
         assert_eq!(
-            calls,
-            vec![vec!["dispatch", "closewindow", "address:0x2a"]]
+            calls.as_slice(),
+            &[vec!["dispatch", "closewindow", "address:0x2a"]]
         );
     }
 
     #[test]
     fn hyprland_resize_with_intent_dispatches_signed_resizeactive_delta() {
-        let mut adapter = test_adapter();
+        let (mut adapter, calls) = test_adapter();
         adapter
             .resize_with_intent(ResizeIntent::new(Direction::East, ResizeKind::Grow, 40))
             .unwrap();
-        let calls = extract_calls(adapter);
+        let calls = calls.lock().unwrap();
         assert_eq!(
-            calls,
-            vec![vec!["dispatch", "resizeactive", "40", "0"]]
+            calls.as_slice(),
+            &[vec!["dispatch", "resizeactive", "40", "0"]]
         );
     }
 
     #[test]
     fn hyprland_move_and_spawn_dispatch_expected_commands() {
-        let mut adapter = test_adapter();
+        let (mut adapter, calls) = test_adapter();
         adapter.move_direction(Direction::East).unwrap();
         adapter.spawn(vec!["foot".into(), "--app-id".into(), "smoke".into()]).unwrap();
-        let calls = extract_calls(adapter);
+        let calls = calls.lock().unwrap();
         assert_eq!(
-            calls,
-            vec![
+            calls.as_slice(),
+            &[
                 vec!["dispatch", "movewindow", "r"],
                 vec!["dispatch", "exec", "foot --app-id smoke"],
             ]
