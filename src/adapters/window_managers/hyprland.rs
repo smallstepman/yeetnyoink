@@ -1,7 +1,7 @@
 //! Hyprland window manager adapter for Linux.
 //!
 //! Hyprland is a dynamic tiling Wayland compositor.
-//! This adapter communicates via `hyprctl` CLI and socket API.
+//! This adapter communicates via the `hyprctl` CLI.
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
@@ -68,7 +68,6 @@ impl HyprlandTransport for RealTransport {
 impl HyprlandAdapter {
     pub fn connect() -> Result<Self> {
         validate_declared_capabilities::<Self>()?;
-        // TODO: Verify hyprctl is available and Hyprland is running
         Ok(Self {
             transport: Box::new(RealTransport),
         })
