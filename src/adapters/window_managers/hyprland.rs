@@ -1,8 +1,108 @@
+//! Hyprland window manager adapter for Linux.
+//!
+//! Hyprland is a dynamic tiling Wayland compositor.
+//! This adapter communicates via `hyprctl` CLI and socket API.
+
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
-use crate::engine::topology::Direction;
+use crate::config::WmBackend;
 use crate::engine::runtime::ProcessId;
+use crate::engine::topology::Direction;
+use crate::engine::wm::{
+    validate_declared_capabilities, CapabilitySupport, ConfiguredWindowManager,
+    DirectionalCapability, FocusedWindowRecord, PrimitiveWindowManagerCapabilities, ResizeIntent,
+    WindowManagerCapabilities, WindowManagerCapabilityDescriptor, WindowManagerFeatures,
+    WindowManagerSession, WindowManagerSpec, WindowRecord,
+};
+
+pub struct HyprlandAdapter;
+
+pub struct HyprlandSpec;
+
+pub static HYPRLAND_SPEC: HyprlandSpec = HyprlandSpec;
+
+impl WindowManagerSpec for HyprlandSpec {
+    fn backend(&self) -> WmBackend {
+        WmBackend::Hyprland
+    }
+
+    fn name(&self) -> &'static str {
+        HyprlandAdapter::NAME
+    }
+
+    fn connect(&self) -> Result<ConfiguredWindowManager> {
+        ConfiguredWindowManager::try_new(
+            Box::new(HyprlandAdapter::connect()?),
+            WindowManagerFeatures::default(),
+        )
+    }
+}
+
+impl HyprlandAdapter {
+    pub fn connect() -> Result<Self> {
+        validate_declared_capabilities::<Self>()?;
+        // TODO: Verify hyprctl is available and Hyprland is running
+        Ok(Self)
+    }
+}
+
+impl WindowManagerCapabilityDescriptor for HyprlandAdapter {
+    const NAME: &'static str = "hyprland";
+    const CAPABILITIES: WindowManagerCapabilities = WindowManagerCapabilities {
+        primitives: PrimitiveWindowManagerCapabilities {
+            tear_out_right: false,
+            move_column: false,
+            consume_into_column_and_move: false,
+            set_window_width: true,
+            set_window_height: true,
+        },
+        tear_out: DirectionalCapability::uniform(CapabilitySupport::Unsupported),
+        resize: DirectionalCapability::uniform(CapabilitySupport::Native),
+    };
+}
+
+impl WindowManagerSession for HyprlandAdapter {
+    fn adapter_name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn capabilities(&self) -> WindowManagerCapabilities {
+        Self::CAPABILITIES
+    }
+
+    fn focused_window(&mut self) -> Result<FocusedWindowRecord> {
+        todo!("hyprland: focused_window - Task 3")
+    }
+
+    fn windows(&mut self) -> Result<Vec<WindowRecord>> {
+        todo!("hyprland: windows - Task 3")
+    }
+
+    fn focus_direction(&mut self, _direction: Direction) -> Result<()> {
+        todo!("hyprland: focus_direction - Task 3")
+    }
+
+    fn move_direction(&mut self, _direction: Direction) -> Result<()> {
+        todo!("hyprland: move_direction - Task 3")
+    }
+
+    fn resize_with_intent(&mut self, _intent: ResizeIntent) -> Result<()> {
+        todo!("hyprland: resize_with_intent - Task 3")
+    }
+
+    fn spawn(&mut self, _command: Vec<String>) -> Result<()> {
+        todo!("hyprland: spawn - Task 3")
+    }
+
+    fn focus_window_by_id(&mut self, _id: u64) -> Result<()> {
+        todo!("hyprland: focus_window_by_id - Task 3")
+    }
+
+    fn close_window_by_id(&mut self, _id: u64) -> Result<()> {
+        todo!("hyprland: close_window_by_id - Task 3")
+    }
+}
 
 pub fn parse_window_address(raw: &str) -> Result<u64> {
     let trimmed = raw.trim().strip_prefix("0x").unwrap_or(raw.trim());
@@ -37,7 +137,6 @@ pub struct HyprlandClient {
     pub class: Option<String>,
     #[serde(default)]
     pub title: Option<String>,
-    #[serde(default)]
     pub pid: Option<u32>,
     #[serde(default)]
     pub mapped: Option<bool>,
@@ -50,6 +149,8 @@ impl HyprlandClient {
         self.pid.and_then(ProcessId::new)
     }
 }
+
+
 
 #[cfg(test)]
 mod tests {
@@ -126,5 +227,12 @@ mod tests {
         assert_eq!(window.mapped, Some(true));
         // helper should convert to a domain ProcessId
         assert_eq!(window.process_id(), ProcessId::new(9316));
+    }
+
+    #[test]
+    fn hyprland_capabilities_are_valid() {
+        use crate::engine::wm::validate_declared_capabilities;
+        validate_declared_capabilities::<HyprlandAdapter>()
+            .expect("hyprland capability descriptor should be valid");
     }
 }

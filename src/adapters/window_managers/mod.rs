@@ -29,6 +29,8 @@ pub use self::niri::NiriAdapter;
 use crate::adapters::window_managers::i3::I3_SPEC;
 #[cfg(target_os = "linux")]
 use crate::adapters::window_managers::niri::NIRI_SPEC;
+#[cfg(target_os = "linux")]
+use crate::adapters::window_managers::hyprland::HYPRLAND_SPEC;
 #[cfg(target_os = "macos")]
 use crate::adapters::window_managers::paneru::PANERU_SPEC;
 #[cfg(target_os = "macos")]
@@ -39,6 +41,8 @@ use crate::engine::wm::configured::WindowManagerSpec;
 pub(crate) use crate::engine::wm::configured::UNSUPPORTED_I3_SPEC;
 #[cfg(not(target_os = "linux"))]
 pub(crate) use crate::engine::wm::configured::UNSUPPORTED_NIRI_SPEC;
+#[cfg(not(target_os = "linux"))]
+pub(crate) use crate::engine::wm::configured::UNSUPPORTED_HYPRLAND_SPEC;
 #[cfg(not(target_os = "macos"))]
 pub(crate) use crate::engine::wm::configured::UNSUPPORTED_PANERU_SPEC;
 #[cfg(not(target_os = "macos"))]
@@ -64,6 +68,16 @@ pub fn spec_for_backend(backend: WmBackend) -> &'static dyn WindowManagerSpec {
             #[cfg(not(target_os = "linux"))]
             {
                 &UNSUPPORTED_I3_SPEC
+            }
+        }
+        WmBackend::Hyprland => {
+            #[cfg(target_os = "linux")]
+            {
+                &HYPRLAND_SPEC
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                &UNSUPPORTED_HYPRLAND_SPEC
             }
         }
         WmBackend::Paneru => {
@@ -104,6 +118,7 @@ mod tests {
 
         assert_spec(super::spec_for_backend(WmBackend::Niri));
         assert_spec(super::spec_for_backend(WmBackend::I3));
+        assert_spec(super::spec_for_backend(WmBackend::Hyprland));
         assert_spec(super::spec_for_backend(WmBackend::Paneru));
         assert_spec(super::spec_for_backend(WmBackend::Yabai));
     }
