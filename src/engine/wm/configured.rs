@@ -224,6 +224,12 @@ pub(crate) static UNSUPPORTED_I3_SPEC: UnsupportedWindowManagerSpec =
         backend: WmBackend::I3,
         name: "i3",
     };
+#[cfg(not(target_os = "linux"))]
+pub(crate) static UNSUPPORTED_HYPRLAND_SPEC: UnsupportedWindowManagerSpec =
+    UnsupportedWindowManagerSpec {
+        backend: WmBackend::Hyprland,
+        name: "hyprland",
+    };
 #[cfg(not(target_os = "macos"))]
 pub(crate) static UNSUPPORTED_PANERU_SPEC: UnsupportedWindowManagerSpec =
     UnsupportedWindowManagerSpec {

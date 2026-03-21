@@ -132,6 +132,7 @@
             options.enabled_integration = optionalEnumOption [
               "niri"
               "i3"
+              "hyprland"
               "paneru"
               "yabai"
             ] "Window-manager backend. Rust defaults to niri on Linux and yabai on macOS.";

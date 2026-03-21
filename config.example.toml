@@ -17,7 +17,7 @@
 #
 
 [wm]
-enabled_integration = "niri" # niri | i3 | paneru | yabai
+enabled_integration = "niri" # niri | i3 | hyprland | paneru | yabai
 
 # ---------------------------------------------------------------------------
 # Instrumentation (logging and profiling)

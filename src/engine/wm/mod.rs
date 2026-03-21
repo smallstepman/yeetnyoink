@@ -183,6 +183,7 @@ mod tests {
 
         assert_spec(spec_for_backend(WmBackend::Niri));
         assert_spec(spec_for_backend(WmBackend::I3));
+        assert_spec(spec_for_backend(WmBackend::Hyprland));
         assert_spec(spec_for_backend(WmBackend::Paneru));
         assert_spec(spec_for_backend(WmBackend::Yabai));
         let _ = super::connect_selected as fn() -> Result<ConfiguredWindowManager>;
