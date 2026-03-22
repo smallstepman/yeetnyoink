@@ -1,7 +1,17 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     ffi::{c_char, c_int, c_void, CStr, CString},
     fmt,
+    ptr::NonNull,
+};
+
+use objc2_core_foundation::{
+    CFArray, CFDictionary, CFNumber, CFNumberType, CFRetained, CFString, CFType,
+};
+use objc2_core_graphics::{
+    kCGNullWindowID, kCGWindowLayer, kCGWindowName, kCGWindowNumber, kCGWindowOwnerName,
+    kCGWindowOwnerPID, CGWindowListCopyWindowInfo, CGWindowListCreateDescriptionFromArray,
+    CGWindowListOption,
 };
 
 #[allow(dead_code)]
@@ -28,6 +38,19 @@ const RTLD_LAZY: c_int = 0x1;
 type SlsMainConnectionIdFn = unsafe extern "C" fn() -> u32;
 #[allow(dead_code)]
 type AxIsProcessTrustedFn = unsafe extern "C" fn() -> u8;
+#[allow(dead_code)]
+type SlsCopyManagedDisplaySpacesFn = unsafe extern "C" fn(u32) -> Option<NonNull<CFArray>>;
+#[allow(dead_code)]
+type SlsManagedDisplayGetCurrentSpaceFn = unsafe extern "C" fn(u32, *const CFString) -> u64;
+#[allow(dead_code)]
+type SlsCopyWindowsWithOptionsAndTagsFn = unsafe extern "C" fn(
+    u32,
+    u32,
+    *const CFArray,
+    i32,
+    *mut i64,
+    *mut i64,
+) -> Option<NonNull<CFArray>>;
 
 #[allow(dead_code)]
 unsafe extern "C" {
@@ -194,11 +217,100 @@ impl RealNativeApi {
             })
     }
 
-    fn unsupported_topology_query(
+    fn main_connection_id(&self) -> Result<u32, MacosNativeProbeError> {
+        let Some(symbol) = self.resolve_symbol("SLSMainConnectionID") else {
+            return Err(MacosNativeProbeError::MissingTopology(
+                "SLSMainConnectionID",
+            ));
+        };
+
+        let main_connection_id: SlsMainConnectionIdFn = unsafe { std::mem::transmute(symbol) };
+        let connection_id = unsafe { main_connection_id() };
+
+        (connection_id != 0)
+            .then_some(connection_id)
+            .ok_or(MacosNativeProbeError::MissingTopology(
+                "SLSMainConnectionID",
+            ))
+    }
+
+    fn copy_managed_display_spaces_raw(
         &self,
-        query: &'static str,
-    ) -> Result<RawTopologySnapshot, MacosNativeProbeError> {
-        Err(MacosNativeProbeError::MissingTopology(query))
+    ) -> Result<CFRetained<CFArray>, MacosNativeProbeError> {
+        let Some(symbol) = self.resolve_symbol("SLSCopyManagedDisplaySpaces") else {
+            return Err(MacosNativeProbeError::MissingTopology(
+                "SLSCopyManagedDisplaySpaces",
+            ));
+        };
+
+        let copy_managed_display_spaces: SlsCopyManagedDisplaySpacesFn =
+            unsafe { std::mem::transmute(symbol) };
+        let connection_id = self.main_connection_id()?;
+        let payload = unsafe { copy_managed_display_spaces(connection_id) }.ok_or(
+            MacosNativeProbeError::MissingTopology("SLSCopyManagedDisplaySpaces"),
+        )?;
+
+        Ok(unsafe { CFRetained::from_raw(payload) })
+    }
+
+    fn current_space_for_display(
+        &self,
+        display_identifier: &str,
+    ) -> Result<u64, MacosNativeProbeError> {
+        let Some(symbol) = self.resolve_symbol("SLSManagedDisplayGetCurrentSpace") else {
+            return Err(MacosNativeProbeError::MissingTopology(
+                "SLSManagedDisplayGetCurrentSpace",
+            ));
+        };
+
+        let current_space_for_display: SlsManagedDisplayGetCurrentSpaceFn =
+            unsafe { std::mem::transmute(symbol) };
+        let connection_id = self.main_connection_id()?;
+        let display_identifier = CFString::from_str(display_identifier);
+        let space_id = unsafe {
+            current_space_for_display(connection_id, &*display_identifier as *const CFString)
+        };
+
+        (space_id != 0)
+            .then_some(space_id)
+            .ok_or(MacosNativeProbeError::MissingTopology(
+                "SLSManagedDisplayGetCurrentSpace",
+            ))
+    }
+
+    fn copy_windows_for_space_raw(
+        &self,
+        space_id: u64,
+    ) -> Result<CFRetained<CFArray>, MacosNativeProbeError> {
+        let Some(symbol) = self.resolve_symbol("SLSCopyWindowsWithOptionsAndTags") else {
+            return Err(MacosNativeProbeError::MissingTopology(
+                "SLSCopyWindowsWithOptionsAndTags",
+            ));
+        };
+
+        let copy_windows_with_options_and_tags: SlsCopyWindowsWithOptionsAndTagsFn =
+            unsafe { std::mem::transmute(symbol) };
+        let connection_id = self.main_connection_id()?;
+        let space_number = cf_number_from_u64(space_id)?;
+        let space_list = CFArray::from_objects(&[&*space_number]);
+        let space_list = unsafe { (&*space_list).cast_unchecked::<CFType>() };
+        let mut set_tags = 0i64;
+        let mut clear_tags = 0i64;
+        let payload = unsafe {
+            copy_windows_with_options_and_tags(
+                connection_id,
+                0,
+                space_list as *const CFArray<CFType> as *const CFArray,
+                0x2,
+                &mut set_tags,
+                &mut clear_tags,
+            )
+        }
+        .ok_or(MacosNativeProbeError::MissingTopology(
+            "SLSCopyWindowsWithOptionsAndTags",
+        ))?;
+
+        Ok(unsafe { CFRetained::from_raw(payload) })
     }
 }
 
@@ -226,23 +338,48 @@ impl MacosNativeApi for RealNativeApi {
     }
 
     fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
-        self.unsupported_topology_query("SLSCopyManagedDisplaySpaces")
-            .map(|snapshot| snapshot.spaces)
+        let payload = self.copy_managed_display_spaces_raw()?;
+        parse_managed_spaces(&payload)
     }
 
     fn current_space_id(&self) -> Result<u64, MacosNativeProbeError> {
-        self.unsupported_topology_query("SLSManagedDisplayGetCurrentSpace")
-            .map(|snapshot| snapshot.active_space_id)
+        let payload = self.copy_managed_display_spaces_raw()?;
+        let display_identifiers = parse_display_identifiers(&payload)?;
+
+        display_identifiers
+            .into_iter()
+            .find_map(|display_identifier| self.current_space_for_display(&display_identifier).ok())
+            .ok_or(MacosNativeProbeError::MissingTopology(
+                "SLSManagedDisplayGetCurrentSpace",
+            ))
     }
 
-    fn active_space_windows(&self, _space_id: u64) -> Result<Vec<RawWindow>, MacosNativeProbeError> {
-        self.unsupported_topology_query("SLSCopyWindowsWithOptionsAndTags")
-            .map(|snapshot| snapshot.active_space_windows)
+    fn active_space_windows(&self, space_id: u64) -> Result<Vec<RawWindow>, MacosNativeProbeError> {
+        let payload = self.copy_windows_for_space_raw(space_id)?;
+        let visible_order = query_visible_window_order(&parse_window_ids(&payload)?)?;
+        let descriptions = unsafe { CGWindowListCreateDescriptionFromArray(Some(&payload)) }
+            .ok_or(MacosNativeProbeError::MissingTopology(
+                "CGWindowListCreateDescriptionFromArray",
+            ))?;
+
+        parse_window_descriptions(&descriptions, &visible_order)
     }
 
     fn inactive_space_window_ids(&self) -> Result<HashMap<u64, Vec<u64>>, MacosNativeProbeError> {
-        self.unsupported_topology_query("SLSCopyManagedDisplaySpaces")
-            .map(|snapshot| snapshot.inactive_space_window_ids)
+        let spaces = self.managed_spaces()?;
+        let active_space_id = self.current_space_id()?;
+        let mut inactive_space_window_ids = HashMap::new();
+
+        for space in spaces {
+            if space.managed_space_id == active_space_id {
+                continue;
+            }
+
+            let payload = self.copy_windows_for_space_raw(space.managed_space_id)?;
+            inactive_space_window_ids.insert(space.managed_space_id, parse_window_ids(&payload)?);
+        }
+
+        Ok(inactive_space_window_ids)
     }
 }
 
@@ -359,6 +496,278 @@ struct RawTopologySnapshot {
     inactive_space_window_ids: HashMap<u64, Vec<u64>>,
 }
 
+fn cf_number_from_u64(value: u64) -> Result<CFRetained<CFNumber>, MacosNativeProbeError> {
+    let value = i64::try_from(value)
+        .map_err(|_| MacosNativeProbeError::MissingTopology("SLSCopyWindowsWithOptionsAndTags"))?;
+
+    unsafe {
+        CFNumber::new(
+            None,
+            CFNumberType::SInt64Type,
+            &value as *const i64 as *const c_void,
+        )
+    }
+    .ok_or(MacosNativeProbeError::MissingTopology(
+        "SLSCopyWindowsWithOptionsAndTags",
+    ))
+}
+
+fn cf_number_to_i64(number: &CFNumber) -> Option<i64> {
+    let mut value = 0i64;
+    unsafe {
+        number.value(
+            CFNumberType::SInt64Type,
+            &mut value as *mut i64 as *mut c_void,
+        )
+    }
+    .then_some(value)
+}
+
+fn cf_number_to_u64(number: &CFNumber) -> Option<u64> {
+    cf_number_to_i64(number).and_then(|value| u64::try_from(value).ok())
+}
+
+fn cf_number_to_u32(number: &CFNumber) -> Option<u32> {
+    cf_number_to_i64(number).and_then(|value| u32::try_from(value).ok())
+}
+
+fn cf_number_to_i32(number: &CFNumber) -> Option<i32> {
+    cf_number_to_i64(number).and_then(|value| i32::try_from(value).ok())
+}
+
+fn cf_dictionary_value<'a>(
+    dictionary: &'a CFDictionary<CFString, CFType>,
+    key: &CFString,
+) -> Option<CFRetained<CFType>> {
+    dictionary.get(key)
+}
+
+fn cf_dictionary_string(
+    dictionary: &CFDictionary<CFString, CFType>,
+    key: &CFString,
+) -> Option<String> {
+    cf_dictionary_value(dictionary, key)
+        .and_then(|value| value.downcast::<CFString>().ok())
+        .map(|value| value.to_string())
+}
+
+fn cf_dictionary_u64(dictionary: &CFDictionary<CFString, CFType>, key: &CFString) -> Option<u64> {
+    cf_dictionary_value(dictionary, key)
+        .and_then(|value| value.downcast::<CFNumber>().ok())
+        .and_then(|value| cf_number_to_u64(&value))
+}
+
+fn cf_dictionary_u32(dictionary: &CFDictionary<CFString, CFType>, key: &CFString) -> Option<u32> {
+    cf_dictionary_value(dictionary, key)
+        .and_then(|value| value.downcast::<CFNumber>().ok())
+        .and_then(|value| cf_number_to_u32(&value))
+}
+
+fn cf_dictionary_i32(dictionary: &CFDictionary<CFString, CFType>, key: &CFString) -> Option<i32> {
+    cf_dictionary_value(dictionary, key)
+        .and_then(|value| value.downcast::<CFNumber>().ok())
+        .and_then(|value| cf_number_to_i32(&value))
+}
+
+fn cf_dictionary_array(
+    dictionary: &CFDictionary<CFString, CFType>,
+    key: &CFString,
+) -> Option<CFRetained<CFArray>> {
+    cf_dictionary_value(dictionary, key).and_then(|value| value.downcast::<CFArray>().ok())
+}
+
+fn cf_dictionary_dictionary(
+    dictionary: &CFDictionary<CFString, CFType>,
+    key: &CFString,
+) -> Option<CFRetained<CFDictionary>> {
+    cf_dictionary_value(dictionary, key).and_then(|value| value.downcast::<CFDictionary>().ok())
+}
+
+fn cg_window_number_key() -> &'static CFString {
+    unsafe { kCGWindowNumber }
+}
+
+fn cg_window_owner_pid_key() -> &'static CFString {
+    unsafe { kCGWindowOwnerPID }
+}
+
+fn cg_window_owner_name_key() -> &'static CFString {
+    unsafe { kCGWindowOwnerName }
+}
+
+fn cg_window_name_key() -> &'static CFString {
+    unsafe { kCGWindowName }
+}
+
+fn cg_window_layer_key() -> &'static CFString {
+    unsafe { kCGWindowLayer }
+}
+
+fn stage_manager_managed(dictionary: &CFDictionary<CFString, CFType>) -> bool {
+    [
+        "StageManagerManaged",
+        "StageManagerSpace",
+        "isStageManager",
+        "StageManager",
+    ]
+    .into_iter()
+    .any(|key| cf_dictionary_u64(dictionary, &CFString::from_static_str(key)).is_some())
+}
+
+fn parse_display_identifiers(payload: &CFArray) -> Result<Vec<String>, MacosNativeProbeError> {
+    let displays = unsafe { payload.cast_unchecked::<CFDictionary>() };
+    let display_identifier_key = CFString::from_static_str("Display Identifier");
+
+    displays
+        .iter()
+        .map(|display| {
+            let display = unsafe { (&*display).cast_unchecked::<CFString, CFType>() };
+            cf_dictionary_string(display, &display_identifier_key).ok_or(
+                MacosNativeProbeError::MissingTopology("SLSCopyManagedDisplaySpaces"),
+            )
+        })
+        .collect()
+}
+
+fn parse_managed_spaces(payload: &CFArray) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
+    let displays = unsafe { payload.cast_unchecked::<CFDictionary>() };
+    let spaces_key = CFString::from_static_str("Spaces");
+    let mut spaces = Vec::new();
+
+    for display in displays.iter() {
+        let display = unsafe { (&*display).cast_unchecked::<CFString, CFType>() };
+        let display_spaces = cf_dictionary_array(display, &spaces_key).ok_or(
+            MacosNativeProbeError::MissingTopology("SLSCopyManagedDisplaySpaces"),
+        )?;
+        let display_spaces = unsafe { (&*display_spaces).cast_unchecked::<CFDictionary>() };
+
+        for space in display_spaces.iter() {
+            spaces.push(parse_raw_space_record(&space)?);
+        }
+    }
+
+    Ok(spaces)
+}
+
+fn parse_raw_space_record(space: &CFDictionary) -> Result<RawSpaceRecord, MacosNativeProbeError> {
+    let space = unsafe { space.cast_unchecked::<CFString, CFType>() };
+    let managed_space_id_key = CFString::from_static_str("ManagedSpaceID");
+    let space_type_key = CFString::from_static_str("type");
+    let tile_layout_manager_key = CFString::from_static_str("TileLayoutManager");
+    let tile_spaces_key = CFString::from_static_str("TileSpaces");
+
+    let managed_space_id = cf_dictionary_u64(space, &managed_space_id_key).ok_or(
+        MacosNativeProbeError::MissingTopology("SLSCopyManagedDisplaySpaces"),
+    )?;
+    let space_type = cf_dictionary_i32(space, &space_type_key).ok_or(
+        MacosNativeProbeError::MissingTopology("SLSCopyManagedDisplaySpaces"),
+    )?;
+    let tile_layout_manager = cf_dictionary_dictionary(space, &tile_layout_manager_key);
+    let has_tile_layout_manager = tile_layout_manager.is_some();
+    let tile_spaces = tile_layout_manager
+        .as_ref()
+        .and_then(|manager| {
+            let manager = unsafe { (&**manager).cast_unchecked::<CFString, CFType>() };
+            cf_dictionary_array(manager, &tile_spaces_key)
+        })
+        .map(|tile_spaces| {
+            let tile_spaces = unsafe { (&*tile_spaces).cast_unchecked::<CFDictionary>() };
+
+            tile_spaces
+                .iter()
+                .filter_map(|tile_space| {
+                    let tile_space = unsafe { (&*tile_space).cast_unchecked::<CFString, CFType>() };
+                    cf_dictionary_u64(tile_space, &managed_space_id_key).or_else(|| {
+                        cf_dictionary_u64(tile_space, &CFString::from_static_str("id64"))
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    Ok(RawSpaceRecord {
+        managed_space_id,
+        space_type,
+        tile_spaces,
+        has_tile_layout_manager,
+        stage_manager_managed: stage_manager_managed(space),
+    })
+}
+
+fn parse_window_ids(payload: &CFArray) -> Result<Vec<u64>, MacosNativeProbeError> {
+    let window_ids = unsafe { payload.cast_unchecked::<CFNumber>() };
+
+    window_ids
+        .iter()
+        .map(|window_id| {
+            cf_number_to_u64(window_id.as_ref()).ok_or(MacosNativeProbeError::MissingTopology(
+                "SLSCopyWindowsWithOptionsAndTags",
+            ))
+        })
+        .collect()
+}
+
+fn query_visible_window_order(
+    target_window_ids: &[u64],
+) -> Result<HashMap<u64, usize>, MacosNativeProbeError> {
+    let onscreen_descriptions = CGWindowListCopyWindowInfo(
+        CGWindowListOption::OptionOnScreenOnly | CGWindowListOption::ExcludeDesktopElements,
+        kCGNullWindowID,
+    )
+    .ok_or(MacosNativeProbeError::MissingTopology(
+        "CGWindowListCopyWindowInfo",
+    ))?;
+    let onscreen_descriptions =
+        unsafe { (&*onscreen_descriptions).cast_unchecked::<CFDictionary>() };
+    let target_window_ids = target_window_ids.iter().copied().collect::<HashSet<_>>();
+    let mut visible_order = HashMap::new();
+    let window_number_key = cg_window_number_key();
+
+    for (index, window) in onscreen_descriptions.iter().enumerate() {
+        let window = unsafe { (&*window).cast_unchecked::<CFString, CFType>() };
+        let Some(window_id) = cf_dictionary_u64(window, window_number_key) else {
+            continue;
+        };
+
+        if target_window_ids.contains(&window_id) {
+            visible_order.insert(window_id, index);
+        }
+    }
+
+    Ok(visible_order)
+}
+
+fn parse_window_descriptions(
+    payload: &CFArray,
+    visible_order: &HashMap<u64, usize>,
+) -> Result<Vec<RawWindow>, MacosNativeProbeError> {
+    let descriptions = unsafe { payload.cast_unchecked::<CFDictionary>() };
+    let mut windows = Vec::new();
+    let window_number_key = cg_window_number_key();
+    let window_owner_pid_key = cg_window_owner_pid_key();
+    let window_owner_name_key = cg_window_owner_name_key();
+    let window_name_key = cg_window_name_key();
+    let window_layer_key = cg_window_layer_key();
+
+    for description in descriptions.iter() {
+        let description = unsafe { (&*description).cast_unchecked::<CFString, CFType>() };
+        let id = cf_dictionary_u64(description, window_number_key).ok_or(
+            MacosNativeProbeError::MissingTopology("CGWindowListCreateDescriptionFromArray"),
+        )?;
+
+        windows.push(RawWindow {
+            id,
+            pid: cf_dictionary_u32(description, window_owner_pid_key),
+            app_id: cf_dictionary_string(description, window_owner_name_key),
+            title: cf_dictionary_string(description, window_name_key),
+            level: cf_dictionary_i32(description, window_layer_key).unwrap_or_default(),
+            visible_index: visible_order.get(&id).copied(),
+        });
+    }
+
+    Ok(windows)
+}
+
 #[cfg_attr(not(test), allow(dead_code))]
 fn classify_space(raw_space: &RawSpaceRecord) -> SpaceKind {
     if raw_space.stage_manager_managed {
@@ -392,21 +801,16 @@ fn order_active_space_windows(windows: &[RawWindow]) -> Vec<RawWindow> {
 
 #[allow(dead_code)]
 fn snapshots_for_active_space(space_id: u64, windows: &[RawWindow]) -> Vec<WindowSnapshot> {
-    let order_by_window_id = order_active_space_windows(windows)
+    order_active_space_windows(windows)
         .into_iter()
         .enumerate()
-        .map(|(index, window)| (window.id, index))
-        .collect::<HashMap<_, _>>();
-
-    windows
-        .iter()
-        .map(|window| WindowSnapshot {
+        .map(|(index, window)| WindowSnapshot {
             id: window.id,
             pid: window.pid,
-            app_id: window.app_id.clone(),
-            title: window.title.clone(),
+            app_id: window.app_id,
+            title: window.title,
             space_id,
-            order_index: order_by_window_id.get(&window.id).copied(),
+            order_index: Some(index),
         })
         .collect()
 }
@@ -442,7 +846,10 @@ fn window_snapshots_from_topology(topology: &RawTopologySnapshot) -> Vec<WindowS
                 .get(&space.managed_space_id)
                 .map(Vec::as_slice)
                 .unwrap_or(&[]);
-            snapshots.extend(snapshots_for_inactive_space(space.managed_space_id, window_ids));
+            snapshots.extend(snapshots_for_inactive_space(
+                space.managed_space_id,
+                window_ids,
+            ));
         }
     }
 
@@ -451,13 +858,11 @@ fn window_snapshots_from_topology(topology: &RawTopologySnapshot) -> Vec<WindowS
 
 #[cfg_attr(not(test), allow(dead_code))]
 fn space_snapshots_from_topology(topology: &RawTopologySnapshot) -> Vec<SpaceSnapshot> {
-    let active_window_ids = snapshots_for_active_space(
-        topology.active_space_id,
-        &topology.active_space_windows,
-    )
-    .into_iter()
-    .map(|window| window.id)
-    .collect::<Vec<_>>();
+    let active_window_ids =
+        snapshots_for_active_space(topology.active_space_id, &topology.active_space_windows)
+            .into_iter()
+            .map(|window| window.id)
+            .collect::<Vec<_>>();
 
     topology
         .spaces
@@ -514,13 +919,11 @@ mod tests {
             RawTopologySnapshot {
                 spaces: vec![raw_desktop_space(1), raw_split_space(2, &[21, 22])],
                 active_space_id: 1,
-                active_space_windows: vec![
-                    raw_window(active_window_id)
-                        .with_visible_index(0)
-                        .with_pid(4242)
-                        .with_app_id("com.example.focused")
-                        .with_title("Focused window"),
-                ],
+                active_space_windows: vec![raw_window(active_window_id)
+                    .with_visible_index(0)
+                    .with_pid(4242)
+                    .with_app_id("com.example.focused")
+                    .with_title("Focused window")],
                 inactive_space_window_ids: HashMap::from([(2, vec![21, 22])]),
             }
         }
@@ -785,12 +1188,12 @@ mod tests {
         let ctx = fake_context_with_spaces();
         let spaces = ctx.spaces().unwrap();
 
-        assert!(
-            spaces
-                .iter()
-                .any(|space| space.kind == SpaceKind::Desktop && space.is_active)
-        );
-        assert!(spaces.iter().any(|space| space.kind == SpaceKind::SplitView));
+        assert!(spaces
+            .iter()
+            .any(|space| space.kind == SpaceKind::Desktop && space.is_active));
+        assert!(spaces
+            .iter()
+            .any(|space| space.kind == SpaceKind::SplitView));
     }
 
     #[test]
@@ -799,5 +1202,37 @@ mod tests {
         let focused = ctx.focused_window().unwrap();
         assert_eq!(focused.id, 42);
         assert_eq!(focused.space_id, 1);
+    }
+
+    #[test]
+    fn active_space_snapshot_ordered_window_ids_match_window_ordering_contract() {
+        let topology = RawTopologySnapshot {
+            spaces: vec![raw_desktop_space(1)],
+            active_space_id: 1,
+            active_space_windows: vec![
+                raw_window(11).with_visible_index(1),
+                raw_window(12).with_visible_index(0),
+                raw_window(13).with_level(5),
+            ],
+            inactive_space_window_ids: HashMap::new(),
+        };
+
+        let spaces = space_snapshots_from_topology(&topology);
+        let active = spaces.iter().find(|space| space.is_active).unwrap();
+        let windows = window_snapshots_from_topology(&topology);
+        let ordered_window_ids_from_windows = windows
+            .iter()
+            .filter(|window| window.space_id == topology.active_space_id)
+            .map(|window| (window.id, window.order_index.unwrap()))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            active.ordered_window_ids.as_deref(),
+            Some(&[12, 11, 13][..])
+        );
+        assert_eq!(
+            ordered_window_ids_from_windows,
+            vec![(12, 0), (11, 1), (13, 2)]
+        );
     }
 }
