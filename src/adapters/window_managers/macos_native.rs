@@ -966,8 +966,35 @@ fn classify_space(raw_space: &RawSpaceRecord) -> SpaceKind {
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
-fn stable_app_id_from_real_window(_pid: Option<u32>, _owner_name: Option<&str>) -> Option<String> {
-    None
+fn stable_app_id_from_real_window(pid: Option<u32>, _owner_name: Option<&str>) -> Option<String> {
+    pid.and_then(stable_app_id_from_pid)
+}
+
+fn stable_app_id_from_pid(pid: u32) -> Option<String> {
+    let lsappinfo_output = lsappinfo_bundle_identifier_output(pid)?;
+    parse_lsappinfo_bundle_identifier(&lsappinfo_output)
+}
+
+fn lsappinfo_bundle_identifier_output(pid: u32) -> Option<String> {
+    let application_specifier = format!("#{pid}");
+    let output = std::process::Command::new("lsappinfo")
+        .args(["info", "-only", "bundleid", application_specifier.as_str()])
+        .output()
+        .ok()?;
+
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+fn parse_lsappinfo_bundle_identifier(output: &str) -> Option<String> {
+    output.lines().find_map(|line| {
+        line.strip_prefix("\"CFBundleIdentifier\"=").and_then(|value| {
+            let bundle_identifier = value.trim().trim_matches('"');
+            (!bundle_identifier.is_empty()).then(|| bundle_identifier.to_string())
+        })
+    })
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -1339,8 +1366,18 @@ mod tests {
     #[test]
     fn real_path_app_id_ignores_owner_name_display_label() {
         assert_eq!(
-            stable_app_id_from_real_window(Some(4242), Some("Finder")),
+            stable_app_id_from_real_window(None, Some("Finder")),
             None
+        );
+    }
+
+    #[test]
+    fn parse_lsappinfo_bundle_identifier_extracts_stable_app_id() {
+        let output = "\"LSDisplayName\"=\"Finder\"\n\"CFBundleIdentifier\"=\"com.apple.finder\"\n";
+
+        assert_eq!(
+            parse_lsappinfo_bundle_identifier(output),
+            Some("com.apple.finder".to_string())
         );
     }
 
