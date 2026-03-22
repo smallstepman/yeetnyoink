@@ -90,7 +90,6 @@ unsafe extern "C" {
 unsafe extern "C" {
     static kCGWindowNumber: CFStringRef;
     static kCGWindowOwnerPID: CFStringRef;
-    static kCGWindowOwnerName: CFStringRef;
     static kCGWindowName: CFStringRef;
     static kCGWindowLayer: CFStringRef;
 
@@ -195,7 +194,7 @@ impl std::error::Error for MacosNativeConnectError {}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MacosNativeProbeError {
     MissingTopology(&'static str),
-    MissingFocusedWindow(u64),
+    MissingFocusedWindow,
 }
 
 impl fmt::Display for MacosNativeProbeError {
@@ -204,8 +203,8 @@ impl fmt::Display for MacosNativeProbeError {
             Self::MissingTopology(query) => {
                 write!(f, "macOS native topology query is unavailable: {query}")
             }
-            Self::MissingFocusedWindow(space_id) => {
-                write!(f, "no focused window was found for active Space {space_id}")
+            Self::MissingFocusedWindow => {
+                f.write_str("no focused window was found for any active Space")
             }
         }
     }
@@ -219,7 +218,7 @@ pub(crate) trait MacosNativeApi {
     fn ax_is_trusted(&self) -> bool;
     fn minimal_topology_ready(&self) -> bool;
     fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError>;
-    fn current_space_id(&self) -> Result<u64, MacosNativeProbeError>;
+    fn active_space_ids(&self) -> Result<HashSet<u64>, MacosNativeProbeError>;
     fn active_space_windows(&self, space_id: u64) -> Result<Vec<RawWindow>, MacosNativeProbeError>;
     fn inactive_space_window_ids(&self) -> Result<HashMap<u64, Vec<u64>>, MacosNativeProbeError>;
 }
@@ -270,13 +269,21 @@ where
 
     fn topology_snapshot(&self) -> Result<RawTopologySnapshot, MacosNativeProbeError> {
         let spaces = self.api.managed_spaces()?;
-        let active_space_id = self.api.current_space_id()?;
-        let active_space_windows = self.api.active_space_windows(active_space_id)?;
+        let active_space_ids = self.api.active_space_ids()?;
+        let active_space_windows = active_space_ids
+            .iter()
+            .copied()
+            .map(|space_id| {
+                self.api
+                    .active_space_windows(space_id)
+                    .map(|windows| (space_id, windows))
+            })
+            .collect::<Result<HashMap<_, _>, _>>()?;
         let inactive_space_window_ids = self.api.inactive_space_window_ids()?;
 
         Ok(RawTopologySnapshot {
             spaces,
-            active_space_id,
+            active_space_ids,
             active_space_windows,
             inactive_space_window_ids,
         })
@@ -451,13 +458,16 @@ impl MacosNativeApi for RealNativeApi {
         parse_managed_spaces(payload.as_type_ref() as CFArrayRef)
     }
 
-    fn current_space_id(&self) -> Result<u64, MacosNativeProbeError> {
+    fn active_space_ids(&self) -> Result<HashSet<u64>, MacosNativeProbeError> {
         let payload = self.copy_managed_display_spaces_raw()?;
         let display_identifiers = parse_display_identifiers(payload.as_type_ref() as CFArrayRef)?;
-
-        display_identifiers
+        let active_space_ids = display_identifiers
             .into_iter()
-            .find_map(|display_identifier| self.current_space_for_display(&display_identifier).ok())
+            .map(|display_identifier| self.current_space_for_display(&display_identifier))
+            .collect::<Result<HashSet<_>, _>>()?;
+
+        (!active_space_ids.is_empty())
+            .then_some(active_space_ids)
             .ok_or(MacosNativeProbeError::MissingTopology(
                 "SLSManagedDisplayGetCurrentSpace",
             ))
@@ -481,11 +491,11 @@ impl MacosNativeApi for RealNativeApi {
 
     fn inactive_space_window_ids(&self) -> Result<HashMap<u64, Vec<u64>>, MacosNativeProbeError> {
         let spaces = self.managed_spaces()?;
-        let active_space_id = self.current_space_id()?;
+        let active_space_ids = self.active_space_ids()?;
         let mut inactive_space_window_ids = HashMap::new();
 
         for space in spaces {
-            if space.managed_space_id == active_space_id {
+            if active_space_ids.contains(&space.managed_space_id) {
                 continue;
             }
 
@@ -608,8 +618,8 @@ pub(crate) struct RawWindow {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RawTopologySnapshot {
     spaces: Vec<RawSpaceRecord>,
-    active_space_id: u64,
-    active_space_windows: Vec<RawWindow>,
+    active_space_ids: HashSet<u64>,
+    active_space_windows: HashMap<u64, Vec<RawWindow>>,
     inactive_space_window_ids: HashMap<u64, Vec<u64>>,
 }
 
@@ -761,10 +771,6 @@ fn cg_window_number_key() -> CFStringRef {
 
 fn cg_window_owner_pid_key() -> CFStringRef {
     unsafe { kCGWindowOwnerPID }
-}
-
-fn cg_window_owner_name_key() -> CFStringRef {
-    unsafe { kCGWindowOwnerName }
 }
 
 fn cg_window_name_key() -> CFStringRef {
@@ -919,7 +925,6 @@ fn parse_window_descriptions(
     let mut windows = Vec::new();
     let window_number_key = cg_window_number_key();
     let window_owner_pid_key = cg_window_owner_pid_key();
-    let window_owner_name_key = cg_window_owner_name_key();
     let window_name_key = cg_window_name_key();
     let window_layer_key = cg_window_layer_key();
 
@@ -930,11 +935,12 @@ fn parse_window_descriptions(
         let id = cf_dictionary_u64(description, window_number_key).ok_or(
             MacosNativeProbeError::MissingTopology("CGWindowListCreateDescriptionFromArray"),
         )?;
+        let pid = cf_dictionary_u32(description, window_owner_pid_key);
 
         windows.push(RawWindow {
             id,
-            pid: cf_dictionary_u32(description, window_owner_pid_key),
-            app_id: cf_dictionary_string(description, window_owner_name_key),
+            pid,
+            app_id: stable_app_id_from_real_window(pid, None),
             title: cf_dictionary_string(description, window_name_key),
             level: cf_dictionary_i32(description, window_layer_key).unwrap_or_default(),
             visible_index: visible_order.get(&id).copied(),
@@ -960,18 +966,26 @@ fn classify_space(raw_space: &RawSpaceRecord) -> SpaceKind {
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
+fn stable_app_id_from_real_window(_pid: Option<u32>, _owner_name: Option<&str>) -> Option<String> {
+    None
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn compare_active_windows(left: &RawWindow, right: &RawWindow) -> std::cmp::Ordering {
+    match (left.visible_index, right.visible_index) {
+        (Some(left_index), Some(right_index)) => left_index.cmp(&right_index),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
+    }
+    .then_with(|| right.level.cmp(&left.level))
+    .then_with(|| left.id.cmp(&right.id))
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
 fn order_active_space_windows(windows: &[RawWindow]) -> Vec<RawWindow> {
     let mut ordered = windows.to_vec();
-    ordered.sort_by(|left, right| {
-        match (left.visible_index, right.visible_index) {
-            (Some(left_index), Some(right_index)) => left_index.cmp(&right_index),
-            (Some(_), None) => std::cmp::Ordering::Less,
-            (None, Some(_)) => std::cmp::Ordering::Greater,
-            (None, None) => std::cmp::Ordering::Equal,
-        }
-        .then_with(|| right.level.cmp(&left.level))
-        .then_with(|| left.id.cmp(&right.id))
-    });
+    ordered.sort_by(compare_active_windows);
     ordered
 }
 
@@ -1011,10 +1025,14 @@ fn window_snapshots_from_topology(topology: &RawTopologySnapshot) -> Vec<WindowS
     let mut snapshots = Vec::new();
 
     for space in &topology.spaces {
-        if space.managed_space_id == topology.active_space_id {
+        if topology.active_space_ids.contains(&space.managed_space_id) {
             snapshots.extend(snapshots_for_active_space(
                 space.managed_space_id,
-                &topology.active_space_windows,
+                topology
+                    .active_space_windows
+                    .get(&space.managed_space_id)
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]),
             ));
         } else {
             let window_ids = topology
@@ -1034,21 +1052,31 @@ fn window_snapshots_from_topology(topology: &RawTopologySnapshot) -> Vec<WindowS
 
 #[cfg_attr(not(test), allow(dead_code))]
 fn space_snapshots_from_topology(topology: &RawTopologySnapshot) -> Vec<SpaceSnapshot> {
-    let active_window_ids =
-        snapshots_for_active_space(topology.active_space_id, &topology.active_space_windows)
-            .into_iter()
-            .map(|window| window.id)
-            .collect::<Vec<_>>();
-
     topology
         .spaces
         .iter()
-        .map(|space| SpaceSnapshot {
-            id: space.managed_space_id,
-            kind: classify_space(space),
-            is_active: space.managed_space_id == topology.active_space_id,
-            ordered_window_ids: (space.managed_space_id == topology.active_space_id)
-                .then(|| active_window_ids.clone()),
+        .map(|space| {
+            let is_active = topology.active_space_ids.contains(&space.managed_space_id);
+            let ordered_window_ids = is_active.then(|| {
+                snapshots_for_active_space(
+                    space.managed_space_id,
+                    topology
+                        .active_space_windows
+                        .get(&space.managed_space_id)
+                        .map(Vec::as_slice)
+                        .unwrap_or(&[]),
+                )
+                .into_iter()
+                .map(|window| window.id)
+                .collect::<Vec<_>>()
+            });
+
+            SpaceSnapshot {
+                id: space.managed_space_id,
+                kind: classify_space(space),
+                is_active,
+                ordered_window_ids,
+            }
         })
         .collect()
 }
@@ -1057,13 +1085,18 @@ fn space_snapshots_from_topology(topology: &RawTopologySnapshot) -> Vec<SpaceSna
 fn focused_window_from_topology(
     topology: &RawTopologySnapshot,
 ) -> Result<WindowSnapshot, MacosNativeProbeError> {
+    let focused_window_id = topology
+        .active_space_windows
+        .iter()
+        .flat_map(|(space_id, windows)| windows.iter().cloned().map(|window| (*space_id, window)))
+        .min_by(|(_, left), (_, right)| compare_active_windows(left, right))
+        .map(|(space_id, window)| (space_id, window.id))
+        .ok_or(MacosNativeProbeError::MissingFocusedWindow)?;
+
     window_snapshots_from_topology(topology)
         .into_iter()
-        .filter(|window| window.space_id == topology.active_space_id)
-        .min_by_key(|window| window.order_index.unwrap_or(usize::MAX))
-        .ok_or(MacosNativeProbeError::MissingFocusedWindow(
-            topology.active_space_id,
-        ))
+        .find(|window| (window.space_id, window.id) == focused_window_id)
+        .ok_or(MacosNativeProbeError::MissingFocusedWindow)
 }
 
 #[cfg(test)]
@@ -1093,14 +1126,47 @@ mod tests {
     impl FakeNativeApi {
         fn topology_fixture(active_window_id: u64) -> RawTopologySnapshot {
             RawTopologySnapshot {
-                spaces: vec![raw_desktop_space(1), raw_split_space(2, &[21, 22])],
-                active_space_id: 1,
-                active_space_windows: vec![raw_window(active_window_id)
-                    .with_visible_index(0)
-                    .with_pid(4242)
-                    .with_app_id("com.example.focused")
-                    .with_title("Focused window")],
-                inactive_space_window_ids: HashMap::from([(2, vec![21, 22])]),
+                spaces: vec![raw_desktop_space(1),raw_split_space(2,&[21,22])],
+                active_space_ids: HashSet::from([1]),
+                active_space_windows: HashMap::from([(
+                    1,
+                    vec![raw_window(active_window_id)
+                        .with_visible_index(0)
+                        .with_pid(4242)
+                        .with_app_id("com.example.focused")
+                        .with_title("Focused window")],
+                )]),
+                inactive_space_window_ids: HashMap::from([(2, vec![21,22])]),
+            }
+        }
+
+        fn multi_display_topology_fixture() -> RawTopologySnapshot {
+            RawTopologySnapshot {
+                spaces: vec![
+                    raw_desktop_space(1),
+                    raw_split_space(2, &[21, 22]),
+                    raw_fullscreen_space(3),
+                ],
+                active_space_ids: HashSet::from([1, 3]),
+                active_space_windows: HashMap::from([
+                    (
+                        1,
+                        vec![raw_window(11)
+                            .with_visible_index(2)
+                            .with_pid(1111)
+                            .with_app_id("com.example.left")
+                            .with_title("Left display")],
+                    ),
+                    (
+                        3,
+                        vec![raw_window(31)
+                            .with_visible_index(0)
+                            .with_pid(3333)
+                            .with_app_id("com.example.right")
+                            .with_title("Right display")],
+                    ),
+                ]),
+                inactive_space_window_ids: HashMap::from([(2, vec![21,22])]),
             }
         }
 
@@ -1142,19 +1208,20 @@ mod tests {
             Ok(self.topology.spaces.clone())
         }
 
-        fn current_space_id(&self) -> Result<u64, MacosNativeProbeError> {
-            Ok(self.topology.active_space_id)
+        fn active_space_ids(&self) -> Result<HashSet<u64>, MacosNativeProbeError> {
+            Ok(self.topology.active_space_ids.clone())
         }
 
         fn active_space_windows(
             &self,
             space_id: u64,
         ) -> Result<Vec<RawWindow>, MacosNativeProbeError> {
-            if space_id == self.topology.active_space_id {
-                Ok(self.topology.active_space_windows.clone())
-            } else {
-                Ok(Vec::new())
-            }
+            Ok(self
+                .topology
+                .active_space_windows
+                .get(&space_id)
+                .cloned()
+                .unwrap_or_default())
         }
 
         fn inactive_space_window_ids(
@@ -1270,6 +1337,14 @@ mod tests {
     }
 
     #[test]
+    fn real_path_app_id_ignores_owner_name_display_label() {
+        assert_eq!(
+            stable_app_id_from_real_window(Some(4242), Some("Finder")),
+            None
+        );
+    }
+
+    #[test]
     fn active_space_ordering_prefers_frontmost_visible_windows() {
         let windows = vec![
             raw_window(11).with_level(10).with_visible_index(1),
@@ -1381,15 +1456,59 @@ mod tests {
     }
 
     #[test]
+    fn spaces_snapshot_marks_all_active_display_spaces_active() {
+        let topology = FakeNativeApi::multi_display_topology_fixture();
+
+        let spaces = space_snapshots_from_topology(&topology);
+
+        assert_eq!(
+            spaces
+                .iter()
+                .filter(|space| space.is_active)
+                .map(|space| space.id)
+                .collect::<Vec<_>>(),
+            vec![1,3]
+        );
+        assert_eq!(
+            spaces
+                .iter()
+                .find(|space| space.id == 1)
+                .and_then(|space| space.ordered_window_ids.as_deref()),
+            Some(&[11][..])
+        );
+        assert_eq!(
+            spaces
+                .iter()
+                .find(|space| space.id == 3)
+                .and_then(|space| space.ordered_window_ids.as_deref()),
+            Some(&[31][..])
+        );
+    }
+
+    #[test]
+    fn focused_window_prefers_frontmost_window_across_active_spaces() {
+        let topology = FakeNativeApi::multi_display_topology_fixture();
+
+        let focused = focused_window_from_topology(&topology).unwrap();
+
+        assert_eq!(focused.id, 31);
+        assert_eq!(focused.space_id, 3);
+        assert_eq!(focused.order_index, Some(0));
+    }
+
+    #[test]
     fn active_space_snapshot_ordered_window_ids_match_window_ordering_contract() {
         let topology = RawTopologySnapshot {
             spaces: vec![raw_desktop_space(1)],
-            active_space_id: 1,
-            active_space_windows: vec![
-                raw_window(11).with_visible_index(1),
-                raw_window(12).with_visible_index(0),
-                raw_window(13).with_level(5),
-            ],
+            active_space_ids: HashSet::from([1]),
+            active_space_windows: HashMap::from([(
+                1,
+                vec![
+                    raw_window(11).with_visible_index(1),
+                    raw_window(12).with_visible_index(0),
+                    raw_window(13).with_level(5),
+                ],
+            )]),
             inactive_space_window_ids: HashMap::new(),
         };
 
@@ -1398,7 +1517,7 @@ mod tests {
         let windows = window_snapshots_from_topology(&topology);
         let ordered_window_ids_from_windows = windows
             .iter()
-            .filter(|window| window.space_id == topology.active_space_id)
+            .filter(|window| topology.active_space_ids.contains(&window.space_id))
             .map(|window| (window.id, window.order_index.unwrap()))
             .collect::<Vec<_>>();
 
