@@ -10,6 +10,7 @@ const REQUIRED_PRIVATE_SYMBOLS: &[&str] = &[
     "SLSCopyManagedDisplaySpaces",
     "SLSManagedDisplayGetCurrentSpace",
     "SLSCopyWindowsWithOptionsAndTags",
+    "AXIsProcessTrusted",
     "_AXUIElementGetWindow",
     "_SLPSSetFrontProcessWithOptions",
 ];
@@ -525,6 +526,18 @@ mod tests {
             MacosNativeConnectError::MissingRequiredSymbol("SLSCopyManagedDisplaySpaces")
         );
         assert!(err.to_string().contains("SLSCopyManagedDisplaySpaces"));
+    }
+
+    #[test]
+    fn connect_with_api_rejects_missing_ax_trust_symbol() {
+        let api = FakeNativeApi::default().without_symbol("AXIsProcessTrusted");
+        let err = MacosNativeContext::connect_with_api(api).unwrap_err();
+
+        assert_eq!(
+            err,
+            MacosNativeConnectError::MissingRequiredSymbol("AXIsProcessTrusted")
+        );
+        assert!(err.to_string().contains("AXIsProcessTrusted"));
     }
 
     #[test]
