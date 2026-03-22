@@ -221,6 +221,27 @@ pub(crate) trait MacosNativeApi {
     fn active_space_ids(&self) -> Result<HashSet<u64>, MacosNativeProbeError>;
     fn active_space_windows(&self, space_id: u64) -> Result<Vec<RawWindow>, MacosNativeProbeError>;
     fn inactive_space_window_ids(&self) -> Result<HashMap<u64, Vec<u64>>, MacosNativeProbeError>;
+
+    fn topology_snapshot(&self) -> Result<RawTopologySnapshot, MacosNativeProbeError> {
+        let spaces = self.managed_spaces()?;
+        let active_space_ids = self.active_space_ids()?;
+        let active_space_windows = active_space_ids
+            .iter()
+            .copied()
+            .map(|space_id| {
+                self.active_space_windows(space_id)
+                    .map(|windows| (space_id, windows))
+            })
+            .collect::<Result<HashMap<_, _>, _>>()?;
+        let inactive_space_window_ids = self.inactive_space_window_ids()?;
+
+        Ok(RawTopologySnapshot {
+            spaces,
+            active_space_ids,
+            active_space_windows,
+            inactive_space_window_ids,
+        })
+    }
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -268,25 +289,7 @@ where
     }
 
     fn topology_snapshot(&self) -> Result<RawTopologySnapshot, MacosNativeProbeError> {
-        let spaces = self.api.managed_spaces()?;
-        let active_space_ids = self.api.active_space_ids()?;
-        let active_space_windows = active_space_ids
-            .iter()
-            .copied()
-            .map(|space_id| {
-                self.api
-                    .active_space_windows(space_id)
-                    .map(|windows| (space_id, windows))
-            })
-            .collect::<Result<HashMap<_, _>, _>>()?;
-        let inactive_space_window_ids = self.api.inactive_space_window_ids()?;
-
-        Ok(RawTopologySnapshot {
-            spaces,
-            active_space_ids,
-            active_space_windows,
-            inactive_space_window_ids,
-        })
+        self.api.topology_snapshot()
     }
 }
 
@@ -508,6 +511,53 @@ impl MacosNativeApi for RealNativeApi {
 
         Ok(inactive_space_window_ids)
     }
+
+    fn topology_snapshot(&self) -> Result<RawTopologySnapshot, MacosNativeProbeError> {
+        let payload = self.copy_managed_display_spaces_raw()?;
+        let payload = payload.as_type_ref() as CFArrayRef;
+        let spaces = parse_managed_spaces(payload)?;
+        let active_space_ids = parse_active_space_ids(payload)?;
+        let mut active_space_windows = HashMap::new();
+        let mut inactive_space_window_ids = HashMap::new();
+
+        for space in &spaces {
+            let payload = self.copy_windows_for_space_raw(space.managed_space_id)?;
+
+            if active_space_ids.contains(&space.managed_space_id) {
+                let visible_order = query_visible_window_order(&parse_window_ids(
+                    payload.as_type_ref() as CFArrayRef,
+                )?)?;
+                let descriptions = unsafe {
+                    CfOwned::from_create_rule(CGWindowListCreateDescriptionFromArray(
+                        payload.as_type_ref() as CFArrayRef,
+                    ))
+                }
+                .ok_or(MacosNativeProbeError::MissingTopology(
+                    "CGWindowListCreateDescriptionFromArray",
+                ))?;
+
+                active_space_windows.insert(
+                    space.managed_space_id,
+                    parse_window_descriptions(
+                        descriptions.as_type_ref() as CFArrayRef,
+                        &visible_order,
+                    )?,
+                );
+            } else {
+                inactive_space_window_ids.insert(
+                    space.managed_space_id,
+                    parse_window_ids(payload.as_type_ref() as CFArrayRef)?,
+                );
+            }
+        }
+
+        Ok(RawTopologySnapshot {
+            spaces,
+            active_space_ids,
+            active_space_windows,
+            inactive_space_window_ids,
+        })
+    }
 }
 
 #[allow(dead_code)]
@@ -616,7 +666,7 @@ pub(crate) struct RawWindow {
 
 #[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct RawTopologySnapshot {
+pub(crate) struct RawTopologySnapshot {
     spaces: Vec<RawSpaceRecord>,
     active_space_ids: HashSet<u64>,
     active_space_windows: HashMap<u64, Vec<RawWindow>>,
@@ -812,6 +862,43 @@ fn parse_display_identifiers(payload: CFArrayRef) -> Result<Vec<String>, MacosNa
         .collect()
 }
 
+fn parse_active_space_ids(payload: CFArrayRef) -> Result<HashSet<u64>, MacosNativeProbeError> {
+    let current_space_key = cf_string("Current Space")?;
+    let current_space_id_key = cf_string("Current Space ID")?;
+    let current_managed_space_id_key = cf_string("CurrentManagedSpaceID")?;
+    let managed_space_id_key = cf_string("ManagedSpaceID")?;
+    let id64_key = cf_string("id64")?;
+    let active_space_ids = cf_array_iter(payload)
+        .map(|display| {
+            let display = cf_as_dictionary(display).ok_or(
+                MacosNativeProbeError::MissingTopology("SLSCopyManagedDisplaySpaces"),
+            )?;
+
+            cf_dictionary_u64(display, current_space_id_key.as_type_ref())
+                .or_else(|| cf_dictionary_u64(display, current_managed_space_id_key.as_type_ref()))
+                .or_else(|| {
+                    cf_dictionary_dictionary(display, current_space_key.as_type_ref()).and_then(
+                        |current_space| {
+                            cf_dictionary_u64(current_space, managed_space_id_key.as_type_ref())
+                                .or_else(|| {
+                                    cf_dictionary_u64(current_space, id64_key.as_type_ref())
+                                })
+                        },
+                    )
+                })
+                .ok_or(MacosNativeProbeError::MissingTopology(
+                    "SLSCopyManagedDisplaySpaces",
+                ))
+        })
+        .collect::<Result<HashSet<_>, _>>()?;
+
+    (!active_space_ids.is_empty())
+        .then_some(active_space_ids)
+        .ok_or(MacosNativeProbeError::MissingTopology(
+            "SLSCopyManagedDisplaySpaces",
+        ))
+}
+
 fn parse_managed_spaces(payload: CFArrayRef) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
     let spaces_key = cf_string("Spaces")?;
     let mut spaces = Vec::new();
@@ -857,9 +944,10 @@ fn parse_raw_space_record(space: CFDictionaryRef) -> Result<RawSpaceRecord, Maco
         .map(|tile_spaces| {
             cf_array_iter(tile_spaces)
                 .filter_map(|tile_space| {
-                    let tile_space = tile_space as CFDictionaryRef;
-                    cf_dictionary_u64(tile_space, managed_space_id_key.as_type_ref())
-                        .or_else(|| cf_dictionary_u64(tile_space, id64_key.as_type_ref()))
+                    cf_as_dictionary(tile_space).and_then(|tile_space| {
+                        cf_dictionary_u64(tile_space, managed_space_id_key.as_type_ref())
+                            .or_else(|| cf_dictionary_u64(tile_space, id64_key.as_type_ref()))
+                    })
                 })
                 .collect::<Vec<_>>()
         })
@@ -990,10 +1078,11 @@ fn lsappinfo_bundle_identifier_output(pid: u32) -> Option<String> {
 
 fn parse_lsappinfo_bundle_identifier(output: &str) -> Option<String> {
     output.lines().find_map(|line| {
-        line.strip_prefix("\"CFBundleIdentifier\"=").and_then(|value| {
-            let bundle_identifier = value.trim().trim_matches('"');
-            (!bundle_identifier.is_empty()).then(|| bundle_identifier.to_string())
-        })
+        line.strip_prefix("\"CFBundleIdentifier\"=")
+            .and_then(|value| {
+                let bundle_identifier = value.trim().trim_matches('"');
+                (!bundle_identifier.is_empty()).then(|| bundle_identifier.to_string())
+            })
     })
 }
 
@@ -1131,6 +1220,42 @@ mod tests {
     use super::*;
     use std::collections::BTreeSet;
 
+    type CFDictionaryHashCallBack = unsafe extern "C" fn(*const c_void) -> usize;
+
+    #[repr(C)]
+    struct CFDictionaryKeyCallBacks {
+        version: CFIndex,
+        retain: Option<CFArrayRetainCallBack>,
+        release: Option<CFArrayReleaseCallBack>,
+        copy_description: Option<CFArrayCopyDescriptionCallBack>,
+        equal: Option<CFArrayEqualCallBack>,
+        hash: Option<CFDictionaryHashCallBack>,
+    }
+
+    #[repr(C)]
+    struct CFDictionaryValueCallBacks {
+        version: CFIndex,
+        retain: Option<CFArrayRetainCallBack>,
+        release: Option<CFArrayReleaseCallBack>,
+        copy_description: Option<CFArrayCopyDescriptionCallBack>,
+        equal: Option<CFArrayEqualCallBack>,
+    }
+
+    #[link(name = "CoreFoundation", kind = "framework")]
+    unsafe extern "C" {
+        static kCFTypeDictionaryKeyCallBacks: CFDictionaryKeyCallBacks;
+        static kCFTypeDictionaryValueCallBacks: CFDictionaryValueCallBacks;
+
+        fn CFDictionaryCreate(
+            allocator: CFAllocatorRef,
+            keys: *const *const c_void,
+            values: *const *const c_void,
+            num_values: CFIndex,
+            key_callbacks: *const CFDictionaryKeyCallBacks,
+            value_callbacks: *const CFDictionaryValueCallBacks,
+        ) -> CFDictionaryRef;
+    }
+
     #[derive(Debug, Clone)]
     struct FakeNativeApi {
         symbols: BTreeSet<&'static str>,
@@ -1153,7 +1278,7 @@ mod tests {
     impl FakeNativeApi {
         fn topology_fixture(active_window_id: u64) -> RawTopologySnapshot {
             RawTopologySnapshot {
-                spaces: vec![raw_desktop_space(1),raw_split_space(2,&[21,22])],
+                spaces: vec![raw_desktop_space(1), raw_split_space(2, &[21, 22])],
                 active_space_ids: HashSet::from([1]),
                 active_space_windows: HashMap::from([(
                     1,
@@ -1163,7 +1288,7 @@ mod tests {
                         .with_app_id("com.example.focused")
                         .with_title("Focused window")],
                 )]),
-                inactive_space_window_ids: HashMap::from([(2, vec![21,22])]),
+                inactive_space_window_ids: HashMap::from([(2, vec![21, 22])]),
             }
         }
 
@@ -1193,7 +1318,7 @@ mod tests {
                             .with_title("Right display")],
                     ),
                 ]),
-                inactive_space_window_ids: HashMap::from([(2, vec![21,22])]),
+                inactive_space_window_ids: HashMap::from([(2, vec![21, 22])]),
             }
         }
 
@@ -1215,6 +1340,19 @@ mod tests {
         fn with_topology(mut self, topology: RawTopologySnapshot) -> Self {
             self.topology = topology;
             self
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    struct SnapshotOverrideApi {
+        topology: RawTopologySnapshot,
+    }
+
+    impl Default for SnapshotOverrideApi {
+        fn default() -> Self {
+            Self {
+                topology: FakeNativeApi::multi_display_topology_fixture(),
+            }
         }
     }
 
@@ -1255,6 +1393,49 @@ mod tests {
             &self,
         ) -> Result<HashMap<u64, Vec<u64>>, MacosNativeProbeError> {
             Ok(self.topology.inactive_space_window_ids.clone())
+        }
+
+        fn topology_snapshot(&self) -> Result<RawTopologySnapshot, MacosNativeProbeError> {
+            Ok(self.topology.clone())
+        }
+    }
+
+    impl MacosNativeApi for SnapshotOverrideApi {
+        fn has_symbol(&self, symbol: &'static str) -> bool {
+            REQUIRED_PRIVATE_SYMBOLS.contains(&symbol)
+        }
+
+        fn ax_is_trusted(&self) -> bool {
+            true
+        }
+
+        fn minimal_topology_ready(&self) -> bool {
+            true
+        }
+
+        fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
+            Ok(vec![raw_stage_manager_space(99)])
+        }
+
+        fn active_space_ids(&self) -> Result<HashSet<u64>, MacosNativeProbeError> {
+            Ok(HashSet::from([99]))
+        }
+
+        fn active_space_windows(
+            &self,
+            _space_id: u64,
+        ) -> Result<Vec<RawWindow>, MacosNativeProbeError> {
+            Ok(vec![raw_window(999).with_visible_index(0)])
+        }
+
+        fn inactive_space_window_ids(
+            &self,
+        ) -> Result<HashMap<u64, Vec<u64>>, MacosNativeProbeError> {
+            Ok(HashMap::new())
+        }
+
+        fn topology_snapshot(&self) -> Result<RawTopologySnapshot, MacosNativeProbeError> {
+            Ok(self.topology.clone())
         }
     }
 
@@ -1346,6 +1527,34 @@ mod tests {
         MacosNativeContext::connect_with_api(api).unwrap()
     }
 
+    fn cf_test_array(values: &[CFTypeRef]) -> CfOwned {
+        unsafe {
+            CfOwned::from_create_rule(CFArrayCreate(
+                ptr::null(),
+                values.as_ptr(),
+                values.len() as CFIndex,
+                &kCFTypeArrayCallBacks,
+            ))
+        }
+        .expect("CFArrayCreate should produce a test payload")
+    }
+
+    fn cf_test_dictionary(entries: &[(CFTypeRef, CFTypeRef)]) -> CfOwned {
+        let (keys, values): (Vec<_>, Vec<_>) = entries.iter().copied().unzip();
+
+        unsafe {
+            CfOwned::from_create_rule(CFDictionaryCreate(
+                ptr::null(),
+                keys.as_ptr(),
+                values.as_ptr(),
+                entries.len() as CFIndex,
+                &kCFTypeDictionaryKeyCallBacks,
+                &kCFTypeDictionaryValueCallBacks,
+            ))
+        }
+        .expect("CFDictionaryCreate should produce a test payload")
+    }
+
     #[test]
     fn classify_space_distinguishes_desktop_fullscreen_split_and_stage_manager() {
         assert_eq!(classify_space(&raw_desktop_space(1)), SpaceKind::Desktop);
@@ -1365,10 +1574,7 @@ mod tests {
 
     #[test]
     fn real_path_app_id_ignores_owner_name_display_label() {
-        assert_eq!(
-            stable_app_id_from_real_window(None, Some("Finder")),
-            None
-        );
+        assert_eq!(stable_app_id_from_real_window(None, Some("Finder")), None);
     }
 
     #[test]
@@ -1493,6 +1699,25 @@ mod tests {
     }
 
     #[test]
+    fn context_uses_api_topology_snapshot_override() {
+        let ctx = MacosNativeContext::connect_with_api(SnapshotOverrideApi::default()).unwrap();
+
+        let spaces = ctx.spaces().unwrap();
+        let focused = ctx.focused_window().unwrap();
+
+        assert_eq!(
+            spaces
+                .iter()
+                .filter(|space| space.is_active)
+                .map(|space| space.id)
+                .collect::<Vec<_>>(),
+            vec![1, 3]
+        );
+        assert_eq!(focused.id, 31);
+        assert_eq!(focused.space_id, 3);
+    }
+
+    #[test]
     fn spaces_snapshot_marks_all_active_display_spaces_active() {
         let topology = FakeNativeApi::multi_display_topology_fixture();
 
@@ -1504,7 +1729,7 @@ mod tests {
                 .filter(|space| space.is_active)
                 .map(|space| space.id)
                 .collect::<Vec<_>>(),
-            vec![1,3]
+            vec![1, 3]
         );
         assert_eq!(
             spaces
@@ -1566,5 +1791,50 @@ mod tests {
             ordered_window_ids_from_windows,
             vec![(12, 0), (11, 1), (13, 2)]
         );
+    }
+
+    #[test]
+    fn parse_raw_space_record_ignores_non_dictionary_tile_space_entries() {
+        let managed_space_id_key = cf_string("ManagedSpaceID").unwrap();
+        let space_type_key = cf_string("type").unwrap();
+        let tile_layout_manager_key = cf_string("TileLayoutManager").unwrap();
+        let tile_spaces_key = cf_string("TileSpaces").unwrap();
+        let id64_key = cf_string("id64").unwrap();
+        let managed_space_id = cf_number_from_u64(7).unwrap();
+        let space_type = cf_number_from_u64(DESKTOP_SPACE_TYPE as u64).unwrap();
+        let split_left_id = cf_number_from_u64(11).unwrap();
+        let split_right_id = cf_number_from_u64(12).unwrap();
+        let non_dictionary_entry = cf_number_from_u64(999).unwrap();
+
+        let tile_space_with_managed_space_id = cf_test_dictionary(&[(
+            managed_space_id_key.as_type_ref(),
+            split_left_id.as_type_ref(),
+        )]);
+        let tile_space_with_id64 =
+            cf_test_dictionary(&[(id64_key.as_type_ref(), split_right_id.as_type_ref())]);
+        let tile_spaces = cf_test_array(&[
+            tile_space_with_managed_space_id.as_type_ref(),
+            non_dictionary_entry.as_type_ref(),
+            tile_space_with_id64.as_type_ref(),
+        ]);
+        let tile_layout_manager =
+            cf_test_dictionary(&[(tile_spaces_key.as_type_ref(), tile_spaces.as_type_ref())]);
+        let raw_space = cf_test_dictionary(&[
+            (
+                managed_space_id_key.as_type_ref(),
+                managed_space_id.as_type_ref(),
+            ),
+            (space_type_key.as_type_ref(), space_type.as_type_ref()),
+            (
+                tile_layout_manager_key.as_type_ref(),
+                tile_layout_manager.as_type_ref(),
+            ),
+        ]);
+
+        let parsed = parse_raw_space_record(raw_space.as_type_ref() as CFDictionaryRef).unwrap();
+
+        assert_eq!(parsed.managed_space_id, 7);
+        assert_eq!(parsed.tile_spaces, vec![11, 12]);
+        assert!(parsed.has_tile_layout_manager);
     }
 }
