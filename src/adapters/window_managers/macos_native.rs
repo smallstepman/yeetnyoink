@@ -2,17 +2,126 @@ use std::{
     collections::{HashMap, HashSet},
     ffi::{c_char, c_int, c_void, CStr, CString},
     fmt,
-    ptr::NonNull,
+    ptr::{self, NonNull},
 };
 
-use objc2_core_foundation::{
-    CFArray, CFDictionary, CFNumber, CFNumberType, CFRetained, CFString, CFType,
-};
-use objc2_core_graphics::{
-    kCGNullWindowID, kCGWindowLayer, kCGWindowName, kCGWindowNumber, kCGWindowOwnerName,
-    kCGWindowOwnerPID, CGWindowListCopyWindowInfo, CGWindowListCreateDescriptionFromArray,
-    CGWindowListOption,
-};
+type CFIndex = isize;
+type Boolean = u8;
+type CFTypeID = usize;
+type CFNumberType = isize;
+type CFStringEncoding = u32;
+type CFTypeRef = *const c_void;
+type CFArrayRef = *const c_void;
+type CFDictionaryRef = *const c_void;
+type CFNumberRef = *const c_void;
+type CFStringRef = *const c_void;
+type CFAllocatorRef = *const c_void;
+type CGWindowID = u32;
+type CGWindowListOption = u32;
+type CFArrayRetainCallBack = unsafe extern "C" fn(CFAllocatorRef, *const c_void) -> *const c_void;
+type CFArrayReleaseCallBack = unsafe extern "C" fn(CFAllocatorRef, *const c_void);
+type CFArrayCopyDescriptionCallBack = unsafe extern "C" fn(*const c_void) -> CFStringRef;
+type CFArrayEqualCallBack = unsafe extern "C" fn(*const c_void, *const c_void) -> Boolean;
+
+const K_CF_NUMBER_SINT64_TYPE: CFNumberType = 4;
+const K_CF_STRING_ENCODING_UTF8: CFStringEncoding = 0x0800_0100;
+const K_CG_NULL_WINDOW_ID: CGWindowID = 0;
+const K_CG_WINDOW_LIST_OPTION_ON_SCREEN_ONLY: CGWindowListOption = 1 << 0;
+const K_CG_WINDOW_LIST_EXCLUDE_DESKTOP_ELEMENTS: CGWindowListOption = 1 << 4;
+
+#[repr(C)]
+struct CFArrayCallBacks {
+    version: CFIndex,
+    retain: Option<CFArrayRetainCallBack>,
+    release: Option<CFArrayReleaseCallBack>,
+    copy_description: Option<CFArrayCopyDescriptionCallBack>,
+    equal: Option<CFArrayEqualCallBack>,
+}
+
+#[link(name = "CoreFoundation", kind = "framework")]
+unsafe extern "C" {
+    static kCFTypeArrayCallBacks: CFArrayCallBacks;
+
+    fn CFGetTypeID(cf: CFTypeRef) -> CFTypeID;
+    fn CFRelease(cf: CFTypeRef);
+    fn CFArrayGetTypeID() -> CFTypeID;
+    fn CFArrayCreate(
+        allocator: CFAllocatorRef,
+        values: *const *const c_void,
+        num_values: CFIndex,
+        callbacks: *const CFArrayCallBacks,
+    ) -> CFArrayRef;
+    fn CFArrayGetCount(the_array: CFArrayRef) -> CFIndex;
+    fn CFArrayGetValueAtIndex(the_array: CFArrayRef, idx: CFIndex) -> *const c_void;
+    fn CFDictionaryGetTypeID() -> CFTypeID;
+    fn CFDictionaryGetValueIfPresent(
+        dictionary: CFDictionaryRef,
+        key: *const c_void,
+        value: *mut *const c_void,
+    ) -> Boolean;
+    fn CFStringGetTypeID() -> CFTypeID;
+    fn CFStringCreateWithCString(
+        allocator: CFAllocatorRef,
+        c_string: *const c_char,
+        encoding: CFStringEncoding,
+    ) -> CFStringRef;
+    fn CFStringGetLength(the_string: CFStringRef) -> CFIndex;
+    fn CFStringGetMaximumSizeForEncoding(length: CFIndex, encoding: CFStringEncoding) -> CFIndex;
+    fn CFStringGetCString(
+        the_string: CFStringRef,
+        buffer: *mut c_char,
+        buffer_size: CFIndex,
+        encoding: CFStringEncoding,
+    ) -> Boolean;
+    fn CFNumberGetTypeID() -> CFTypeID;
+    fn CFNumberCreate(
+        allocator: CFAllocatorRef,
+        number_type: CFNumberType,
+        value: *const c_void,
+    ) -> CFNumberRef;
+    fn CFNumberGetValue(
+        number: CFNumberRef,
+        number_type: CFNumberType,
+        value: *mut c_void,
+    ) -> Boolean;
+}
+
+#[link(name = "CoreGraphics", kind = "framework")]
+unsafe extern "C" {
+    static kCGWindowNumber: CFStringRef;
+    static kCGWindowOwnerPID: CFStringRef;
+    static kCGWindowOwnerName: CFStringRef;
+    static kCGWindowName: CFStringRef;
+    static kCGWindowLayer: CFStringRef;
+
+    fn CGWindowListCopyWindowInfo(
+        option: CGWindowListOption,
+        relative_to_window: CGWindowID,
+    ) -> CFArrayRef;
+    fn CGWindowListCreateDescriptionFromArray(window_array: CFArrayRef) -> CFArrayRef;
+}
+
+struct CfOwned {
+    raw: NonNull<c_void>,
+}
+
+impl CfOwned {
+    unsafe fn from_create_rule(raw: CFTypeRef) -> Option<Self> {
+        NonNull::new(raw.cast_mut()).map(|raw| Self { raw })
+    }
+
+    fn as_type_ref(&self) -> CFTypeRef {
+        self.raw.as_ptr() as CFTypeRef
+    }
+}
+
+impl Drop for CfOwned {
+    fn drop(&mut self) {
+        unsafe {
+            CFRelease(self.as_type_ref());
+        }
+    }
+}
 
 #[allow(dead_code)]
 const REQUIRED_PRIVATE_SYMBOLS: &[&str] = &[
@@ -39,18 +148,12 @@ type SlsMainConnectionIdFn = unsafe extern "C" fn() -> u32;
 #[allow(dead_code)]
 type AxIsProcessTrustedFn = unsafe extern "C" fn() -> u8;
 #[allow(dead_code)]
-type SlsCopyManagedDisplaySpacesFn = unsafe extern "C" fn(u32) -> Option<NonNull<CFArray>>;
+type SlsCopyManagedDisplaySpacesFn = unsafe extern "C" fn(u32) -> CFArrayRef;
 #[allow(dead_code)]
-type SlsManagedDisplayGetCurrentSpaceFn = unsafe extern "C" fn(u32, *const CFString) -> u64;
+type SlsManagedDisplayGetCurrentSpaceFn = unsafe extern "C" fn(u32, CFStringRef) -> u64;
 #[allow(dead_code)]
-type SlsCopyWindowsWithOptionsAndTagsFn = unsafe extern "C" fn(
-    u32,
-    u32,
-    *const CFArray,
-    i32,
-    *mut i64,
-    *mut i64,
-) -> Option<NonNull<CFArray>>;
+type SlsCopyWindowsWithOptionsAndTagsFn =
+    unsafe extern "C" fn(u32, u32, CFArrayRef, i32, *mut i64, *mut i64) -> CFArrayRef;
 
 #[allow(dead_code)]
 unsafe extern "C" {
@@ -234,9 +337,7 @@ impl RealNativeApi {
             ))
     }
 
-    fn copy_managed_display_spaces_raw(
-        &self,
-    ) -> Result<CFRetained<CFArray>, MacosNativeProbeError> {
+    fn copy_managed_display_spaces_raw(&self) -> Result<CfOwned, MacosNativeProbeError> {
         let Some(symbol) = self.resolve_symbol("SLSCopyManagedDisplaySpaces") else {
             return Err(MacosNativeProbeError::MissingTopology(
                 "SLSCopyManagedDisplaySpaces",
@@ -246,11 +347,13 @@ impl RealNativeApi {
         let copy_managed_display_spaces: SlsCopyManagedDisplaySpacesFn =
             unsafe { std::mem::transmute(symbol) };
         let connection_id = self.main_connection_id()?;
-        let payload = unsafe { copy_managed_display_spaces(connection_id) }.ok_or(
-            MacosNativeProbeError::MissingTopology("SLSCopyManagedDisplaySpaces"),
-        )?;
+        let payload =
+            unsafe { CfOwned::from_create_rule(copy_managed_display_spaces(connection_id)) }
+                .ok_or(MacosNativeProbeError::MissingTopology(
+                    "SLSCopyManagedDisplaySpaces",
+                ))?;
 
-        Ok(unsafe { CFRetained::from_raw(payload) })
+        Ok(payload)
     }
 
     fn current_space_for_display(
@@ -266,10 +369,9 @@ impl RealNativeApi {
         let current_space_for_display: SlsManagedDisplayGetCurrentSpaceFn =
             unsafe { std::mem::transmute(symbol) };
         let connection_id = self.main_connection_id()?;
-        let display_identifier = CFString::from_str(display_identifier);
-        let space_id = unsafe {
-            current_space_for_display(connection_id, &*display_identifier as *const CFString)
-        };
+        let display_identifier = cf_string(display_identifier)?;
+        let space_id =
+            unsafe { current_space_for_display(connection_id, display_identifier.as_type_ref()) };
 
         (space_id != 0)
             .then_some(space_id)
@@ -278,10 +380,7 @@ impl RealNativeApi {
             ))
     }
 
-    fn copy_windows_for_space_raw(
-        &self,
-        space_id: u64,
-    ) -> Result<CFRetained<CFArray>, MacosNativeProbeError> {
+    fn copy_windows_for_space_raw(&self, space_id: u64) -> Result<CfOwned, MacosNativeProbeError> {
         let Some(symbol) = self.resolve_symbol("SLSCopyWindowsWithOptionsAndTags") else {
             return Err(MacosNativeProbeError::MissingTopology(
                 "SLSCopyWindowsWithOptionsAndTags",
@@ -292,25 +391,35 @@ impl RealNativeApi {
             unsafe { std::mem::transmute(symbol) };
         let connection_id = self.main_connection_id()?;
         let space_number = cf_number_from_u64(space_id)?;
-        let space_list = CFArray::from_objects(&[&*space_number]);
-        let space_list = unsafe { (&*space_list).cast_unchecked::<CFType>() };
+        let values = [space_number.as_type_ref()];
+        let space_list = unsafe {
+            CfOwned::from_create_rule(CFArrayCreate(
+                ptr::null(),
+                values.as_ptr(),
+                values.len() as CFIndex,
+                &kCFTypeArrayCallBacks,
+            ))
+        }
+        .ok_or(MacosNativeProbeError::MissingTopology(
+            "SLSCopyWindowsWithOptionsAndTags",
+        ))?;
         let mut set_tags = 0i64;
         let mut clear_tags = 0i64;
         let payload = unsafe {
             copy_windows_with_options_and_tags(
                 connection_id,
                 0,
-                space_list as *const CFArray<CFType> as *const CFArray,
+                space_list.as_type_ref() as CFArrayRef,
                 0x2,
                 &mut set_tags,
                 &mut clear_tags,
             )
-        }
-        .ok_or(MacosNativeProbeError::MissingTopology(
-            "SLSCopyWindowsWithOptionsAndTags",
-        ))?;
+        };
+        let payload = unsafe { CfOwned::from_create_rule(payload) }.ok_or(
+            MacosNativeProbeError::MissingTopology("SLSCopyWindowsWithOptionsAndTags"),
+        )?;
 
-        Ok(unsafe { CFRetained::from_raw(payload) })
+        Ok(payload)
     }
 }
 
@@ -339,12 +448,12 @@ impl MacosNativeApi for RealNativeApi {
 
     fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
         let payload = self.copy_managed_display_spaces_raw()?;
-        parse_managed_spaces(&payload)
+        parse_managed_spaces(payload.as_type_ref() as CFArrayRef)
     }
 
     fn current_space_id(&self) -> Result<u64, MacosNativeProbeError> {
         let payload = self.copy_managed_display_spaces_raw()?;
-        let display_identifiers = parse_display_identifiers(&payload)?;
+        let display_identifiers = parse_display_identifiers(payload.as_type_ref() as CFArrayRef)?;
 
         display_identifiers
             .into_iter()
@@ -356,13 +465,18 @@ impl MacosNativeApi for RealNativeApi {
 
     fn active_space_windows(&self, space_id: u64) -> Result<Vec<RawWindow>, MacosNativeProbeError> {
         let payload = self.copy_windows_for_space_raw(space_id)?;
-        let visible_order = query_visible_window_order(&parse_window_ids(&payload)?)?;
-        let descriptions = unsafe { CGWindowListCreateDescriptionFromArray(Some(&payload)) }
-            .ok_or(MacosNativeProbeError::MissingTopology(
-                "CGWindowListCreateDescriptionFromArray",
-            ))?;
+        let visible_order =
+            query_visible_window_order(&parse_window_ids(payload.as_type_ref() as CFArrayRef)?)?;
+        let descriptions = unsafe {
+            CfOwned::from_create_rule(CGWindowListCreateDescriptionFromArray(
+                payload.as_type_ref() as CFArrayRef,
+            ))
+        }
+        .ok_or(MacosNativeProbeError::MissingTopology(
+            "CGWindowListCreateDescriptionFromArray",
+        ))?;
 
-        parse_window_descriptions(&descriptions, &visible_order)
+        parse_window_descriptions(descriptions.as_type_ref() as CFArrayRef, &visible_order)
     }
 
     fn inactive_space_window_ids(&self) -> Result<HashMap<u64, Vec<u64>>, MacosNativeProbeError> {
@@ -376,7 +490,10 @@ impl MacosNativeApi for RealNativeApi {
             }
 
             let payload = self.copy_windows_for_space_raw(space.managed_space_id)?;
-            inactive_space_window_ids.insert(space.managed_space_id, parse_window_ids(&payload)?);
+            inactive_space_window_ids.insert(
+                space.managed_space_id,
+                parse_window_ids(payload.as_type_ref() as CFArrayRef)?,
+            );
         }
 
         Ok(inactive_space_window_ids)
@@ -496,114 +613,169 @@ struct RawTopologySnapshot {
     inactive_space_window_ids: HashMap<u64, Vec<u64>>,
 }
 
-fn cf_number_from_u64(value: u64) -> Result<CFRetained<CFNumber>, MacosNativeProbeError> {
+fn cf_type_is(value: CFTypeRef, expected_type_id: CFTypeID) -> bool {
+    !value.is_null() && unsafe { CFGetTypeID(value) == expected_type_id }
+}
+
+fn cf_array_count(array: CFArrayRef) -> usize {
+    unsafe { CFArrayGetCount(array) as usize }
+}
+
+fn cf_array_value_at(array: CFArrayRef, index: usize) -> Option<CFTypeRef> {
+    (index < cf_array_count(array))
+        .then(|| unsafe { CFArrayGetValueAtIndex(array, index as CFIndex) })
+}
+
+fn cf_array_iter(array: CFArrayRef) -> impl Iterator<Item = CFTypeRef> {
+    (0..cf_array_count(array)).filter_map(move |index| cf_array_value_at(array, index))
+}
+
+fn cf_as_dictionary(value: CFTypeRef) -> Option<CFDictionaryRef> {
+    cf_type_is(value, unsafe { CFDictionaryGetTypeID() }).then_some(value as CFDictionaryRef)
+}
+
+fn cf_dictionary_value(dictionary: CFDictionaryRef, key: CFStringRef) -> Option<CFTypeRef> {
+    let mut value = ptr::null();
+    (unsafe { CFDictionaryGetValueIfPresent(dictionary, key, &mut value) } != 0).then_some(value)
+}
+
+fn cf_string(value: &str) -> Result<CfOwned, MacosNativeProbeError> {
+    let value = CString::new(value)
+        .map_err(|_| MacosNativeProbeError::MissingTopology("CFStringCreateWithCString"))?;
+    unsafe {
+        CfOwned::from_create_rule(CFStringCreateWithCString(
+            ptr::null(),
+            value.as_ptr(),
+            K_CF_STRING_ENCODING_UTF8,
+        ))
+    }
+    .ok_or(MacosNativeProbeError::MissingTopology(
+        "CFStringCreateWithCString",
+    ))
+}
+
+fn cf_string_to_string(value: CFStringRef) -> Option<String> {
+    if !cf_type_is(value as CFTypeRef, unsafe { CFStringGetTypeID() }) {
+        return None;
+    }
+
+    let length = unsafe { CFStringGetLength(value) };
+    let max_size =
+        unsafe { CFStringGetMaximumSizeForEncoding(length, K_CF_STRING_ENCODING_UTF8) } + 1;
+    let mut buffer = vec![0u8; max_size as usize];
+    let ok = unsafe {
+        CFStringGetCString(
+            value,
+            buffer.as_mut_ptr().cast(),
+            buffer.len() as CFIndex,
+            K_CF_STRING_ENCODING_UTF8,
+        ) != 0
+    };
+
+    ok.then(|| {
+        let nul = buffer
+            .iter()
+            .position(|&byte| byte == 0)
+            .unwrap_or(buffer.len());
+        String::from_utf8_lossy(&buffer[..nul]).into_owned()
+    })
+}
+
+fn cf_number_from_u64(value: u64) -> Result<CfOwned, MacosNativeProbeError> {
     let value = i64::try_from(value)
         .map_err(|_| MacosNativeProbeError::MissingTopology("SLSCopyWindowsWithOptionsAndTags"))?;
 
     unsafe {
-        CFNumber::new(
-            None,
-            CFNumberType::SInt64Type,
+        CfOwned::from_create_rule(CFNumberCreate(
+            ptr::null(),
+            K_CF_NUMBER_SINT64_TYPE,
             &value as *const i64 as *const c_void,
-        )
+        ))
     }
     .ok_or(MacosNativeProbeError::MissingTopology(
         "SLSCopyWindowsWithOptionsAndTags",
     ))
 }
 
-fn cf_number_to_i64(number: &CFNumber) -> Option<i64> {
+fn cf_number_to_i64(number: CFTypeRef) -> Option<i64> {
+    if !cf_type_is(number, unsafe { CFNumberGetTypeID() }) {
+        return None;
+    }
+
     let mut value = 0i64;
     unsafe {
-        number.value(
-            CFNumberType::SInt64Type,
+        CFNumberGetValue(
+            number as CFNumberRef,
+            K_CF_NUMBER_SINT64_TYPE,
             &mut value as *mut i64 as *mut c_void,
         )
     }
+    .ne(&0)
     .then_some(value)
 }
 
-fn cf_number_to_u64(number: &CFNumber) -> Option<u64> {
+fn cf_number_to_u64(number: CFTypeRef) -> Option<u64> {
     cf_number_to_i64(number).and_then(|value| u64::try_from(value).ok())
 }
 
-fn cf_number_to_u32(number: &CFNumber) -> Option<u32> {
+fn cf_number_to_u32(number: CFTypeRef) -> Option<u32> {
     cf_number_to_i64(number).and_then(|value| u32::try_from(value).ok())
 }
 
-fn cf_number_to_i32(number: &CFNumber) -> Option<i32> {
+fn cf_number_to_i32(number: CFTypeRef) -> Option<i32> {
     cf_number_to_i64(number).and_then(|value| i32::try_from(value).ok())
 }
 
-fn cf_dictionary_value<'a>(
-    dictionary: &'a CFDictionary<CFString, CFType>,
-    key: &CFString,
-) -> Option<CFRetained<CFType>> {
-    dictionary.get(key)
+fn cf_dictionary_string(dictionary: CFDictionaryRef, key: CFStringRef) -> Option<String> {
+    cf_dictionary_value(dictionary, key).and_then(|value| cf_string_to_string(value as CFStringRef))
 }
 
-fn cf_dictionary_string(
-    dictionary: &CFDictionary<CFString, CFType>,
-    key: &CFString,
-) -> Option<String> {
-    cf_dictionary_value(dictionary, key)
-        .and_then(|value| value.downcast::<CFString>().ok())
-        .map(|value| value.to_string())
+fn cf_dictionary_u64(dictionary: CFDictionaryRef, key: CFStringRef) -> Option<u64> {
+    cf_dictionary_value(dictionary, key).and_then(cf_number_to_u64)
 }
 
-fn cf_dictionary_u64(dictionary: &CFDictionary<CFString, CFType>, key: &CFString) -> Option<u64> {
-    cf_dictionary_value(dictionary, key)
-        .and_then(|value| value.downcast::<CFNumber>().ok())
-        .and_then(|value| cf_number_to_u64(&value))
+fn cf_dictionary_u32(dictionary: CFDictionaryRef, key: CFStringRef) -> Option<u32> {
+    cf_dictionary_value(dictionary, key).and_then(cf_number_to_u32)
 }
 
-fn cf_dictionary_u32(dictionary: &CFDictionary<CFString, CFType>, key: &CFString) -> Option<u32> {
-    cf_dictionary_value(dictionary, key)
-        .and_then(|value| value.downcast::<CFNumber>().ok())
-        .and_then(|value| cf_number_to_u32(&value))
+fn cf_dictionary_i32(dictionary: CFDictionaryRef, key: CFStringRef) -> Option<i32> {
+    cf_dictionary_value(dictionary, key).and_then(cf_number_to_i32)
 }
 
-fn cf_dictionary_i32(dictionary: &CFDictionary<CFString, CFType>, key: &CFString) -> Option<i32> {
-    cf_dictionary_value(dictionary, key)
-        .and_then(|value| value.downcast::<CFNumber>().ok())
-        .and_then(|value| cf_number_to_i32(&value))
-}
-
-fn cf_dictionary_array(
-    dictionary: &CFDictionary<CFString, CFType>,
-    key: &CFString,
-) -> Option<CFRetained<CFArray>> {
-    cf_dictionary_value(dictionary, key).and_then(|value| value.downcast::<CFArray>().ok())
+fn cf_dictionary_array(dictionary: CFDictionaryRef, key: CFStringRef) -> Option<CFArrayRef> {
+    let value = cf_dictionary_value(dictionary, key)?;
+    cf_type_is(value, unsafe { CFArrayGetTypeID() }).then_some(value as CFArrayRef)
 }
 
 fn cf_dictionary_dictionary(
-    dictionary: &CFDictionary<CFString, CFType>,
-    key: &CFString,
-) -> Option<CFRetained<CFDictionary>> {
-    cf_dictionary_value(dictionary, key).and_then(|value| value.downcast::<CFDictionary>().ok())
+    dictionary: CFDictionaryRef,
+    key: CFStringRef,
+) -> Option<CFDictionaryRef> {
+    let value = cf_dictionary_value(dictionary, key)?;
+    cf_type_is(value, unsafe { CFDictionaryGetTypeID() }).then_some(value as CFDictionaryRef)
 }
 
-fn cg_window_number_key() -> &'static CFString {
+fn cg_window_number_key() -> CFStringRef {
     unsafe { kCGWindowNumber }
 }
 
-fn cg_window_owner_pid_key() -> &'static CFString {
+fn cg_window_owner_pid_key() -> CFStringRef {
     unsafe { kCGWindowOwnerPID }
 }
 
-fn cg_window_owner_name_key() -> &'static CFString {
+fn cg_window_owner_name_key() -> CFStringRef {
     unsafe { kCGWindowOwnerName }
 }
 
-fn cg_window_name_key() -> &'static CFString {
+fn cg_window_name_key() -> CFStringRef {
     unsafe { kCGWindowName }
 }
 
-fn cg_window_layer_key() -> &'static CFString {
+fn cg_window_layer_key() -> CFStringRef {
     unsafe { kCGWindowLayer }
 }
 
-fn stage_manager_managed(dictionary: &CFDictionary<CFString, CFType>) -> bool {
+fn stage_manager_managed(dictionary: CFDictionaryRef) -> bool {
     [
         "StageManagerManaged",
         "StageManagerSpace",
@@ -611,75 +783,77 @@ fn stage_manager_managed(dictionary: &CFDictionary<CFString, CFType>) -> bool {
         "StageManager",
     ]
     .into_iter()
-    .any(|key| cf_dictionary_u64(dictionary, &CFString::from_static_str(key)).is_some())
+    .any(|key| {
+        cf_string(key)
+            .ok()
+            .and_then(|key| cf_dictionary_u64(dictionary, key.as_type_ref() as CFStringRef))
+            .is_some()
+    })
 }
 
-fn parse_display_identifiers(payload: &CFArray) -> Result<Vec<String>, MacosNativeProbeError> {
-    let displays = unsafe { payload.cast_unchecked::<CFDictionary>() };
-    let display_identifier_key = CFString::from_static_str("Display Identifier");
+fn parse_display_identifiers(payload: CFArrayRef) -> Result<Vec<String>, MacosNativeProbeError> {
+    let display_identifier_key = cf_string("Display Identifier")?;
 
-    displays
-        .iter()
+    cf_array_iter(payload)
         .map(|display| {
-            let display = unsafe { (&*display).cast_unchecked::<CFString, CFType>() };
-            cf_dictionary_string(display, &display_identifier_key).ok_or(
+            let display = cf_as_dictionary(display).ok_or(
+                MacosNativeProbeError::MissingTopology("SLSCopyManagedDisplaySpaces"),
+            )?;
+            cf_dictionary_string(display, display_identifier_key.as_type_ref()).ok_or(
                 MacosNativeProbeError::MissingTopology("SLSCopyManagedDisplaySpaces"),
             )
         })
         .collect()
 }
 
-fn parse_managed_spaces(payload: &CFArray) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
-    let displays = unsafe { payload.cast_unchecked::<CFDictionary>() };
-    let spaces_key = CFString::from_static_str("Spaces");
+fn parse_managed_spaces(payload: CFArrayRef) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
+    let spaces_key = cf_string("Spaces")?;
     let mut spaces = Vec::new();
 
-    for display in displays.iter() {
-        let display = unsafe { (&*display).cast_unchecked::<CFString, CFType>() };
-        let display_spaces = cf_dictionary_array(display, &spaces_key).ok_or(
-            MacosNativeProbeError::MissingTopology("SLSCopyManagedDisplaySpaces"),
-        )?;
-        let display_spaces = unsafe { (&*display_spaces).cast_unchecked::<CFDictionary>() };
+    for display in cf_array_iter(payload) {
+        let display = cf_as_dictionary(display).ok_or(MacosNativeProbeError::MissingTopology(
+            "SLSCopyManagedDisplaySpaces",
+        ))?;
+        let display_spaces = cf_dictionary_array(display, spaces_key.as_type_ref() as CFStringRef)
+            .ok_or(MacosNativeProbeError::MissingTopology(
+                "SLSCopyManagedDisplaySpaces",
+            ))?;
 
-        for space in display_spaces.iter() {
-            spaces.push(parse_raw_space_record(&space)?);
+        for space in cf_array_iter(display_spaces) {
+            let space = cf_as_dictionary(space).ok_or(MacosNativeProbeError::MissingTopology(
+                "SLSCopyManagedDisplaySpaces",
+            ))?;
+            spaces.push(parse_raw_space_record(space)?);
         }
     }
 
     Ok(spaces)
 }
 
-fn parse_raw_space_record(space: &CFDictionary) -> Result<RawSpaceRecord, MacosNativeProbeError> {
-    let space = unsafe { space.cast_unchecked::<CFString, CFType>() };
-    let managed_space_id_key = CFString::from_static_str("ManagedSpaceID");
-    let space_type_key = CFString::from_static_str("type");
-    let tile_layout_manager_key = CFString::from_static_str("TileLayoutManager");
-    let tile_spaces_key = CFString::from_static_str("TileSpaces");
+fn parse_raw_space_record(space: CFDictionaryRef) -> Result<RawSpaceRecord, MacosNativeProbeError> {
+    let managed_space_id_key = cf_string("ManagedSpaceID")?;
+    let space_type_key = cf_string("type")?;
+    let tile_layout_manager_key = cf_string("TileLayoutManager")?;
+    let tile_spaces_key = cf_string("TileSpaces")?;
+    let id64_key = cf_string("id64")?;
 
-    let managed_space_id = cf_dictionary_u64(space, &managed_space_id_key).ok_or(
+    let managed_space_id = cf_dictionary_u64(space, managed_space_id_key.as_type_ref()).ok_or(
         MacosNativeProbeError::MissingTopology("SLSCopyManagedDisplaySpaces"),
     )?;
-    let space_type = cf_dictionary_i32(space, &space_type_key).ok_or(
+    let space_type = cf_dictionary_i32(space, space_type_key.as_type_ref()).ok_or(
         MacosNativeProbeError::MissingTopology("SLSCopyManagedDisplaySpaces"),
     )?;
-    let tile_layout_manager = cf_dictionary_dictionary(space, &tile_layout_manager_key);
+    let tile_layout_manager =
+        cf_dictionary_dictionary(space, tile_layout_manager_key.as_type_ref());
     let has_tile_layout_manager = tile_layout_manager.is_some();
     let tile_spaces = tile_layout_manager
-        .as_ref()
-        .and_then(|manager| {
-            let manager = unsafe { (&**manager).cast_unchecked::<CFString, CFType>() };
-            cf_dictionary_array(manager, &tile_spaces_key)
-        })
+        .and_then(|manager| cf_dictionary_array(manager, tile_spaces_key.as_type_ref()))
         .map(|tile_spaces| {
-            let tile_spaces = unsafe { (&*tile_spaces).cast_unchecked::<CFDictionary>() };
-
-            tile_spaces
-                .iter()
+            cf_array_iter(tile_spaces)
                 .filter_map(|tile_space| {
-                    let tile_space = unsafe { (&*tile_space).cast_unchecked::<CFString, CFType>() };
-                    cf_dictionary_u64(tile_space, &managed_space_id_key).or_else(|| {
-                        cf_dictionary_u64(tile_space, &CFString::from_static_str("id64"))
-                    })
+                    let tile_space = tile_space as CFDictionaryRef;
+                    cf_dictionary_u64(tile_space, managed_space_id_key.as_type_ref())
+                        .or_else(|| cf_dictionary_u64(tile_space, id64_key.as_type_ref()))
                 })
                 .collect::<Vec<_>>()
         })
@@ -694,13 +868,10 @@ fn parse_raw_space_record(space: &CFDictionary) -> Result<RawSpaceRecord, MacosN
     })
 }
 
-fn parse_window_ids(payload: &CFArray) -> Result<Vec<u64>, MacosNativeProbeError> {
-    let window_ids = unsafe { payload.cast_unchecked::<CFNumber>() };
-
-    window_ids
-        .iter()
+fn parse_window_ids(payload: CFArrayRef) -> Result<Vec<u64>, MacosNativeProbeError> {
+    cf_array_iter(payload)
         .map(|window_id| {
-            cf_number_to_u64(window_id.as_ref()).ok_or(MacosNativeProbeError::MissingTopology(
+            cf_number_to_u64(window_id).ok_or(MacosNativeProbeError::MissingTopology(
                 "SLSCopyWindowsWithOptionsAndTags",
             ))
         })
@@ -710,21 +881,25 @@ fn parse_window_ids(payload: &CFArray) -> Result<Vec<u64>, MacosNativeProbeError
 fn query_visible_window_order(
     target_window_ids: &[u64],
 ) -> Result<HashMap<u64, usize>, MacosNativeProbeError> {
-    let onscreen_descriptions = CGWindowListCopyWindowInfo(
-        CGWindowListOption::OptionOnScreenOnly | CGWindowListOption::ExcludeDesktopElements,
-        kCGNullWindowID,
-    )
+    let onscreen_descriptions = unsafe {
+        CfOwned::from_create_rule(CGWindowListCopyWindowInfo(
+            K_CG_WINDOW_LIST_OPTION_ON_SCREEN_ONLY | K_CG_WINDOW_LIST_EXCLUDE_DESKTOP_ELEMENTS,
+            K_CG_NULL_WINDOW_ID,
+        ))
+    }
     .ok_or(MacosNativeProbeError::MissingTopology(
         "CGWindowListCopyWindowInfo",
     ))?;
-    let onscreen_descriptions =
-        unsafe { (&*onscreen_descriptions).cast_unchecked::<CFDictionary>() };
     let target_window_ids = target_window_ids.iter().copied().collect::<HashSet<_>>();
     let mut visible_order = HashMap::new();
     let window_number_key = cg_window_number_key();
 
-    for (index, window) in onscreen_descriptions.iter().enumerate() {
-        let window = unsafe { (&*window).cast_unchecked::<CFString, CFType>() };
+    for (index, window) in
+        cf_array_iter(onscreen_descriptions.as_type_ref() as CFArrayRef).enumerate()
+    {
+        let Some(window) = cf_as_dictionary(window) else {
+            continue;
+        };
         let Some(window_id) = cf_dictionary_u64(window, window_number_key) else {
             continue;
         };
@@ -738,10 +913,9 @@ fn query_visible_window_order(
 }
 
 fn parse_window_descriptions(
-    payload: &CFArray,
+    payload: CFArrayRef,
     visible_order: &HashMap<u64, usize>,
 ) -> Result<Vec<RawWindow>, MacosNativeProbeError> {
-    let descriptions = unsafe { payload.cast_unchecked::<CFDictionary>() };
     let mut windows = Vec::new();
     let window_number_key = cg_window_number_key();
     let window_owner_pid_key = cg_window_owner_pid_key();
@@ -749,8 +923,10 @@ fn parse_window_descriptions(
     let window_name_key = cg_window_name_key();
     let window_layer_key = cg_window_layer_key();
 
-    for description in descriptions.iter() {
-        let description = unsafe { (&*description).cast_unchecked::<CFString, CFType>() };
+    for description in cf_array_iter(payload) {
+        let description = cf_as_dictionary(description).ok_or(
+            MacosNativeProbeError::MissingTopology("CGWindowListCreateDescriptionFromArray"),
+        )?;
         let id = cf_dictionary_u64(description, window_number_key).ok_or(
             MacosNativeProbeError::MissingTopology("CGWindowListCreateDescriptionFromArray"),
         )?;
