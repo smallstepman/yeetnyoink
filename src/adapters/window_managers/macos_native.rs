@@ -489,7 +489,7 @@ impl MacosNativeApi for RealNativeApi {
             "CGWindowListCreateDescriptionFromArray",
         ))?;
 
-        parse_window_descriptions(descriptions.as_type_ref() as CFArrayRef, &visible_order)
+        assemble_real_active_space_windows(descriptions.as_type_ref() as CFArrayRef, &visible_order)
     }
 
     fn inactive_space_window_ids(&self) -> Result<HashMap<u64, Vec<u64>>, MacosNativeProbeError> {
@@ -538,7 +538,7 @@ impl MacosNativeApi for RealNativeApi {
 
                 active_space_windows.insert(
                     space.managed_space_id,
-                    parse_window_descriptions(
+                    assemble_real_active_space_windows(
                         descriptions.as_type_ref() as CFArrayRef,
                         &visible_order,
                     )?,
@@ -1028,7 +1028,7 @@ fn parse_window_descriptions(
         windows.push(RawWindow {
             id,
             pid,
-            app_id: stable_app_id_from_real_window(pid, None),
+            app_id: None,
             title: cf_dictionary_string(description, window_name_key),
             level: cf_dictionary_i32(description, window_layer_key).unwrap_or_default(),
             visible_index: visible_order.get(&id).copied(),
@@ -1036,6 +1036,13 @@ fn parse_window_descriptions(
     }
 
     Ok(windows)
+}
+
+fn assemble_real_active_space_windows(
+    payload: CFArrayRef,
+    visible_order: &HashMap<u64, usize>,
+) -> Result<Vec<RawWindow>, MacosNativeProbeError> {
+    parse_window_descriptions(payload, visible_order).map(enrich_real_window_app_ids)
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -1056,6 +1063,28 @@ fn classify_space(raw_space: &RawSpaceRecord) -> SpaceKind {
 #[cfg_attr(not(test), allow(dead_code))]
 fn stable_app_id_from_real_window(pid: Option<u32>, _owner_name: Option<&str>) -> Option<String> {
     pid.and_then(stable_app_id_from_pid)
+}
+
+fn enrich_real_window_app_ids(windows: Vec<RawWindow>) -> Vec<RawWindow> {
+    enrich_real_window_app_ids_with(windows, stable_app_id_from_pid)
+}
+
+fn enrich_real_window_app_ids_with<F>(
+    windows: Vec<RawWindow>,
+    mut resolve_app_id: F,
+) -> Vec<RawWindow>
+where
+    F: FnMut(u32) -> Option<String>,
+{
+    windows
+        .into_iter()
+        .map(|mut window| {
+            if window.app_id.is_none() {
+                window.app_id = window.pid.and_then(&mut resolve_app_id);
+            }
+            window
+        })
+        .collect()
 }
 
 fn stable_app_id_from_pid(pid: u32) -> Option<String> {
@@ -1575,6 +1604,24 @@ mod tests {
     #[test]
     fn real_path_app_id_ignores_owner_name_display_label() {
         assert_eq!(stable_app_id_from_real_window(None, Some("Finder")), None);
+    }
+
+    #[test]
+    fn enrich_real_window_app_ids_resolves_bundle_ids_after_parsing() {
+        let windows = vec![raw_window(11).with_pid(42), raw_window(12)];
+
+        let enriched = enrich_real_window_app_ids_with(windows, |pid| match pid {
+            42 => Some("com.example.test".to_string()),
+            _ => None,
+        });
+
+        assert_eq!(
+            enriched,
+            vec![
+                raw_window(11).with_pid(42).with_app_id("com.example.test"),
+                raw_window(12)
+            ]
+        );
     }
 
     #[test]
