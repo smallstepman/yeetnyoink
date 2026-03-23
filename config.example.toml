@@ -17,7 +17,7 @@
 #
 
 [wm]
-enabled_integration = "niri" # niri | i3 | hyprland | paneru | yabai
+enabled_integration = "niri" # niri | i3 | hyprland | macos_native | paneru | yabai
 
 # ---------------------------------------------------------------------------
 # Instrumentation (logging and profiling)

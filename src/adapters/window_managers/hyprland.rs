@@ -10,10 +10,10 @@ use crate::config::WmBackend;
 use crate::engine::runtime::{self, CommandContext, ProcessId};
 use crate::engine::topology::Direction;
 use crate::engine::wm::{
-    validate_declared_capabilities, CapabilitySupport, ConfiguredWindowManager,
-    DirectionalCapability, FocusedWindowRecord, PrimitiveWindowManagerCapabilities, ResizeIntent,
-    ResizeKind, WindowManagerCapabilities, WindowManagerCapabilityDescriptor,
-    WindowManagerFeatures, WindowManagerSession, WindowManagerSpec, WindowRecord,
+    CapabilitySupport, ConfiguredWindowManager, DirectionalCapability, FocusedWindowRecord,
+    PrimitiveWindowManagerCapabilities, ResizeIntent, ResizeKind, WindowManagerCapabilities,
+    WindowManagerCapabilityDescriptor, WindowManagerFeatures, WindowManagerSession,
+    WindowManagerSpec, WindowRecord, validate_declared_capabilities,
 };
 
 pub struct HyprlandAdapter {
@@ -99,10 +99,12 @@ impl WindowManagerSession for HyprlandAdapter {
     }
 
     fn focused_window(&mut self) -> Result<FocusedWindowRecord> {
-        let output = self.transport.execute("focused_window", vec!["-j".into(), "activewindow".into()])?;
-        let active: HyprlandClient = serde_json::from_str(&output)
-            .context("failed to parse activewindow JSON")?;
-        
+        let output = self
+            .transport
+            .execute("focused_window", vec!["-j".into(), "activewindow".into()])?;
+        let active: HyprlandClient =
+            serde_json::from_str(&output).context("failed to parse activewindow JSON")?;
+
         // Check if this is the null sentinel (empty workspace case).
         // Note: This returns early with an error rather than filtering like windows()
         // does, which is acceptable because callers expect at least one focused window
@@ -110,12 +112,16 @@ impl WindowManagerSession for HyprlandAdapter {
         if is_null_activewindow(&active) {
             anyhow::bail!("no focused window");
         }
-        
+
         let id = parse_window_address(&active.address)?;
         let pid = active.process_id();
         // Normalize empty strings to None for downstream consumers
-        let app_id = active.class.and_then(|s| if s.trim().is_empty() { None } else { Some(s) });
-        let title = active.title.and_then(|s| if s.trim().is_empty() { None } else { Some(s) });
+        let app_id = active
+            .class
+            .and_then(|s| if s.trim().is_empty() { None } else { Some(s) });
+        let title = active
+            .title
+            .and_then(|s| if s.trim().is_empty() { None } else { Some(s) });
         Ok(FocusedWindowRecord {
             id,
             app_id,
@@ -126,8 +132,13 @@ impl WindowManagerSession for HyprlandAdapter {
     }
 
     fn windows(&mut self) -> Result<Vec<WindowRecord>> {
-        let active_json = self.transport.execute("windows_activewindow", vec!["-j".into(), "activewindow".into()])?;
-        let clients_json = self.transport.execute("windows_clients", vec!["-j".into(), "clients".into()])?;
+        let active_json = self.transport.execute(
+            "windows_activewindow",
+            vec!["-j".into(), "activewindow".into()],
+        )?;
+        let clients_json = self
+            .transport
+            .execute("windows_clients", vec!["-j".into(), "clients".into()])?;
         parse_clients_with_focus(&active_json, &clients_json)
     }
 
@@ -173,15 +184,13 @@ impl WindowManagerSession for HyprlandAdapter {
     fn spawn(&mut self, command: Vec<String>) -> Result<()> {
         // Guard against accidental empty command vectors.
         anyhow::ensure!(!command.is_empty(), "spawn command must not be empty");
-        let joined = command.iter().map(|arg| shell_quote(arg)).collect::<Vec<_>>().join(" ");
-        self.transport.execute(
-            "spawn",
-            vec![
-                "dispatch".into(),
-                "exec".into(),
-                joined,
-            ],
-        )?;
+        let joined = command
+            .iter()
+            .map(|arg| shell_quote(arg))
+            .collect::<Vec<_>>()
+            .join(" ");
+        self.transport
+            .execute("spawn", vec!["dispatch".into(), "exec".into(), joined])?;
         Ok(())
     }
 
@@ -228,13 +237,10 @@ fn direction_to_hyprland(dir: Direction) -> &'static str {
     }
 }
 
-fn parse_clients_with_focus(
-    active_json: &str,
-    clients_json: &str,
-) -> Result<Vec<WindowRecord>> {
-    let active: HyprlandClient = serde_json::from_str(active_json)
-        .context("failed to parse active window JSON")?;
-    
+fn parse_clients_with_focus(active_json: &str, clients_json: &str) -> Result<Vec<WindowRecord>> {
+    let active: HyprlandClient =
+        serde_json::from_str(active_json).context("failed to parse active window JSON")?;
+
     // Determine the focused window ID, if any
     let active_addr = if is_null_activewindow(&active) {
         None
@@ -242,8 +248,8 @@ fn parse_clients_with_focus(
         Some(parse_window_address(&active.address)?)
     };
 
-    let clients: Vec<HyprlandClient> = serde_json::from_str(clients_json)
-        .context("failed to parse clients JSON")?;
+    let clients: Vec<HyprlandClient> =
+        serde_json::from_str(clients_json).context("failed to parse clients JSON")?;
 
     let mut windows = Vec::new();
     for client in clients {
@@ -257,8 +263,12 @@ fn parse_clients_with_focus(
         let is_focused = active_addr == Some(id);
         let pid = client.process_id();
         // Normalize empty strings to None for app_id/title
-        let app_id = client.class.and_then(|s| if s.trim().is_empty() { None } else { Some(s) });
-        let title = client.title.and_then(|s| if s.trim().is_empty() { None } else { Some(s) });
+        let app_id = client
+            .class
+            .and_then(|s| if s.trim().is_empty() { None } else { Some(s) });
+        let title = client
+            .title
+            .and_then(|s| if s.trim().is_empty() { None } else { Some(s) });
         windows.push(WindowRecord {
             id,
             app_id,
@@ -322,13 +332,15 @@ fn shell_quote(arg: &str) -> String {
         return "''".to_string();
     }
     // If the argument contains no special characters, return it as-is.
-    if arg.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-' || c == '.' || c == '/') {
+    if arg
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '_' || c == '-' || c == '.' || c == '/')
+    {
         return arg.to_string();
     }
     // Otherwise, wrap in single quotes and escape any embedded single quotes.
     format!("'{}'", arg.replace('\'', "'\\''"))
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -348,7 +360,10 @@ mod tests {
 
     impl MockTransport {
         fn new(calls: CallLog) -> Self {
-            Self { calls, responses: Arc::new(Mutex::new(std::collections::HashMap::new())) }
+            Self {
+                calls,
+                responses: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            }
         }
 
         fn with_responses(calls: CallLog, responses: ResponseMap) -> Self {
@@ -367,7 +382,10 @@ mod tests {
             if args.first().map(|s| s.as_str()) == Some("dispatch") {
                 Ok(String::new())
             } else {
-                anyhow::bail!("unexpected query command in mock without canned response: {:?}", args)
+                anyhow::bail!(
+                    "unexpected query command in mock without canned response: {:?}",
+                    args
+                )
             }
         }
     }
@@ -394,7 +412,11 @@ mod tests {
         let clients = r#"[{"address":"0x10","class":"firefox","title":"docs","pid":100,"mapped":true},{"address":"0x20","class":"foot","title":"shell","pid":200,"mapped":true}]"#;
 
         let windows = parse_clients_with_focus(active, clients).unwrap();
-        assert!(windows.iter().any(|window| window.id == 0x20 && window.is_focused));
+        assert!(
+            windows
+                .iter()
+                .any(|window| window.id == 0x20 && window.is_focused)
+        );
     }
 
     #[test]
@@ -413,10 +435,7 @@ mod tests {
         let (mut adapter, calls) = test_adapter();
         adapter.focus_direction(Direction::North).unwrap();
         let calls = calls.lock().unwrap();
-        assert_eq!(
-            calls.as_slice(),
-            &[vec!["dispatch", "movefocus", "u"]]
-        );
+        assert_eq!(calls.as_slice(), &[vec!["dispatch", "movefocus", "u"]]);
     }
 
     #[test]
@@ -447,7 +466,9 @@ mod tests {
     fn hyprland_move_and_spawn_dispatch_expected_commands() {
         let (mut adapter, calls) = test_adapter();
         adapter.move_direction(Direction::East).unwrap();
-        adapter.spawn(vec!["foot".into(), "--app-id".into(), "smoke".into()]).unwrap();
+        adapter
+            .spawn(vec!["foot".into(), "--app-id".into(), "smoke".into()])
+            .unwrap();
         let calls = calls.lock().unwrap();
         assert_eq!(
             calls.as_slice(),
@@ -461,11 +482,9 @@ mod tests {
     #[test]
     fn hyprland_spawn_quotes_arguments_with_spaces() {
         let (mut adapter, calls) = test_adapter();
-        adapter.spawn(vec![
-            "bash".into(),
-            "-c".into(),
-            "echo hello world".into(),
-        ]).unwrap();
+        adapter
+            .spawn(vec!["bash".into(), "-c".into(), "echo hello world".into()])
+            .unwrap();
         let calls = calls.lock().unwrap();
         assert_eq!(
             calls.as_slice(),
@@ -576,8 +595,10 @@ mod tests {
 
     #[test]
     fn hyprland_parse_clients_tolerates_null_activewindow_sentinel() {
-        let active = r#"{"address":"((null))","mapped":false,"class":null,"title":null,"pid":null}"#;
-        let clients = r#"[{"address":"0x10","class":"firefox","title":"docs","pid":100,"mapped":true}]"#;
+        let active =
+            r#"{"address":"((null))","mapped":false,"class":null,"title":null,"pid":null}"#;
+        let clients =
+            r#"[{"address":"0x10","class":"firefox","title":"docs","pid":100,"mapped":true}]"#;
 
         let windows = parse_clients_with_focus(active, clients).unwrap();
         assert_eq!(windows.len(), 1);
@@ -603,7 +624,8 @@ mod tests {
 
     #[test]
     fn hyprland_parse_clients_with_empty_workspace_returns_empty_list() {
-        let active = r#"{"address":"((null))","mapped":false,"class":null,"title":null,"pid":null}"#;
+        let active =
+            r#"{"address":"((null))","mapped":false,"class":null,"title":null,"pid":null}"#;
         let clients = r#"[]"#;
 
         let windows = parse_clients_with_focus(active, clients).unwrap();
@@ -636,10 +658,10 @@ mod tests {
 
     #[test]
     fn hyprland_focused_window_queries_activewindow() {
-        let responses = Arc::new(Mutex::new(std::collections::HashMap::from([
-            (vec!["-j".into(), "activewindow".into()],
-             r#"{"address":"0x20","class":"foot","title":"shell","pid":200,"mapped":true}"#.into()),
-        ])));
+        let responses = Arc::new(Mutex::new(std::collections::HashMap::from([(
+            vec!["-j".into(), "activewindow".into()],
+            r#"{"address":"0x20","class":"foot","title":"shell","pid":200,"mapped":true}"#.into(),
+        )])));
         let (mut adapter, calls) = test_adapter_with_responses(responses);
 
         let focused = adapter.focused_window().unwrap();
@@ -665,10 +687,10 @@ mod tests {
         assert!(windows[0].title.is_none());
 
         // Also verify focused_window mapping
-        let responses = Arc::new(Mutex::new(std::collections::HashMap::from([
-            (vec!["-j".into(), "activewindow".into()],
-             r#"{"address":"0x20","class":"","title":"","pid":200,"mapped":true}"#.into()),
-        ])));
+        let responses = Arc::new(Mutex::new(std::collections::HashMap::from([(
+            vec!["-j".into(), "activewindow".into()],
+            r#"{"address":"0x20","class":"","title":"","pid":200,"mapped":true}"#.into(),
+        )])));
         let (mut adapter, calls) = test_adapter_with_responses(responses);
 
         let focused = adapter.focused_window().unwrap();
@@ -682,15 +704,20 @@ mod tests {
 
     #[test]
     fn hyprland_focused_window_errors_on_null_activewindow() {
-        let responses = Arc::new(Mutex::new(std::collections::HashMap::from([
-            (vec!["-j".into(), "activewindow".into()],
-             r#"{"address":"((null))","mapped":false,"class":null,"title":null,"pid":null}"#.into()),
-        ])));
+        let responses = Arc::new(Mutex::new(std::collections::HashMap::from([(
+            vec!["-j".into(), "activewindow".into()],
+            r#"{"address":"((null))","mapped":false,"class":null,"title":null,"pid":null}"#.into(),
+        )])));
         let (mut adapter, _calls) = test_adapter_with_responses(responses);
 
         let result = adapter.focused_window();
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("no focused window"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("no focused window")
+        );
     }
 
     #[test]

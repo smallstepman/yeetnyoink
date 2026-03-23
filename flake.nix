@@ -133,6 +133,7 @@
               "niri"
               "i3"
               "hyprland"
+              "macos_native"
               "paneru"
               "yabai"
             ] "Window-manager backend. Rust defaults to niri on Linux and yabai on macOS.";

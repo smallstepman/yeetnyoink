@@ -4,16 +4,16 @@
 //! Windows are arranged on an infinite horizontal strip per monitor.
 //! This adapter communicates via `paneru send-cmd` CLI.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 
 use crate::config::WmBackend;
 use crate::engine::runtime::{self, CommandContext, ProcessId};
 use crate::engine::topology::Direction;
 use crate::engine::wm::{
-    validate_declared_capabilities, CapabilitySupport, ConfiguredWindowManager,
-    DirectionalCapability, FocusedWindowRecord, PrimitiveWindowManagerCapabilities, ResizeIntent,
-    WindowManagerCapabilities, WindowManagerCapabilityDescriptor, WindowManagerFeatures,
-    WindowManagerSession, WindowManagerSpec, WindowRecord,
+    CapabilitySupport, ConfiguredWindowManager, DirectionalCapability, FocusedWindowRecord,
+    PrimitiveWindowManagerCapabilities, ResizeIntent, WindowManagerCapabilities,
+    WindowManagerCapabilityDescriptor, WindowManagerFeatures, WindowManagerSession,
+    WindowManagerSpec, WindowRecord, validate_declared_capabilities,
 };
 use crate::logging;
 

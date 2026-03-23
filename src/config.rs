@@ -21,8 +21,8 @@
 /// enabled_integraton = 'niri'
 /// ```
 use crate::engine::topology::Direction;
-use anyhow::{anyhow, Context, Result};
-use etcetera::base_strategy::{choose_base_strategy, BaseStrategy};
+use anyhow::{Context, Result, anyhow};
+use etcetera::base_strategy::{BaseStrategy, choose_base_strategy};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -72,6 +72,9 @@ pub enum WmBackend {
     /// Hyprland - Wayland compositor, Linux only
     Hyprland,
 
+    /// macOS native Spaces-aware backend
+    MacosNative,
+
     /// Paneru - sliding/scrolling tiling WM for macOS (niri-like)
     Paneru,
 
@@ -98,6 +101,7 @@ impl WmBackend {
             Self::Niri => "niri",
             Self::I3 => "i3",
             Self::Hyprland => "hyprland",
+            Self::MacosNative => "macos_native",
             Self::Paneru => "paneru",
             Self::Yabai => "yabai",
         }
@@ -106,7 +110,7 @@ impl WmBackend {
     pub const fn supported_on_current_platform(self) -> bool {
         match self {
             Self::Niri | Self::I3 | Self::Hyprland => cfg!(target_os = "linux"),
-            Self::Paneru | Self::Yabai => cfg!(target_os = "macos"),
+            Self::MacosNative | Self::Paneru | Self::Yabai => cfg!(target_os = "macos"),
         }
     }
 }
@@ -1859,6 +1863,12 @@ app = "wezterm"
                 .unwrap()
                 .enabled_integration,
             WmBackend::Yabai
+        );
+        assert_eq!(
+            toml::from_str::<WmConfig>("enabled_integration = \"macos_native\"")
+                .unwrap()
+                .enabled_integration,
+            WmBackend::MacosNative
         );
         assert_eq!(
             toml::from_str::<WmConfig>("enabled_integration = \"hyprland\"")

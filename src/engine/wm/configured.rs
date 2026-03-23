@@ -1,9 +1,9 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 
 use crate::config::WmBackend;
 use crate::engine::topology::Direction;
 use crate::engine::wm::capabilities::{
-    plan_tear_out, CapabilitySupport, WindowManagerCapabilities,
+    CapabilitySupport, WindowManagerCapabilities, plan_tear_out,
 };
 use crate::engine::wm::session::{
     FocusedWindowRecord, ResizeIntent, WindowCycleProvider, WindowManagerDomainFactory,
@@ -229,6 +229,12 @@ pub(crate) static UNSUPPORTED_HYPRLAND_SPEC: UnsupportedWindowManagerSpec =
     UnsupportedWindowManagerSpec {
         backend: WmBackend::Hyprland,
         name: "hyprland",
+    };
+#[cfg(not(target_os = "macos"))]
+pub(crate) static UNSUPPORTED_MACOS_NATIVE_SPEC: UnsupportedWindowManagerSpec =
+    UnsupportedWindowManagerSpec {
+        backend: WmBackend::MacosNative,
+        name: "macos_native",
     };
 #[cfg(not(target_os = "macos"))]
 pub(crate) static UNSUPPORTED_PANERU_SPEC: UnsupportedWindowManagerSpec =

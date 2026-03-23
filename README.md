@@ -39,7 +39,7 @@ Run `yny setup zellij` to print the hosted `load_plugins { ... }` release URL sn
 
 ```toml
 [wm]
-enabled_integration = "niri" # or "i3" or "hyprland" on Linux
+enabled_integration = "niri" # or "i3"/"hyprland" on Linux, "macos_native"/"paneru"/"yabai" on macOS
 
 [app.terminal.wezterm]
 enabled = true
@@ -167,5 +167,8 @@ Current built-in WM adapters:
 - `niri`
 - `i3`
 - `hyprland`
+- `macos_native`
+- `paneru`
+- `yabai`
 
 Adapter selection is driven by `wm.enabled_integration`. No runtime probing occurs; selection is explicit and must be set in your config or via the CLI.
