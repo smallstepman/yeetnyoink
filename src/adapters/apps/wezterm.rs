@@ -203,6 +203,15 @@ impl TopologyHandler for WeztermBackend {
         terminal_host_tabs::can_focus(ADAPTER_ALIASES, Self::mux_provider(), self, dir, pid)
     }
 
+    fn focus_if_possible(&self, dir: Direction, pid: u32) -> Result<bool> {
+        Self::host_mux().focus_with_host_tab_fallback(
+            pid,
+            dir,
+            matches!(dir, Direction::West | Direction::East)
+                && config::terminal_focus_host_tabs_for(ADAPTER_ALIASES),
+        )
+    }
+
     fn move_decision(
         &self,
         dir: Direction,
@@ -216,7 +225,11 @@ impl TopologyHandler for WeztermBackend {
     }
 
     fn focus(&self, dir: Direction, pid: u32) -> Result<()> {
-        terminal_host_tabs::focus(ADAPTER_ALIASES, Self::mux_provider(), self, dir, pid)
+        if self.focus_if_possible(dir, pid)? {
+            Ok(())
+        } else {
+            terminal_host_tabs::focus(ADAPTER_ALIASES, Self::mux_provider(), self, dir, pid)
+        }
     }
 
     fn move_internal(&self, dir: Direction, pid: u32) -> Result<()> {
@@ -434,6 +447,8 @@ mux_backend = "wezterm"
         responses_dir: PathBuf,
         log_file: PathBuf,
         old_path: Option<OsString>,
+        old_term_program: Option<OsString>,
+        old_wezterm_pane: Option<OsString>,
         old_runtime_dir: Option<OsString>,
         old_responses_dir: Option<OsString>,
         old_log_file: Option<OsString>,
@@ -524,6 +539,8 @@ exit "$status"
                 .expect("failed to mark fake wezterm executable");
 
             let old_path = std::env::var_os("PATH");
+            let old_term_program = std::env::var_os("TERM_PROGRAM");
+            let old_wezterm_pane = std::env::var_os("WEZTERM_PANE");
             let old_runtime_dir = std::env::var_os("XDG_RUNTIME_DIR");
             let old_responses_dir = std::env::var_os("WEZTERM_TEST_RESPONSES_DIR");
             let old_log_file = std::env::var_os("WEZTERM_TEST_LOG");
@@ -536,6 +553,8 @@ exit "$status"
             let path = std::env::join_paths(path_entries).expect("failed to join PATH entries");
 
             std::env::set_var("PATH", path);
+            std::env::remove_var("TERM_PROGRAM");
+            std::env::remove_var("WEZTERM_PANE");
             std::env::set_var("XDG_RUNTIME_DIR", &runtime_dir);
             std::env::set_var("WEZTERM_TEST_RESPONSES_DIR", &responses_dir);
             std::env::set_var("WEZTERM_TEST_LOG", &log_file);
@@ -551,6 +570,8 @@ exit "$status"
                 responses_dir,
                 log_file,
                 old_path,
+                old_term_program,
+                old_wezterm_pane,
                 old_runtime_dir,
                 old_responses_dir,
                 old_log_file,
@@ -592,6 +613,29 @@ exit "$status"
         }
     }
 
+    struct ScopedEnvVar {
+        key: &'static str,
+        old_value: Option<OsString>,
+    }
+
+    impl ScopedEnvVar {
+        fn set(key: &'static str, value: &str) -> Self {
+            let old_value = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, old_value }
+        }
+    }
+
+    impl Drop for ScopedEnvVar {
+        fn drop(&mut self) {
+            if let Some(value) = &self.old_value {
+                std::env::set_var(self.key, value);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
+
     impl Drop for WeztermHarness {
         fn drop(&mut self) {
             crate::adapters::terminal_multiplexers::wezterm::WeztermMux::clear_query_cache_for_tests();
@@ -599,6 +643,18 @@ exit "$status"
                 std::env::set_var("PATH", value);
             } else {
                 std::env::remove_var("PATH");
+            }
+
+            if let Some(value) = &self.old_term_program {
+                std::env::set_var("TERM_PROGRAM", value);
+            } else {
+                std::env::remove_var("TERM_PROGRAM");
+            }
+
+            if let Some(value) = &self.old_wezterm_pane {
+                std::env::set_var("WEZTERM_PANE", value);
+            } else {
+                std::env::remove_var("WEZTERM_PANE");
             }
 
             if let Some(value) = &self.old_runtime_dir {
@@ -781,6 +837,141 @@ host_tabs = "focus"
 
         let log = harness.command_log();
         assert!(log.contains("activate-tab --tab-relative 1 --no-wrap --pane-id 10"));
+    }
+
+    #[test]
+    fn focus_if_possible_switches_host_tabs_without_redundant_cli_queries() {
+        let _env_guard = env_guard();
+        let pid = 5223;
+        let harness = WeztermHarness::with_config(
+            pid,
+            r#"
+            [app.terminal.wezterm]
+            enabled = true
+            mux_backend = "wezterm"
+            host_tabs = "focus"
+            "#,
+        );
+
+        harness.set_response(
+            "list --format json",
+            0,
+            r#"
+            [
+              {"window_id":1,"pane_id":10,"tab_id":1,"is_active":true,"foreground_process_name":"zsh"},
+              {"window_id":1,"pane_id":20,"tab_id":2,"is_active":true,"foreground_process_name":"zsh"}
+            ]
+            "#,
+            "",
+        );
+        harness.set_response(
+            "list-clients --format json",
+            0,
+            r#"[{"pid":5223,"focused_pane_id":10}]"#,
+            "",
+        );
+        harness.set_response("get-pane-direction Right --pane-id 10", 1, "", "no pane");
+        harness.set_response(
+            "activate-tab --tab-relative 1 --no-wrap --pane-id 10",
+            0,
+            "",
+            "",
+        );
+
+        let app = WeztermBackend;
+        assert!(<WeztermBackend as TopologyHandler>::focus_if_possible(&app, Direction::East, pid)
+            .expect("focus_if_possible should succeed"));
+
+        let log = harness.command_log();
+        assert_eq!(
+            log.lines()
+                .filter(|line| *line == "list-clients --format json")
+                .count(),
+            1
+        );
+        assert_eq!(
+            log.lines()
+                .filter(|line| *line == "list --format json")
+                .count(),
+            1
+        );
+        assert_eq!(
+            log.lines()
+                .filter(|line| *line == "get-pane-direction Right --pane-id 10")
+                .count(),
+            1
+        );
+        assert_eq!(
+            log.lines()
+                .filter(|line| *line == "activate-tab --tab-relative 1 --no-wrap --pane-id 10")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn focus_if_possible_uses_invoking_pane_env_for_single_pane_host_tab_focus() {
+        let _env_guard = env_guard();
+        let pid = 5224;
+        let harness = WeztermHarness::with_config(
+            pid,
+            r#"
+            [app.terminal.wezterm]
+            enabled = true
+            mux_backend = "wezterm"
+            host_tabs = "focus"
+            "#,
+        );
+        let _term_program = ScopedEnvVar::set("TERM_PROGRAM", "WezTerm");
+        let _wezterm_pane = ScopedEnvVar::set("WEZTERM_PANE", "10");
+
+        harness.set_response(
+            "list --format json",
+            0,
+            r#"
+            [
+              {"window_id":1,"pane_id":10,"tab_id":1,"is_active":true,"foreground_process_name":"zsh"},
+              {"window_id":1,"pane_id":20,"tab_id":2,"is_active":true,"foreground_process_name":"zsh"}
+            ]
+            "#,
+            "",
+        );
+        harness.set_response(
+            "activate-tab --tab-relative 1 --no-wrap --pane-id 10",
+            0,
+            "",
+            "",
+        );
+
+        let app = WeztermBackend;
+        assert!(<WeztermBackend as TopologyHandler>::focus_if_possible(&app, Direction::East, pid)
+            .expect("focus_if_possible should succeed"));
+
+        let log = harness.command_log();
+        assert_eq!(
+            log.lines()
+                .filter(|line| *line == "list-clients --format json")
+                .count(),
+            0
+        );
+        assert_eq!(
+            log.lines()
+                .filter(|line| *line == "get-pane-direction Right --pane-id 10")
+                .count(),
+            0
+        );
+        assert_eq!(
+            log.lines()
+                .filter(|line| *line == "list --format json")
+                .count(),
+            1
+        );
+        assert_eq!(
+            log.lines()
+                .filter(|line| *line == "activate-tab --tab-relative 1 --no-wrap --pane-id 10")
+                .count(),
+            1
+        );
     }
 
     #[test]

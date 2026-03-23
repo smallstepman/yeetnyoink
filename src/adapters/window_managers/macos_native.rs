@@ -4,17 +4,20 @@ use std::{
     ffi::{CStr, CString, c_char, c_int, c_void},
     fmt,
     ptr::{self, NonNull},
+    time::{Duration, Instant},
 };
 
 use crate::config::WmBackend;
 use crate::engine::runtime::{self, CommandContext, ProcessId};
 use crate::engine::topology::{DirectedRect, Direction, Rect, select_closest_in_direction};
 use crate::engine::wm::{
-    CapabilitySupport, ConfiguredWindowManager, DirectionalCapability, FocusedWindowRecord,
+    CapabilitySupport, ConfiguredWindowManager, DirectionalCapability, FocusedAppRecord,
+    FocusedWindowRecord,
     PrimitiveWindowManagerCapabilities, ResizeIntent, WindowManagerCapabilities,
     WindowManagerCapabilityDescriptor, WindowManagerFeatures, WindowManagerSession,
     WindowManagerSpec, WindowRecord, validate_declared_capabilities,
 };
+use crate::logging;
 
 type CFIndex = isize;
 type Boolean = u8;
@@ -45,6 +48,8 @@ const K_CG_WINDOW_LIST_EXCLUDE_DESKTOP_ELEMENTS: CGWindowListOption = 1 << 4;
 const K_AX_VALUE_TYPE_CGPOINT: AXValueType = 1;
 const K_AX_VALUE_TYPE_CGSIZE: AXValueType = 2;
 const CPS_USER_GENERATED: u32 = 0x200;
+const SPACE_SWITCH_SETTLE_TIMEOUT: Duration = Duration::from_millis(300);
+const SPACE_SWITCH_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 #[repr(C)]
 struct CGPoint {
@@ -131,6 +136,7 @@ unsafe extern "C" {
         attribute: CFStringRef,
         value: CFTypeRef,
     ) -> OSStatus;
+    fn AXUIElementGetPid(element: AXUIElementRef, pid: *mut c_int) -> OSStatus;
     fn AXValueCreate(value_type: AXValueType, value_ptr: *const c_void) -> CFTypeRef;
 }
 
@@ -199,22 +205,31 @@ where
     window_id(&window).map(Some)
 }
 
-fn focus_window_via_process_and_raise<WindowPid, ProcessSerial, FrontProcessWindow, RaiseWindow>(
+fn focus_window_via_process_and_raise<
+    WindowPid,
+    ProcessSerial,
+    FrontProcessWindow,
+    MakeKeyWindow,
+    RaiseWindow,
+>(
     window_id: u64,
     mut window_pid: WindowPid,
     mut process_serial_number: ProcessSerial,
     mut front_process_window: FrontProcessWindow,
+    mut make_key_window: MakeKeyWindow,
     mut raise_window: RaiseWindow,
 ) -> Result<(), MacosNativeOperationError>
 where
     WindowPid: FnMut(u64) -> Result<u32, MacosNativeOperationError>,
     ProcessSerial: FnMut(u32) -> Result<ProcessSerialNumber, MacosNativeOperationError>,
     FrontProcessWindow: FnMut(&ProcessSerialNumber, u64) -> Result<(), MacosNativeOperationError>,
+    MakeKeyWindow: FnMut(&ProcessSerialNumber, u64) -> Result<(), MacosNativeOperationError>,
     RaiseWindow: FnMut(u64, u32) -> Result<(), MacosNativeOperationError>,
 {
     let pid = window_pid(window_id)?;
     let psn = process_serial_number(pid)?;
     front_process_window(&psn, window_id)?;
+    make_key_window(&psn, window_id)?;
     raise_window(window_id, pid)
 }
 
@@ -241,6 +256,34 @@ impl WindowManagerSpec for MacosNativeSpec {
             WindowManagerFeatures::default(),
         )
     }
+
+    fn focused_app_record(&self) -> anyhow::Result<Option<FocusedAppRecord>> {
+        let api = RealNativeApi::new();
+        if !api.ax_is_trusted() {
+            return Err(anyhow::anyhow!(
+                "Accessibility permission is required for macOS native support"
+            ));
+        }
+        if !api.minimal_topology_ready() {
+            return Err(anyhow::anyhow!(
+                "macOS native topology precondition is unavailable: main SkyLight connection"
+            ));
+        }
+        match MacosNativeApi::focused_app_record(&api) {
+            Ok(focused) => Ok(Some(focused)),
+            Err(err) => {
+                logging::debug(format!(
+                    "macos_native: focused-app fast path failed; falling back to focused-window probe: {err}"
+                ));
+                let focused = MacosNativeApi::focused_window_record(&api)?;
+                Ok(Some(FocusedAppRecord {
+                    app_id: focused.app_id.unwrap_or_default(),
+                    title: focused.title.unwrap_or_default(),
+                    pid: focused.pid.ok_or(MacosNativeProbeError::MissingFocusedWindow)?,
+                }))
+            }
+        }
+    }
 }
 
 impl<A> MacosNativeAdapter<A>
@@ -254,14 +297,7 @@ where
     }
 
     fn focused_window_record(&self) -> anyhow::Result<FocusedWindowRecord> {
-        let focused = self.ctx.focused_window().map_err(map_probe_error)?;
-        Ok(FocusedWindowRecord {
-            id: focused.id,
-            app_id: focused.app_id,
-            title: focused.title,
-            pid: focused.pid.and_then(ProcessId::new),
-            original_tile_index: focused.order_index.unwrap_or(0),
-        })
+        self.ctx.focused_window_record().map_err(map_probe_error)
     }
 
     fn windows_vec(&self) -> anyhow::Result<Vec<WindowRecord>> {
@@ -294,6 +330,17 @@ where
             if let Some(target_space_id) =
                 adjacent_space_in_direction(&topology, focused.space_id, direction)
             {
+                if let Some(target_window_id) =
+                    preferred_focus_window_id_in_space(&topology, target_space_id)
+                {
+                    logging::debug(format!(
+                        "macos_native: focusing adjacent-space window {target_window_id} in space {target_space_id}"
+                    ));
+                    return self
+                        .ctx
+                        .focus_window_direct(target_window_id)
+                        .map_err(map_operation_error);
+                }
                 return self
                     .ctx
                     .switch_space(target_space_id)
@@ -302,7 +349,7 @@ where
             anyhow::bail!("macos_native: no window to focus {direction}");
         };
         self.ctx
-            .focus_window(target_id)
+            .focus_window_in_topology(&topology, target_id)
             .map_err(map_operation_error)
     }
 
@@ -326,8 +373,15 @@ where
 
 impl MacosNativeAdapter<RealNativeApi> {
     pub fn connect() -> anyhow::Result<Self> {
-        validate_declared_capabilities::<Self>()?;
-        Self::connect_with_api(RealNativeApi::new()).map_err(anyhow::Error::new)
+        {
+            let _span = tracing::debug_span!("macos_native.connect.validate_capabilities").entered();
+            validate_declared_capabilities::<Self>()?;
+        }
+        let api = {
+            let _span = tracing::debug_span!("macos_native.connect.real_api_new").entered();
+            RealNativeApi::new()
+        };
+        Self::connect_with_api(api).map_err(anyhow::Error::new)
     }
 }
 
@@ -447,6 +501,9 @@ type SlsMoveWindowsToManagedSpaceFn = unsafe extern "C" fn(u32, CFArrayRef, u64)
 #[allow(dead_code)]
 type SlpsSetFrontProcessWithOptionsFn =
     unsafe extern "C" fn(*const ProcessSerialNumber, CGWindowID, u32) -> OSStatus;
+#[allow(dead_code)]
+type SlpsPostEventRecordToFn =
+    unsafe extern "C" fn(*const ProcessSerialNumber, *const c_void) -> OSStatus;
 #[allow(dead_code)]
 type GetProcessForPidFn = unsafe extern "C" fn(c_int, *mut ProcessSerialNumber) -> OSStatus;
 
@@ -579,6 +636,35 @@ pub(crate) trait MacosNativeApi {
     fn focused_window_id(&self) -> Result<Option<u64>, MacosNativeProbeError> {
         Ok(None)
     }
+    fn focused_window_snapshot(&self) -> Result<WindowSnapshot, MacosNativeProbeError> {
+        let active_space_ids = self.active_space_ids()?;
+        let active_space_windows = active_space_ids
+            .into_iter()
+            .map(|space_id| self.active_space_windows(space_id).map(|windows| (space_id, windows)))
+            .collect::<Result<HashMap<_, _>, _>>()?;
+        focused_window_from_active_space_windows(&active_space_windows, self.focused_window_id()?)
+    }
+    fn focused_window_record(&self) -> Result<FocusedWindowRecord, MacosNativeProbeError> {
+        let focused = self.focused_window_snapshot()?;
+        Ok(FocusedWindowRecord {
+            id: focused.id,
+            app_id: focused.app_id,
+            title: focused.title,
+            pid: focused.pid.and_then(ProcessId::new),
+            original_tile_index: focused.order_index.unwrap_or(0),
+        })
+    }
+    fn focused_app_record(&self) -> Result<FocusedAppRecord, MacosNativeProbeError> {
+        let focused = self.focused_window_record()?;
+        Ok(FocusedAppRecord {
+            app_id: focused.app_id.unwrap_or_default(),
+            title: focused.title.unwrap_or_default(),
+            pid: focused.pid.ok_or(MacosNativeProbeError::MissingFocusedWindow)?,
+        })
+    }
+    fn onscreen_window_ids(&self) -> Result<HashSet<u64>, MacosNativeProbeError> {
+        Ok(HashSet::new())
+    }
     fn switch_space(&self, space_id: u64) -> Result<(), MacosNativeOperationError>;
     fn focus_window(&self, window_id: u64) -> Result<(), MacosNativeOperationError>;
     fn move_window_to_space(
@@ -631,16 +717,26 @@ where
     #[allow(dead_code)]
     pub(crate) fn connect_with_api(api: A) -> Result<Self, MacosNativeConnectError> {
         for symbol in REQUIRED_PRIVATE_SYMBOLS {
-            if !api.has_symbol(symbol) {
+            let has_symbol = {
+                let _span = tracing::debug_span!("macos_native.connect.symbol", symbol).entered();
+                api.has_symbol(symbol)
+            };
+            if !has_symbol {
                 return Err(MacosNativeConnectError::MissingRequiredSymbol(symbol));
             }
         }
 
-        if !api.ax_is_trusted() {
+        if {
+            let _span = tracing::debug_span!("macos_native.connect.ax_is_trusted").entered();
+            !api.ax_is_trusted()
+        } {
             return Err(MacosNativeConnectError::MissingAccessibilityPermission);
         }
 
-        if !api.minimal_topology_ready() {
+        if {
+            let _span = tracing::debug_span!("macos_native.connect.minimal_topology_ready").entered();
+            !api.minimal_topology_ready()
+        } {
             return Err(MacosNativeConnectError::MissingTopologyPrecondition(
                 "main SkyLight connection",
             ));
@@ -657,34 +753,107 @@ where
 
     #[allow(dead_code)]
     pub(crate) fn focused_window(&self) -> Result<WindowSnapshot, MacosNativeProbeError> {
-        let topology = self.topology_snapshot()?;
-        focused_window_from_topology(&topology)
+        self.api.focused_window_snapshot()
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn focused_window_record(&self) -> Result<FocusedWindowRecord, MacosNativeProbeError> {
+        self.api.focused_window_record()
     }
 
     #[allow(dead_code)]
     pub(crate) fn switch_space(&self, space_id: u64) -> Result<(), MacosNativeOperationError> {
         let topology = self.topology_snapshot()?;
-        ensure_supported_target_space(&topology, space_id)?;
-
-        if topology.active_space_ids.contains(&space_id) {
-            return Ok(());
-        }
-
-        self.api.switch_space(space_id)
+        self.switch_space_in_topology(&topology, space_id)
     }
 
     #[allow(dead_code)]
     pub(crate) fn focus_window(&self, window_id: u64) -> Result<(), MacosNativeOperationError> {
         let topology = self.topology_snapshot()?;
+        self.focus_window_in_topology(&topology, window_id)
+    }
+
+    fn focus_window_in_topology(
+        &self,
+        topology: &RawTopologySnapshot,
+        window_id: u64,
+    ) -> Result<(), MacosNativeOperationError> {
         let target_space_id = space_id_for_window(&topology, window_id)
             .ok_or(MacosNativeOperationError::MissingWindow(window_id))?;
         ensure_supported_target_space(&topology, target_space_id)?;
 
         if !topology.active_space_ids.contains(&target_space_id) {
-            self.api.switch_space(target_space_id)?;
+            self.switch_space_in_topology(topology, target_space_id)?;
         }
 
         self.api.focus_window(window_id)
+    }
+
+    fn focus_window_direct(&self, window_id: u64) -> Result<(), MacosNativeOperationError> {
+        self.api.focus_window(window_id)
+    }
+
+    fn switch_space_in_topology(
+        &self,
+        topology: &RawTopologySnapshot,
+        space_id: u64,
+    ) -> Result<(), MacosNativeOperationError> {
+        ensure_supported_target_space(topology, space_id)?;
+
+        if topology.active_space_ids.contains(&space_id) {
+            return Ok(());
+        }
+
+        let (source_focus_window_id, target_window_ids) =
+            space_transition_window_ids(topology, space_id);
+        logging::debug(format!(
+            "macos_native: switching to space {space_id} source_focus={:?} target_windows={}",
+            source_focus_window_id,
+            target_window_ids.len()
+        ));
+        self.api.switch_space(space_id)?;
+        self.wait_for_space_presentation(space_id, source_focus_window_id, &target_window_ids)
+    }
+
+    fn wait_for_space_presentation(
+        &self,
+        space_id: u64,
+        source_focus_window_id: Option<u64>,
+        target_window_ids: &HashSet<u64>,
+    ) -> Result<(), MacosNativeOperationError> {
+        let _span =
+            tracing::debug_span!("macos_native.wait_for_active_space", space_id).entered();
+        let deadline = Instant::now() + SPACE_SWITCH_SETTLE_TIMEOUT;
+        let mut polls = 0usize;
+
+        loop {
+            polls += 1;
+            let active_space_ids = self.api.active_space_ids()?;
+            let onscreen_window_ids = self.api.onscreen_window_ids()?;
+            let target_active = active_space_ids.contains(&space_id);
+            let source_focus_hidden = source_focus_window_id
+                .is_none_or(|window_id| !onscreen_window_ids.contains(&window_id));
+            let target_visible =
+                target_window_ids.is_empty() || !target_window_ids.is_disjoint(&onscreen_window_ids);
+
+            if target_active && source_focus_hidden && target_visible {
+                logging::debug(format!(
+                    "macos_native: space {space_id} presentation settled after {polls} poll(s)"
+                ));
+                return Ok(());
+            }
+
+            if Instant::now() >= deadline {
+                logging::debug(format!(
+                    "macos_native: space {space_id} did not settle after {polls} poll(s) target_active={target_active} source_focus_hidden={source_focus_hidden} target_visible={target_visible}"
+                ));
+                return Err(MacosNativeOperationError::CallFailed(
+                    "wait_for_active_space",
+                ));
+            }
+
+            std::thread::sleep(SPACE_SWITCH_POLL_INTERVAL);
+        }
     }
 
     #[allow(dead_code)]
@@ -901,6 +1070,16 @@ impl RealNativeApi {
         )
     }
 
+    fn ax_pid(&self, element: &CfOwned) -> Result<u32, MacosNativeProbeError> {
+        let mut pid = 0;
+        let status =
+            unsafe { AXUIElementGetPid(element.as_type_ref() as AXUIElementRef, &mut pid) };
+        if status != 0 || pid <= 0 {
+            return Err(MacosNativeProbeError::MissingFocusedWindow);
+        }
+        Ok(pid as u32)
+    }
+
     fn ax_window_id(&self, element: &CfOwned) -> Result<u64, MacosNativeProbeError> {
         let Some(symbol) = self.resolve_symbol("_AXUIElementGetWindow") else {
             return Err(MacosNativeProbeError::MissingTopology(
@@ -923,9 +1102,18 @@ impl RealNativeApi {
 
     fn probe_focused_window_id(&self) -> Result<Option<u64>, MacosNativeProbeError> {
         focused_window_id_via_ax(
-            || self.copy_focused_application_ax(),
-            |application| self.copy_focused_window_ax(application),
-            |window| self.ax_window_id(window),
+            || {
+                let _span = tracing::debug_span!("macos_native.ax.focused_application").entered();
+                self.copy_focused_application_ax()
+            },
+            |application| {
+                let _span = tracing::debug_span!("macos_native.ax.focused_window").entered();
+                self.copy_focused_window_ax(application)
+            },
+            |window| {
+                let _span = tracing::debug_span!("macos_native.ax.window_id").entered();
+                self.ax_window_id(window)
+            },
         )
     }
 
@@ -998,6 +1186,45 @@ impl RealNativeApi {
         }
 
         Err(MacosNativeOperationError::MissingWindow(window_id))
+    }
+
+    fn make_key_window(
+        &self,
+        psn: &ProcessSerialNumber,
+        window_id: u64,
+    ) -> Result<(), MacosNativeOperationError> {
+        let Some(post_event_symbol) = self.resolve_symbol("SLPSPostEventRecordTo") else {
+            return Err(MacosNativeOperationError::CallFailed("SLPSPostEventRecordTo"));
+        };
+        let post_event_record_to: SlpsPostEventRecordToFn =
+            unsafe { std::mem::transmute(post_event_symbol) };
+        let window_id = u32::try_from(window_id)
+            .map_err(|_| MacosNativeOperationError::MissingWindow(window_id))?;
+        let mut event_bytes = [0u8; 0xf8];
+        event_bytes[0x04] = 0xf8;
+        event_bytes[0x3a] = 0x10;
+        event_bytes[0x3c..0x40].copy_from_slice(&window_id.to_ne_bytes());
+        event_bytes[0x20..0x30].fill(0xff);
+
+        event_bytes[0x08] = 0x01;
+        let press_status =
+            unsafe { post_event_record_to(psn, event_bytes.as_ptr().cast::<c_void>()) };
+        if press_status != 0 {
+            return Err(MacosNativeOperationError::CallFailed(
+                "SLPSPostEventRecordTo",
+            ));
+        }
+
+        event_bytes[0x08] = 0x02;
+        let release_status =
+            unsafe { post_event_record_to(psn, event_bytes.as_ptr().cast::<c_void>()) };
+        if release_status != 0 {
+            return Err(MacosNativeOperationError::CallFailed(
+                "SLPSPostEventRecordTo",
+            ));
+        }
+
+        Ok(())
     }
 
     fn raise_window_via_ax(&self, window_id: u64, pid: u32) -> Result<(), MacosNativeOperationError> {
@@ -1120,6 +1347,17 @@ impl RealNativeApi {
         Ok(fallback)
     }
 
+    fn active_space_windows_without_app_ids(
+        &self,
+        space_id: u64,
+    ) -> Result<Vec<RawWindow>, MacosNativeProbeError> {
+        let payload = self.copy_windows_for_space_raw(space_id)?;
+        let raw_window_ids = parse_window_ids(payload.as_type_ref() as CFArrayRef)?;
+        let visible_order = query_visible_window_order(&raw_window_ids)?;
+        let descriptions = self.copy_window_descriptions_raw(payload.as_type_ref() as CFArrayRef)?;
+        parse_window_descriptions(descriptions.as_type_ref() as CFArrayRef, &visible_order)
+    }
+
     fn copy_managed_display_for_space_raw(
         &self,
         space_id: u64,
@@ -1177,6 +1415,7 @@ impl RealNativeApi {
             },
             |pid| self.process_serial_number_for_pid(pid),
             |psn, target_window_id| self.front_process_window(psn, target_window_id),
+            |psn, target_window_id| self.make_key_window(psn, target_window_id),
             |target_window_id, pid| self.raise_window_via_ax(target_window_id, pid),
         )
     }
@@ -1315,6 +1554,11 @@ impl MacosNativeApi for RealNativeApi {
         Ok(inactive_space_window_ids)
     }
 
+    fn onscreen_window_ids(&self) -> Result<HashSet<u64>, MacosNativeProbeError> {
+        let descriptions = copy_onscreen_window_descriptions_raw()?;
+        onscreen_window_ids_from_descriptions(descriptions.as_type_ref() as CFArrayRef)
+    }
+
     fn switch_space(&self, space_id: u64) -> Result<(), MacosNativeOperationError> {
         Self::switch_space(self, space_id)
     }
@@ -1349,6 +1593,101 @@ impl MacosNativeApi for RealNativeApi {
 
     fn focused_window_id(&self) -> Result<Option<u64>, MacosNativeProbeError> {
         Self::probe_focused_window_id(self)
+    }
+
+    fn focused_window_snapshot(&self) -> Result<WindowSnapshot, MacosNativeProbeError> {
+        let focused_window_id = Self::probe_focused_window_id(self)?;
+        let active_space_ids = self.active_space_ids()?;
+        let mut active_space_windows = HashMap::new();
+
+        for space_id in active_space_ids {
+            let windows = self.active_space_windows_without_app_ids(space_id)?;
+            if let Some(target_window_id) = focused_window_id {
+                if let Some(mut snapshot) =
+                    active_window_snapshot(space_id, &windows, target_window_id)
+                {
+                    snapshot.app_id = snapshot
+                        .app_id
+                        .or_else(|| stable_app_id_from_real_window(snapshot.pid, None));
+                    return Ok(snapshot);
+                }
+            }
+            active_space_windows.insert(space_id, windows);
+        }
+
+        let mut snapshot =
+            focused_window_from_active_space_windows(&active_space_windows, focused_window_id)?;
+        snapshot.app_id = snapshot
+            .app_id
+            .or_else(|| stable_app_id_from_real_window(snapshot.pid, None));
+        Ok(snapshot)
+    }
+
+    fn focused_window_record(&self) -> Result<FocusedWindowRecord, MacosNativeProbeError> {
+        let focused_window_id = {
+            let _span = tracing::debug_span!("macos_native.focused_window_id").entered();
+            Self::probe_focused_window_id(self)?
+                .ok_or(MacosNativeProbeError::MissingFocusedWindow)?
+        };
+        let onscreen_descriptions = {
+            let _span = tracing::debug_span!("macos_native.onscreen_descriptions").entered();
+            copy_onscreen_window_descriptions_raw()?
+        };
+        if let Some(focused) = focused_window_record_from_onscreen_descriptions(
+            onscreen_descriptions.as_type_ref() as CFArrayRef,
+            focused_window_id,
+        )? {
+            return Ok(focused);
+        }
+        let window_number = {
+            let _span = tracing::debug_span!("macos_native.focused_window_cf_number").entered();
+            cf_number_from_u64(focused_window_id)?
+        };
+        let values = [window_number.as_type_ref()];
+        let window_list = unsafe {
+            CfOwned::from_create_rule(CFArrayCreate(
+                ptr::null(),
+                values.as_ptr(),
+                values.len() as CFIndex,
+                &kCFTypeArrayCallBacks,
+            ))
+        }
+        .ok_or(MacosNativeProbeError::MissingTopology("CFArrayCreate"))?;
+        let descriptions = {
+            let _span = tracing::debug_span!("macos_native.focused_window_descriptions").entered();
+            self.copy_window_descriptions_raw(window_list.as_type_ref() as CFArrayRef)?
+        };
+        let focused = parse_window_descriptions(descriptions.as_type_ref() as CFArrayRef, &HashMap::new())?
+            .into_iter()
+            .find(|window| window.id == focused_window_id)
+            .ok_or(MacosNativeProbeError::MissingFocusedWindow)?;
+
+        Ok(FocusedWindowRecord {
+            id: focused.id,
+            app_id: focused
+                .app_id
+                .or_else(|| stable_app_id_from_real_window(focused.pid, None)),
+            title: focused.title,
+            pid: focused.pid.and_then(ProcessId::new),
+            original_tile_index: focused.visible_index.unwrap_or(0),
+        })
+    }
+
+    fn focused_app_record(&self) -> Result<FocusedAppRecord, MacosNativeProbeError> {
+        let application = {
+            let _span = tracing::debug_span!("macos_native.ax.focused_application").entered();
+            self.copy_focused_application_ax()?
+                .ok_or(MacosNativeProbeError::MissingFocusedWindow)?
+        };
+        let pid = {
+            let _span = tracing::debug_span!("macos_native.ax.application_pid").entered();
+            self.ax_pid(&application)?
+        };
+        Ok(FocusedAppRecord {
+            app_id: stable_app_id_from_pid(pid).unwrap_or_default(),
+            title: String::new(),
+            pid: ProcessId::new(pid).ok_or(MacosNativeProbeError::MissingFocusedWindow)?,
+        })
     }
 
     fn topology_snapshot(&self) -> Result<RawTopologySnapshot, MacosNativeProbeError> {
@@ -1864,6 +2203,18 @@ fn copy_onscreen_window_descriptions_raw() -> Result<CfOwned, MacosNativeProbeEr
     ))
 }
 
+fn onscreen_window_ids_from_descriptions(
+    payload: CFArrayRef,
+) -> Result<HashSet<u64>, MacosNativeProbeError> {
+    let window_number_key = cg_window_number_key();
+    Ok(cf_array_iter(payload)
+        .filter_map(|description| {
+            let description = cf_as_dictionary(description)?;
+            cf_dictionary_u64(description, window_number_key)
+        })
+        .collect())
+}
+
 fn filter_window_descriptions_raw(
     payload: CFArrayRef,
     target_window_ids: &[u64],
@@ -1900,6 +2251,38 @@ fn copy_matching_onscreen_window_descriptions_raw(
 ) -> Result<CfOwned, MacosNativeProbeError> {
     let onscreen_descriptions = copy_onscreen_window_descriptions_raw()?;
     filter_window_descriptions_raw(onscreen_descriptions.as_type_ref() as CFArrayRef, target_window_ids)
+}
+
+fn focused_window_record_from_onscreen_descriptions(
+    payload: CFArrayRef,
+    focused_window_id: u64,
+) -> Result<Option<FocusedWindowRecord>, MacosNativeProbeError> {
+    let window_number_key = cg_window_number_key();
+    let window_owner_pid_key = cg_window_owner_pid_key();
+    let window_name_key = cg_window_name_key();
+
+    for (index, description) in cf_array_iter(payload).enumerate() {
+        let Some(description) = cf_as_dictionary(description) else {
+            continue;
+        };
+        let Some(window_id) = cf_dictionary_u64(description, window_number_key) else {
+            continue;
+        };
+        if window_id != focused_window_id {
+            continue;
+        }
+
+        let pid = cf_dictionary_u32(description, window_owner_pid_key);
+        return Ok(Some(FocusedWindowRecord {
+            id: window_id,
+            app_id: stable_app_id_from_real_window(pid, None),
+            title: cf_dictionary_string(description, window_name_key),
+            pid: pid.and_then(ProcessId::new),
+            original_tile_index: index,
+        }));
+    }
+
+    Ok(None)
 }
 
 fn parse_window_descriptions(
@@ -2091,6 +2474,26 @@ fn snapshots_for_active_space(space_id: u64, windows: &[RawWindow]) -> Vec<Windo
         .collect()
 }
 
+fn active_window_snapshot(
+    space_id: u64,
+    windows: &[RawWindow],
+    window_id: u64,
+) -> Option<WindowSnapshot> {
+    order_active_space_windows(windows)
+        .into_iter()
+        .enumerate()
+        .find_map(|(index, window)| {
+            (window.id == window_id).then_some(WindowSnapshot {
+                id: window.id,
+                pid: window.pid,
+                app_id: window.app_id,
+                title: window.title,
+                space_id,
+                order_index: Some(index),
+            })
+        })
+}
+
 #[cfg_attr(not(test), allow(dead_code))]
 fn snapshots_for_inactive_space(space_id: u64, window_ids: &[u64]) -> Vec<WindowSnapshot> {
     window_ids
@@ -2137,6 +2540,33 @@ fn window_snapshots_from_topology(topology: &RawTopologySnapshot) -> Vec<WindowS
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
+fn focused_window_from_active_space_windows(
+    active_space_windows: &HashMap<u64, Vec<RawWindow>>,
+    focused_window_id: Option<u64>,
+) -> Result<WindowSnapshot, MacosNativeProbeError> {
+    if let Some(target_window_id) = focused_window_id {
+        if let Some(snapshot) = active_space_windows
+            .iter()
+            .find_map(|(space_id, windows)| active_window_snapshot(*space_id, windows, target_window_id))
+        {
+            return Ok(snapshot);
+        }
+    }
+
+    active_space_windows
+        .iter()
+        .flat_map(|(space_id, windows)| {
+            windows
+                .iter()
+                .cloned()
+                .map(move |window| (*space_id, window))
+        })
+        .min_by(|(_, left), (_, right)| compare_active_windows(left, right))
+        .and_then(|(space_id, window)| active_window_snapshot(space_id, active_space_windows.get(&space_id)?, window.id))
+        .ok_or(MacosNativeProbeError::MissingFocusedWindow)
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
 fn space_snapshots_from_topology(topology: &RawTopologySnapshot) -> Vec<SpaceSnapshot> {
     topology
         .spaces
@@ -2171,30 +2601,7 @@ fn space_snapshots_from_topology(topology: &RawTopologySnapshot) -> Vec<SpaceSna
 fn focused_window_from_topology(
     topology: &RawTopologySnapshot,
 ) -> Result<WindowSnapshot, MacosNativeProbeError> {
-    let focused_window_id = topology
-        .focused_window_id
-        .and_then(|window_id| {
-            window_snapshots_from_topology(topology)
-                .into_iter()
-                .find(|window| window.id == window_id)
-                .map(|window| (window.space_id, window.id))
-        })
-        .or_else(|| {
-            topology
-                .active_space_windows
-                .iter()
-                .flat_map(|(space_id, windows)| {
-                    windows.iter().cloned().map(|window| (*space_id, window))
-                })
-                .min_by(|(_, left), (_, right)| compare_active_windows(left, right))
-                .map(|(space_id, window)| (space_id, window.id))
-        })
-        .ok_or(MacosNativeProbeError::MissingFocusedWindow)?;
-
-    window_snapshots_from_topology(topology)
-        .into_iter()
-        .find(|window| (window.space_id, window.id) == focused_window_id)
-        .ok_or(MacosNativeProbeError::MissingFocusedWindow)
+    focused_window_from_active_space_windows(&topology.active_space_windows, topology.focused_window_id)
 }
 
 fn space_id_for_window(topology: &RawTopologySnapshot, window_id: u64) -> Option<u64> {
@@ -2221,6 +2628,54 @@ fn display_index_for_space(topology: &RawTopologySnapshot, space_id: u64) -> Opt
         .iter()
         .find(|space| space.managed_space_id == space_id)
         .map(|space| space.display_index)
+}
+
+fn active_space_on_display(topology: &RawTopologySnapshot, display_index: usize) -> Option<u64> {
+    topology
+        .active_space_ids
+        .iter()
+        .copied()
+        .find(|space_id| display_index_for_space(topology, *space_id) == Some(display_index))
+}
+
+fn window_ids_for_space(topology: &RawTopologySnapshot, space_id: u64) -> HashSet<u64> {
+    if topology.active_space_ids.contains(&space_id) {
+        return topology
+            .active_space_windows
+            .get(&space_id)
+            .into_iter()
+            .flat_map(|windows| windows.iter().map(|window| window.id))
+            .collect();
+    }
+
+    topology
+        .inactive_space_window_ids
+        .get(&space_id)
+        .into_iter()
+        .flat_map(|window_ids| window_ids.iter().copied())
+        .collect()
+}
+
+fn preferred_focus_window_id_in_space(topology: &RawTopologySnapshot, space_id: u64) -> Option<u64> {
+    topology
+        .inactive_space_window_ids
+        .get(&space_id)
+        .and_then(|window_ids| window_ids.first().copied())
+}
+
+fn space_transition_window_ids(
+    topology: &RawTopologySnapshot,
+    target_space_id: u64,
+) -> (Option<u64>, HashSet<u64>) {
+    let source_space_id = display_index_for_space(topology, target_space_id)
+        .and_then(|display_index| active_space_on_display(topology, display_index))
+        .filter(|source_space_id| *source_space_id != target_space_id);
+    let source_focus_window_id = topology
+        .focused_window_id
+        .filter(|window_id| space_id_for_window(topology, *window_id) == source_space_id);
+    let target_window_ids = window_ids_for_space(topology, target_space_id);
+
+    (source_focus_window_id, target_window_ids)
 }
 
 fn adjacent_space_in_direction(
@@ -2294,7 +2749,7 @@ mod tests {
     use super::*;
     use std::{
         cell::RefCell,
-        collections::BTreeSet,
+        collections::{BTreeSet, VecDeque},
         rc::Rc,
         sync::{Arc, Mutex},
     };
@@ -2592,6 +3047,10 @@ mod tests {
             Ok(())
         }
 
+        fn focused_window_snapshot(&self) -> Result<WindowSnapshot, MacosNativeProbeError> {
+            focused_window_from_topology(&self.topology)
+        }
+
         fn topology_snapshot(&self) -> Result<RawTopologySnapshot, MacosNativeProbeError> {
             Ok(self.topology.clone())
         }
@@ -2693,6 +3152,394 @@ mod tests {
         }
     }
 
+    #[derive(Debug, Clone)]
+    struct SequencedTopologyApi {
+        snapshots: Rc<RefCell<VecDeque<RawTopologySnapshot>>>,
+        calls: Rc<RefCell<Vec<String>>>,
+    }
+
+    impl SequencedTopologyApi {
+        fn new(snapshots: Vec<RawTopologySnapshot>, calls: Rc<RefCell<Vec<String>>>) -> Self {
+            Self {
+                snapshots: Rc::new(RefCell::new(VecDeque::from(snapshots))),
+                calls,
+            }
+        }
+
+        fn current_topology(&self) -> RawTopologySnapshot {
+            self.snapshots
+                .borrow()
+                .front()
+                .cloned()
+                .expect("sequenced topology api must retain at least one snapshot")
+        }
+    }
+
+    impl MacosNativeApi for SequencedTopologyApi {
+        fn has_symbol(&self, _symbol: &'static str) -> bool {
+            true
+        }
+
+        fn ax_is_trusted(&self) -> bool {
+            true
+        }
+
+        fn minimal_topology_ready(&self) -> bool {
+            true
+        }
+
+        fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
+            Ok(self.current_topology().spaces)
+        }
+
+        fn active_space_ids(&self) -> Result<HashSet<u64>, MacosNativeProbeError> {
+            Ok(self.current_topology().active_space_ids)
+        }
+
+        fn active_space_windows(
+            &self,
+            space_id: u64,
+        ) -> Result<Vec<RawWindow>, MacosNativeProbeError> {
+            Ok(self
+                .current_topology()
+                .active_space_windows
+                .get(&space_id)
+                .cloned()
+                .unwrap_or_default())
+        }
+
+        fn inactive_space_window_ids(
+            &self,
+        ) -> Result<HashMap<u64, Vec<u64>>, MacosNativeProbeError> {
+            Ok(self.current_topology().inactive_space_window_ids)
+        }
+
+        fn focused_window_id(&self) -> Result<Option<u64>, MacosNativeProbeError> {
+            Ok(self.current_topology().focused_window_id)
+        }
+
+        fn switch_space(&self, space_id: u64) -> Result<(), MacosNativeOperationError> {
+            self.calls
+                .borrow_mut()
+                .push(format!("switch_space:{space_id}"));
+            Ok(())
+        }
+
+        fn focus_window(&self, window_id: u64) -> Result<(), MacosNativeOperationError> {
+            self.calls
+                .borrow_mut()
+                .push(format!("focus_window:{window_id}"));
+            Ok(())
+        }
+
+        fn move_window_to_space(
+            &self,
+            window_id: u64,
+            space_id: u64,
+        ) -> Result<(), MacosNativeOperationError> {
+            self.calls
+                .borrow_mut()
+                .push(format!("move_window_to_space:{window_id}:{space_id}"));
+            Ok(())
+        }
+
+        fn swap_window_frames(
+            &self,
+            source_window_id: u64,
+            _source_frame: Rect,
+            target_window_id: u64,
+            _target_frame: Rect,
+        ) -> Result<(), MacosNativeOperationError> {
+            self.calls
+                .borrow_mut()
+                .push(format!("swap_window_frames:{source_window_id}:{target_window_id}"));
+            Ok(())
+        }
+
+        fn topology_snapshot(&self) -> Result<RawTopologySnapshot, MacosNativeProbeError> {
+            let mut snapshots = self.snapshots.borrow_mut();
+            let snapshot = snapshots
+                .front()
+                .cloned()
+                .expect("sequenced topology api must retain at least one snapshot");
+            if snapshots.len() > 1 {
+                snapshots.pop_front();
+            }
+            Ok(snapshot)
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    struct SpaceSettlingApi {
+        topology: RawTopologySnapshot,
+        calls: Rc<RefCell<Vec<String>>>,
+        pending_space: Rc<RefCell<Option<u64>>>,
+        stale_polls_remaining: Rc<RefCell<usize>>,
+    }
+
+    impl SpaceSettlingApi {
+        fn new(
+            topology: RawTopologySnapshot,
+            calls: Rc<RefCell<Vec<String>>>,
+            stale_polls_remaining: usize,
+        ) -> Self {
+            Self {
+                topology,
+                calls,
+                pending_space: Rc::new(RefCell::new(None)),
+                stale_polls_remaining: Rc::new(RefCell::new(stale_polls_remaining)),
+            }
+        }
+
+        fn current_active_space_ids(&self) -> HashSet<u64> {
+            let pending_space = *self.pending_space.borrow();
+            let stale_polls_remaining = *self.stale_polls_remaining.borrow();
+            match (pending_space, stale_polls_remaining) {
+                (Some(space_id), 0) => HashSet::from([space_id]),
+                _ => self.topology.active_space_ids.clone(),
+            }
+        }
+    }
+
+    impl MacosNativeApi for SpaceSettlingApi {
+        fn has_symbol(&self, _symbol: &'static str) -> bool {
+            true
+        }
+
+        fn ax_is_trusted(&self) -> bool {
+            true
+        }
+
+        fn minimal_topology_ready(&self) -> bool {
+            true
+        }
+
+        fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
+            Ok(self.topology.spaces.clone())
+        }
+
+        fn active_space_ids(&self) -> Result<HashSet<u64>, MacosNativeProbeError> {
+            self.calls.borrow_mut().push("active_space_ids".to_string());
+
+            if self.pending_space.borrow().is_some() {
+                let mut stale_polls_remaining = self.stale_polls_remaining.borrow_mut();
+                if *stale_polls_remaining > 0 {
+                    *stale_polls_remaining -= 1;
+                }
+            }
+
+            Ok(self.current_active_space_ids())
+        }
+
+        fn active_space_windows(
+            &self,
+            space_id: u64,
+        ) -> Result<Vec<RawWindow>, MacosNativeProbeError> {
+            Ok(self
+                .topology
+                .active_space_windows
+                .get(&space_id)
+                .cloned()
+                .unwrap_or_default())
+        }
+
+        fn inactive_space_window_ids(
+            &self,
+        ) -> Result<HashMap<u64, Vec<u64>>, MacosNativeProbeError> {
+            Ok(self.topology.inactive_space_window_ids.clone())
+        }
+
+        fn focused_window_id(&self) -> Result<Option<u64>, MacosNativeProbeError> {
+            Ok(self.topology.focused_window_id)
+        }
+
+        fn onscreen_window_ids(&self) -> Result<HashSet<u64>, MacosNativeProbeError> {
+            Ok(match (*self.pending_space.borrow(), *self.stale_polls_remaining.borrow()) {
+                (Some(space_id), 0) => window_ids_for_space(&self.topology, space_id),
+                _ => self
+                    .topology
+                    .active_space_ids
+                    .iter()
+                    .copied()
+                    .flat_map(|space_id| window_ids_for_space(&self.topology, space_id))
+                    .collect(),
+            })
+        }
+
+        fn switch_space(&self, space_id: u64) -> Result<(), MacosNativeOperationError> {
+            self.calls
+                .borrow_mut()
+                .push(format!("switch_space:{space_id}"));
+            *self.pending_space.borrow_mut() = Some(space_id);
+            Ok(())
+        }
+
+        fn focus_window(&self, window_id: u64) -> Result<(), MacosNativeOperationError> {
+            if let Some(target_space_id) = *self.pending_space.borrow() {
+                if !self.current_active_space_ids().contains(&target_space_id) {
+                    return Err(MacosNativeOperationError::CallFailed(
+                        "focus_window_before_space_settled",
+                    ));
+                }
+            }
+
+            self.calls
+                .borrow_mut()
+                .push(format!("focus_window:{window_id}"));
+            Ok(())
+        }
+
+        fn move_window_to_space(
+            &self,
+            window_id: u64,
+            space_id: u64,
+        ) -> Result<(), MacosNativeOperationError> {
+            self.calls
+                .borrow_mut()
+                .push(format!("move_window_to_space:{window_id}:{space_id}"));
+            Ok(())
+        }
+
+        fn swap_window_frames(
+            &self,
+            source_window_id: u64,
+            _source_frame: Rect,
+            target_window_id: u64,
+            _target_frame: Rect,
+        ) -> Result<(), MacosNativeOperationError> {
+            self.calls
+                .borrow_mut()
+                .push(format!("swap_window_frames:{source_window_id}:{target_window_id}"));
+            Ok(())
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    struct SpacePresentationApi {
+        topology: RawTopologySnapshot,
+        calls: Rc<RefCell<Vec<String>>>,
+        pending_space: Rc<RefCell<Option<u64>>>,
+        onscreen_sequences: Rc<RefCell<VecDeque<HashSet<u64>>>>,
+    }
+
+    impl SpacePresentationApi {
+        fn new(
+            topology: RawTopologySnapshot,
+            calls: Rc<RefCell<Vec<String>>>,
+            onscreen_sequences: Vec<HashSet<u64>>,
+        ) -> Self {
+            Self {
+                topology,
+                calls,
+                pending_space: Rc::new(RefCell::new(None)),
+                onscreen_sequences: Rc::new(RefCell::new(VecDeque::from(onscreen_sequences))),
+            }
+        }
+
+        fn current_active_space_ids(&self) -> HashSet<u64> {
+            (*self.pending_space.borrow())
+                .map(|space_id| HashSet::from([space_id]))
+                .unwrap_or_else(|| self.topology.active_space_ids.clone())
+        }
+    }
+
+    impl MacosNativeApi for SpacePresentationApi {
+        fn has_symbol(&self, _symbol: &'static str) -> bool {
+            true
+        }
+
+        fn ax_is_trusted(&self) -> bool {
+            true
+        }
+
+        fn minimal_topology_ready(&self) -> bool {
+            true
+        }
+
+        fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
+            Ok(self.topology.spaces.clone())
+        }
+
+        fn active_space_ids(&self) -> Result<HashSet<u64>, MacosNativeProbeError> {
+            self.calls.borrow_mut().push("active_space_ids".to_string());
+            Ok(self.current_active_space_ids())
+        }
+
+        fn active_space_windows(
+            &self,
+            space_id: u64,
+        ) -> Result<Vec<RawWindow>, MacosNativeProbeError> {
+            Ok(self
+                .topology
+                .active_space_windows
+                .get(&space_id)
+                .cloned()
+                .unwrap_or_default())
+        }
+
+        fn inactive_space_window_ids(
+            &self,
+        ) -> Result<HashMap<u64, Vec<u64>>, MacosNativeProbeError> {
+            Ok(self.topology.inactive_space_window_ids.clone())
+        }
+
+        fn focused_window_id(&self) -> Result<Option<u64>, MacosNativeProbeError> {
+            Ok(self.topology.focused_window_id)
+        }
+
+        fn onscreen_window_ids(&self) -> Result<HashSet<u64>, MacosNativeProbeError> {
+            self.calls.borrow_mut().push("onscreen_window_ids".to_string());
+            let mut sequences = self.onscreen_sequences.borrow_mut();
+            let current = sequences
+                .front()
+                .cloned()
+                .unwrap_or_default();
+            if sequences.len() > 1 {
+                sequences.pop_front();
+            }
+            Ok(current)
+        }
+
+        fn switch_space(&self, space_id: u64) -> Result<(), MacosNativeOperationError> {
+            self.calls
+                .borrow_mut()
+                .push(format!("switch_space:{space_id}"));
+            *self.pending_space.borrow_mut() = Some(space_id);
+            Ok(())
+        }
+
+        fn focus_window(&self, window_id: u64) -> Result<(), MacosNativeOperationError> {
+            self.calls
+                .borrow_mut()
+                .push(format!("focus_window:{window_id}"));
+            Ok(())
+        }
+
+        fn move_window_to_space(
+            &self,
+            window_id: u64,
+            space_id: u64,
+        ) -> Result<(), MacosNativeOperationError> {
+            self.calls
+                .borrow_mut()
+                .push(format!("move_window_to_space:{window_id}:{space_id}"));
+            Ok(())
+        }
+
+        fn swap_window_frames(
+            &self,
+            source_window_id: u64,
+            _source_frame: Rect,
+            target_window_id: u64,
+            _target_frame: Rect,
+        ) -> Result<(), MacosNativeOperationError> {
+            self.calls
+                .borrow_mut()
+                .push(format!("swap_window_frames:{source_window_id}:{target_window_id}"));
+            Ok(())
+        }
+    }
+
     struct FocusedIdTopologyApi;
 
     impl MacosNativeApi for FocusedIdTopologyApi {
@@ -2731,6 +3578,161 @@ mod tests {
 
         fn focused_window_id(&self) -> Result<Option<u64>, MacosNativeProbeError> {
             Ok(Some(11))
+        }
+
+        fn switch_space(&self, _space_id: u64) -> Result<(), MacosNativeOperationError> {
+            Ok(())
+        }
+
+        fn focus_window(&self, _window_id: u64) -> Result<(), MacosNativeOperationError> {
+            Ok(())
+        }
+
+        fn move_window_to_space(
+            &self,
+            _window_id: u64,
+            _space_id: u64,
+        ) -> Result<(), MacosNativeOperationError> {
+            Ok(())
+        }
+
+        fn swap_window_frames(
+            &self,
+            _source_window_id: u64,
+            _source_frame: Rect,
+            _target_window_id: u64,
+            _target_frame: Rect,
+        ) -> Result<(), MacosNativeOperationError> {
+            Ok(())
+        }
+    }
+
+    struct FocusedWindowFastPathApi;
+
+    impl MacosNativeApi for FocusedWindowFastPathApi {
+        fn has_symbol(&self, _symbol: &'static str) -> bool {
+            true
+        }
+
+        fn ax_is_trusted(&self) -> bool {
+            true
+        }
+
+        fn minimal_topology_ready(&self) -> bool {
+            true
+        }
+
+        fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
+            panic!("focused_window fast path must not query managed_spaces")
+        }
+
+        fn active_space_ids(&self) -> Result<HashSet<u64>, MacosNativeProbeError> {
+            Ok(HashSet::from([1]))
+        }
+
+        fn active_space_windows(
+            &self,
+            _space_id: u64,
+        ) -> Result<Vec<RawWindow>, MacosNativeProbeError> {
+            Ok(vec![
+                raw_window(10)
+                    .with_pid(1010)
+                    .with_app_id("first.app")
+                    .with_title("first")
+                    .with_visible_index(1),
+                raw_window(20)
+                    .with_pid(2020)
+                    .with_app_id("focused.app")
+                    .with_title("focused")
+                    .with_visible_index(0),
+            ])
+        }
+
+        fn inactive_space_window_ids(
+            &self,
+        ) -> Result<HashMap<u64, Vec<u64>>, MacosNativeProbeError> {
+            panic!("focused_window fast path must not query inactive_space_window_ids")
+        }
+
+        fn focused_window_id(&self) -> Result<Option<u64>, MacosNativeProbeError> {
+            Ok(Some(20))
+        }
+
+        fn switch_space(&self, _space_id: u64) -> Result<(), MacosNativeOperationError> {
+            Ok(())
+        }
+
+        fn focus_window(&self, _window_id: u64) -> Result<(), MacosNativeOperationError> {
+            Ok(())
+        }
+
+        fn move_window_to_space(
+            &self,
+            _window_id: u64,
+            _space_id: u64,
+        ) -> Result<(), MacosNativeOperationError> {
+            Ok(())
+        }
+
+        fn swap_window_frames(
+            &self,
+            _source_window_id: u64,
+            _source_frame: Rect,
+            _target_window_id: u64,
+            _target_frame: Rect,
+        ) -> Result<(), MacosNativeOperationError> {
+            Ok(())
+        }
+    }
+
+    struct FocusedWindowRecordFastPathApi;
+
+    impl MacosNativeApi for FocusedWindowRecordFastPathApi {
+        fn has_symbol(&self, _symbol: &'static str) -> bool {
+            true
+        }
+
+        fn ax_is_trusted(&self) -> bool {
+            true
+        }
+
+        fn minimal_topology_ready(&self) -> bool {
+            true
+        }
+
+        fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
+            panic!("focused_window record fast path must not query managed_spaces")
+        }
+
+        fn active_space_ids(&self) -> Result<HashSet<u64>, MacosNativeProbeError> {
+            panic!("focused_window record fast path must not query active_space_ids")
+        }
+
+        fn active_space_windows(
+            &self,
+            _space_id: u64,
+        ) -> Result<Vec<RawWindow>, MacosNativeProbeError> {
+            panic!("focused_window record fast path must not query active_space_windows")
+        }
+
+        fn inactive_space_window_ids(
+            &self,
+        ) -> Result<HashMap<u64, Vec<u64>>, MacosNativeProbeError> {
+            panic!("focused_window record fast path must not query inactive_space_window_ids")
+        }
+
+        fn focused_window_snapshot(&self) -> Result<WindowSnapshot, MacosNativeProbeError> {
+            panic!("focused_window record fast path must not query focused_window_snapshot")
+        }
+
+        fn focused_window_record(&self) -> Result<FocusedWindowRecord, MacosNativeProbeError> {
+            Ok(FocusedWindowRecord {
+                id: 20,
+                app_id: Some("focused.app".to_string()),
+                title: Some("focused".to_string()),
+                pid: ProcessId::new(2020),
+                original_tile_index: 0,
+            })
         }
 
         fn switch_space(&self, _space_id: u64) -> Result<(), MacosNativeOperationError> {
@@ -2907,18 +3909,6 @@ mod tests {
             inactive_space_window_ids: HashMap::from([(target_space_id, vec![window_id])]),
             focused_window_id: Some(11),
         }
-    }
-
-    fn fake_context_for_focus(
-        window_id: u64,
-        target_space_id: u64,
-    ) -> (MacosNativeContext<FakeNativeApi>, Rc<RefCell<Vec<String>>>) {
-        let calls = Rc::new(RefCell::new(Vec::new()));
-        let api = FakeNativeApi::default()
-            .with_calls(calls.clone())
-            .with_topology(focus_target_topology_fixture(window_id, target_space_id));
-
-        (MacosNativeContext::connect_with_api(api).unwrap(), calls)
     }
 
     fn move_target_topology_fixture(window_id: u64, target_space_id: u64) -> RawTopologySnapshot {
@@ -3266,6 +4256,33 @@ mod tests {
     }
 
     #[test]
+    fn context_focused_window_uses_active_space_fast_path() {
+        let ctx = MacosNativeContext::connect_with_api(FocusedWindowFastPathApi).unwrap();
+
+        let focused = ctx.focused_window().unwrap();
+
+        assert_eq!(focused.id, 20);
+        assert_eq!(focused.space_id, 1);
+        assert_eq!(focused.pid, Some(2020));
+        assert_eq!(focused.app_id.as_deref(), Some("focused.app"));
+        assert_eq!(focused.title.as_deref(), Some("focused"));
+        assert_eq!(focused.order_index, Some(0));
+    }
+
+    #[test]
+    fn adapter_focused_window_uses_record_fast_path() {
+        let mut adapter = MacosNativeAdapter::connect_with_api(FocusedWindowRecordFastPathApi).unwrap();
+
+        let focused = WindowManagerSession::focused_window(&mut adapter).unwrap();
+
+        assert_eq!(focused.id, 20);
+        assert_eq!(focused.pid, ProcessId::new(2020));
+        assert_eq!(focused.app_id.as_deref(), Some("focused.app"));
+        assert_eq!(focused.title.as_deref(), Some("focused"));
+        assert_eq!(focused.original_tile_index, 0);
+    }
+
+    #[test]
     fn focused_window_id_via_ax_queries_focused_app_then_window() {
         let focused_window_id = focused_window_id_via_ax(
             || Ok(Some("app")),
@@ -3284,7 +4301,7 @@ mod tests {
     }
 
     #[test]
-    fn focus_window_via_process_and_raise_fronts_then_raises_target_window() {
+    fn focus_window_via_process_and_raise_fronts_makes_key_then_raises_target_window() {
         let calls = Rc::new(RefCell::new(Vec::new()));
 
         focus_window_via_process_and_raise(
@@ -3309,6 +4326,16 @@ mod tests {
             },
             {
                 let calls = calls.clone();
+                move |psn, window_id| {
+                    calls.borrow_mut().push(format!(
+                        "make_key:{}:{}:{}",
+                        psn.high_long_of_psn, psn.low_long_of_psn, window_id
+                    ));
+                    Ok(())
+                }
+            },
+            {
+                let calls = calls.clone();
                 move |window_id, pid| {
                     calls.borrow_mut().push(format!("raise:{window_id}:{pid}"));
                     Ok(())
@@ -3319,19 +4346,59 @@ mod tests {
 
         assert_eq!(
             take_calls(&calls),
-            vec!["front:1:2:77", "raise:77:5151"]
+            vec!["front:1:2:77", "make_key:1:2:77", "raise:77:5151"]
         );
     }
 
     #[test]
     fn focus_window_switches_to_target_space_before_fronting_window() {
-        let (ctx, calls) = fake_context_for_focus(77, 9);
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let api = SpaceSettlingApi::new(focus_target_topology_fixture(77, 9), calls.clone(), 0);
+        let ctx = MacosNativeContext::connect_with_api(api).unwrap();
 
         ctx.focus_window(77).unwrap();
 
-        assert_eq!(
-            take_calls(&calls),
-            vec!["switch_space:9", "focus_window:77"]
+        let calls = take_calls(&calls);
+        let switch_idx = calls
+            .iter()
+            .position(|call| call == "switch_space:9")
+            .expect("space switch should happen");
+        let focus_idx = calls
+            .iter()
+            .position(|call| call == "focus_window:77")
+            .expect("window focus should happen");
+
+        assert!(
+            switch_idx < focus_idx,
+            "space switch should complete before fronting the target window"
+        );
+    }
+
+    #[test]
+    fn focus_window_waits_for_target_space_to_become_active_before_fronting_window() {
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let api = SpaceSettlingApi::new(focus_target_topology_fixture(77, 9), calls.clone(), 2);
+        let ctx = MacosNativeContext::connect_with_api(api).unwrap();
+
+        ctx.focus_window(77).unwrap();
+
+        let calls = take_calls(&calls);
+        let switch_idx = calls
+            .iter()
+            .position(|call| call == "switch_space:9")
+            .expect("space switch should happen first");
+        let focus_idx = calls
+            .iter()
+            .position(|call| call == "focus_window:77")
+            .expect("window focus should happen after the Space settles");
+        let settle_checks = calls[switch_idx + 1..focus_idx]
+            .iter()
+            .filter(|call| call.as_str() == "active_space_ids")
+            .count();
+
+        assert!(
+            settle_checks > 0,
+            "focus should poll active_space_ids after switching Spaces before fronting the target window"
         );
     }
 
@@ -3346,11 +4413,106 @@ mod tests {
 
     #[test]
     fn switch_space_uses_space_switch_primitive() {
-        let (ctx, calls) = fake_context_for_move(51, 12);
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let api = SpaceSettlingApi::new(focus_target_topology_fixture(51, 12), calls.clone(), 0);
+        let ctx = MacosNativeContext::connect_with_api(api).unwrap();
 
         ctx.switch_space(12).unwrap();
 
-        assert_eq!(take_calls(&calls), vec!["switch_space:12"]);
+        let calls = take_calls(&calls);
+        assert!(
+            calls.iter().any(|call| call == "switch_space:12"),
+            "switch_space should invoke the Space switch primitive"
+        );
+    }
+
+    #[test]
+    fn switch_space_waits_for_target_space_to_become_active_before_returning() {
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let api = SpaceSettlingApi::new(focus_target_topology_fixture(77, 9), calls.clone(), 2);
+        let ctx = MacosNativeContext::connect_with_api(api).unwrap();
+
+        ctx.switch_space(9).unwrap();
+
+        let calls = take_calls(&calls);
+        let switch_idx = calls
+            .iter()
+            .position(|call| call == "switch_space:9")
+            .expect("space switch should happen");
+        let settle_checks = calls[switch_idx + 1..]
+            .iter()
+            .filter(|call| call.as_str() == "active_space_ids")
+            .count();
+
+        assert!(
+            settle_checks > 0,
+            "switch_space should poll active_space_ids before returning"
+        );
+    }
+
+    #[test]
+    fn switch_space_waits_for_onscreen_windows_to_leave_source_space_before_returning() {
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let api = SpacePresentationApi::new(
+            focus_target_topology_fixture(77, 9),
+            calls.clone(),
+            vec![
+                HashSet::from([11]),
+                HashSet::from([11]),
+                HashSet::from([77]),
+            ],
+        );
+        let ctx = MacosNativeContext::connect_with_api(api).unwrap();
+
+        ctx.switch_space(9).unwrap();
+
+        let calls = take_calls(&calls);
+        let switch_idx = calls
+            .iter()
+            .position(|call| call == "switch_space:9")
+            .expect("space switch should happen");
+        let onscreen_checks = calls[switch_idx + 1..]
+            .iter()
+            .filter(|call| call.as_str() == "onscreen_window_ids")
+            .count();
+
+        assert!(
+            onscreen_checks > 0,
+            "switch_space should poll onscreen window ids before returning"
+        );
+    }
+
+    #[test]
+    fn switch_space_allows_nonfocused_source_windows_to_remain_onscreen() {
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let topology = RawTopologySnapshot {
+            spaces: vec![raw_desktop_space(1), raw_desktop_space(9)],
+            active_space_ids: HashSet::from([1]),
+            active_space_windows: HashMap::from([(
+                1,
+                vec![
+                    raw_window(11).with_visible_index(0).with_pid(1111),
+                    raw_window(12).with_pid(1212),
+                    raw_window(13).with_pid(1313),
+                ],
+            )]),
+            inactive_space_window_ids: HashMap::from([(9, vec![77])]),
+            focused_window_id: Some(11),
+        };
+        let api = SpacePresentationApi::new(
+            topology,
+            calls.clone(),
+            vec![HashSet::from([12, 13, 77])],
+        );
+        let ctx = MacosNativeContext::connect_with_api(api).unwrap();
+
+        ctx.switch_space(9).unwrap();
+
+        let calls = take_calls(&calls);
+        assert!(
+            calls.iter().any(|call| call == "switch_space:9"),
+            "switch_space should still complete when only the focused source window disappears"
+        );
     }
 
     #[test]
@@ -3419,7 +4581,71 @@ mod tests {
     }
 
     #[test]
-    fn backend_focus_direction_switches_to_previous_space_when_no_west_window_exists() {
+    fn backend_focus_direction_keeps_selected_target_when_next_snapshot_drops_it() {
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let first_topology = RawTopologySnapshot {
+            spaces: vec![raw_desktop_space(1)],
+            active_space_ids: HashSet::from([1]),
+            active_space_windows: HashMap::from([(
+                1,
+                vec![
+                    raw_window(20)
+                        .with_visible_index(0)
+                        .with_pid(2020)
+                        .with_app_id("com.example.source")
+                        .with_title("source")
+                        .with_frame(Rect {
+                            x: 0,
+                            y: 0,
+                            w: 100,
+                            h: 100,
+                        }),
+                    raw_window(51)
+                        .with_visible_index(1)
+                        .with_pid(5151)
+                        .with_app_id("com.example.target")
+                        .with_title("target")
+                        .with_frame(Rect {
+                            x: 120,
+                            y: 0,
+                            w: 100,
+                            h: 100,
+                        }),
+                ],
+            )]),
+            inactive_space_window_ids: HashMap::new(),
+            focused_window_id: Some(20),
+        };
+        let second_topology = RawTopologySnapshot {
+            spaces: vec![raw_desktop_space(1)],
+            active_space_ids: HashSet::from([1]),
+            active_space_windows: HashMap::from([(
+                1,
+                vec![raw_window(20)
+                    .with_visible_index(0)
+                    .with_pid(2020)
+                    .with_app_id("com.example.source")
+                    .with_title("source")
+                    .with_frame(Rect {
+                        x: 0,
+                        y: 0,
+                        w: 100,
+                        h: 100,
+                    })],
+            )]),
+            inactive_space_window_ids: HashMap::new(),
+            focused_window_id: Some(20),
+        };
+        let api = SequencedTopologyApi::new(vec![first_topology, second_topology], calls.clone());
+        let adapter = MacosNativeAdapter::connect_with_api(api).unwrap();
+
+        adapter.focus_direction_inner(Direction::East).unwrap();
+
+        assert_eq!(take_calls(&calls), vec!["focus_window:51"]);
+    }
+
+    #[test]
+    fn backend_focus_direction_focuses_window_in_previous_space_when_no_west_window_exists() {
         let calls = Rc::new(RefCell::new(Vec::new()));
         let topology = RawTopologySnapshot {
             spaces: vec![
@@ -3454,11 +4680,11 @@ mod tests {
 
         adapter.focus_direction_inner(Direction::West).unwrap();
 
-        assert_eq!(take_calls(&calls), vec!["switch_space:1"]);
+        assert_eq!(take_calls(&calls), vec!["focus_window:10"]);
     }
 
     #[test]
-    fn backend_focus_direction_switches_to_previous_space_on_same_display_only() {
+    fn backend_focus_direction_focuses_window_in_previous_space_on_same_display_only() {
         let calls = Rc::new(RefCell::new(Vec::new()));
         let topology = RawTopologySnapshot {
             spaces: vec![
@@ -3507,7 +4733,42 @@ mod tests {
 
         adapter.focus_direction_inner(Direction::West).unwrap();
 
-        assert_eq!(take_calls(&calls), vec!["switch_space:10"]);
+        assert_eq!(take_calls(&calls), vec!["focus_window:1000"]);
+    }
+
+    #[test]
+    fn backend_focus_direction_switches_to_empty_previous_space_when_no_window_exists() {
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let topology = RawTopologySnapshot {
+            spaces: vec![raw_desktop_space(1), raw_desktop_space(2)],
+            active_space_ids: HashSet::from([2]),
+            active_space_windows: HashMap::from([(
+                2,
+                vec![raw_window(20)
+                    .with_visible_index(0)
+                    .with_pid(2020)
+                    .with_app_id("com.example.center")
+                    .with_title("center")
+                    .with_frame(crate::engine::topology::Rect {
+                        x: 120,
+                        y: 0,
+                        w: 100,
+                        h: 100,
+                    })],
+            )]),
+            inactive_space_window_ids: HashMap::from([(1, vec![])]),
+            focused_window_id: Some(20),
+        };
+        let api = SpaceSettlingApi::new(topology, calls.clone(), 0);
+        let adapter = MacosNativeAdapter::connect_with_api(api).unwrap();
+
+        adapter.focus_direction_inner(Direction::West).unwrap();
+
+        let calls = take_calls(&calls);
+        assert!(
+            calls.iter().any(|call| call == "switch_space:1"),
+            "empty adjacent spaces should still use a plain space switch"
+        );
     }
 
     #[test]
@@ -3712,6 +4973,54 @@ mod tests {
                         h: 400,
                     }),
             ]
+        );
+    }
+
+    #[test]
+    fn focused_window_record_from_onscreen_descriptions_uses_payload_order_and_metadata() {
+        let window_number_key = cg_window_number_key();
+        let window_owner_pid_key = cg_window_owner_pid_key();
+        let window_name_key = cg_window_name_key();
+        let window_layer_key = cg_window_layer_key();
+        let first_window_id = cf_number_from_u64(11).unwrap();
+        let first_pid = cf_number_from_u64(101).unwrap();
+        let first_level = cf_number_from_u64(5).unwrap();
+        let first_title = cf_string("alpha").unwrap();
+        let second_window_id = cf_number_from_u64(22).unwrap();
+        let second_pid = cf_number_from_u64(202).unwrap();
+        let second_level = cf_number_from_u64(7).unwrap();
+        let second_title = cf_string("beta").unwrap();
+        let first_window = cf_test_dictionary(&[
+            (window_number_key as CFTypeRef, first_window_id.as_type_ref()),
+            (window_owner_pid_key as CFTypeRef, first_pid.as_type_ref()),
+            (window_name_key as CFTypeRef, first_title.as_type_ref()),
+            (window_layer_key as CFTypeRef, first_level.as_type_ref()),
+        ]);
+        let second_window = cf_test_dictionary(&[
+            (window_number_key as CFTypeRef, second_window_id.as_type_ref()),
+            (window_owner_pid_key as CFTypeRef, second_pid.as_type_ref()),
+            (window_name_key as CFTypeRef, second_title.as_type_ref()),
+            (window_layer_key as CFTypeRef, second_level.as_type_ref()),
+        ]);
+        let onscreen_descriptions =
+            cf_test_array(&[first_window.as_type_ref(), second_window.as_type_ref()]);
+
+        let focused = focused_window_record_from_onscreen_descriptions(
+            onscreen_descriptions.as_type_ref() as CFArrayRef,
+            22,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(
+            focused,
+            FocusedWindowRecord {
+                id: 22,
+                app_id: None,
+                title: Some("beta".to_string()),
+                pid: ProcessId::new(202),
+                original_tile_index: 1,
+            }
         );
     }
 

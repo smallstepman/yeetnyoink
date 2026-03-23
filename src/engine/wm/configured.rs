@@ -183,6 +183,9 @@ pub trait WindowManagerSpec: Sync {
     fn backend(&self) -> WmBackend;
     fn name(&self) -> &'static str;
     fn connect(&self) -> Result<ConfiguredWindowManager>;
+    fn focused_app_record(&self) -> Result<Option<crate::engine::wm::FocusedAppRecord>> {
+        Ok(None)
+    }
 }
 
 // ---------------------------------------------------------------------------

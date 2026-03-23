@@ -66,6 +66,15 @@ pub trait TopologyHandler {
 
     fn can_focus(&self, dir: Direction, pid: u32) -> Result<bool>;
 
+    fn focus_if_possible(&self, dir: Direction, pid: u32) -> Result<bool> {
+        if self.can_focus(dir, pid)? {
+            self.focus(dir, pid)?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
     fn can_focus_from_directional_neighbors(&self, dir: Direction, pid: u32) -> Result<bool> {
         Ok(self.directional_neighbors(pid)?.in_direction(dir))
     }
