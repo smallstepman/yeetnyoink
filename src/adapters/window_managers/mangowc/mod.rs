@@ -1,6 +1,7 @@
 use anyhow::Result;
 
 pub mod mmsg;
+pub mod toplevel;
 
 use crate::config::WmBackend;
 use crate::engine::topology::Direction;

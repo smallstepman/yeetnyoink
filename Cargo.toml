@@ -26,6 +26,8 @@ niri-ipc = "=25.11.0"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 niri-ipc = "=25.11.0"
+wayland-client = "0.31"
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 
 [profile.dev]
 opt-level = 0
