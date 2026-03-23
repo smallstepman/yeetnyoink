@@ -1,6 +1,7 @@
 use anyhow::Result;
 
 pub mod mmsg;
+#[cfg(target_os = "linux")]
 pub mod toplevel;
 
 use crate::config::WmBackend;

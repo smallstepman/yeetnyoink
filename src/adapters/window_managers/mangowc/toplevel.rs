@@ -9,7 +9,7 @@ const ACTIVATED_STATE: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToplevelSnapshotEntry {
-    pub handle_id: u32,
+    pub handle_id: u64,
     pub app_id: Option<String>,
     pub title: Option<String>,
     pub pid: Option<ProcessId>,
@@ -19,8 +19,8 @@ pub struct ToplevelSnapshotEntry {
 #[derive(Debug, Default)]
 pub struct ToplevelStore {
     next_window_id: u64,
-    handle_to_window_id: HashMap<u32, u64>,
-    window_id_to_handle: HashMap<u64, u32>,
+    handle_to_window_id: HashMap<u64, u64>,
+    window_id_to_handle: HashMap<u64, u64>,
     windows: Vec<WindowRecord>,
 }
 
@@ -75,7 +75,7 @@ impl ToplevelStore {
         })
     }
 
-    pub fn handle_for_window_id(&self, id: u64) -> Result<u32> {
+    pub fn handle_for_window_id(&self, id: u64) -> Result<u64> {
         self.window_id_to_handle
             .get(&id)
             .copied()
@@ -94,8 +94,10 @@ struct SessionState {
     registry: RegistrySnapshot,
     seat: Option<wayland_client::protocol::wl_seat::WlSeat>,
     manager: Option<ForeignToplevelManager>,
-    handles: HashMap<u32, ForeignToplevelHandle>,
-    snapshots: HashMap<u32, ToplevelSnapshotEntry>,
+    next_handle_id: u64,
+    protocol_to_handle_id: HashMap<u32, u64>,
+    handles: HashMap<u64, ForeignToplevelHandle>,
+    snapshots: HashMap<u64, ToplevelSnapshotEntry>,
 }
 
 #[derive(Debug)]
@@ -108,6 +110,26 @@ pub struct ForeignToplevelSession {
 
 type ForeignToplevelManager = wayland_protocols_wlr::foreign_toplevel::v1::client::zwlr_foreign_toplevel_manager_v1::ZwlrForeignToplevelManagerV1;
 type ForeignToplevelHandle = wayland_protocols_wlr::foreign_toplevel::v1::client::zwlr_foreign_toplevel_handle_v1::ZwlrForeignToplevelHandleV1;
+
+impl SessionState {
+    fn register_protocol_handle(&mut self, protocol_id: u32) -> u64 {
+        if let Some(handle_id) = self.protocol_to_handle_id.get(&protocol_id).copied() {
+            return handle_id;
+        }
+        self.next_handle_id = self.next_handle_id.saturating_add(1);
+        let handle_id = self.next_handle_id;
+        self.protocol_to_handle_id.insert(protocol_id, handle_id);
+        handle_id
+    }
+
+    fn handle_id_for_protocol(&self, protocol_id: u32) -> Option<u64> {
+        self.protocol_to_handle_id.get(&protocol_id).copied()
+    }
+
+    fn unregister_protocol_handle(&mut self, protocol_id: u32) -> Option<u64> {
+        self.protocol_to_handle_id.remove(&protocol_id)
+    }
+}
 
 impl ForeignToplevelSession {
     pub fn connect() -> Result<Self> {
@@ -268,7 +290,7 @@ impl wayland_client::Dispatch<ForeignToplevelManager, ()> for SessionState {
         use wayland_protocols_wlr::foreign_toplevel::v1::client::zwlr_foreign_toplevel_manager_v1::Event;
         match event {
             Event::Toplevel { toplevel } => {
-                let handle_id = toplevel.id().protocol_id();
+                let handle_id = state.register_protocol_handle(toplevel.id().protocol_id());
                 state.handles.insert(handle_id, toplevel);
                 state
                     .snapshots
@@ -299,7 +321,9 @@ impl wayland_client::Dispatch<ForeignToplevelHandle, ()> for SessionState {
         use wayland_client::Proxy;
         use wayland_protocols_wlr::foreign_toplevel::v1::client::zwlr_foreign_toplevel_handle_v1::Event;
 
-        let handle_id = handle.id().protocol_id();
+        let Some(handle_id) = state.handle_id_for_protocol(handle.id().protocol_id()) else {
+            return;
+        };
         match event {
             Event::Title { title } => {
                 let entry = state
@@ -328,8 +352,11 @@ impl wayland_client::Dispatch<ForeignToplevelHandle, ()> for SessionState {
             }
             Event::Done => {}
             Event::Closed => {
-                state.snapshots.remove(&handle_id);
-                state.handles.remove(&handle_id);
+                if let Some(handle_id) = state.unregister_protocol_handle(handle.id().protocol_id())
+                {
+                    state.snapshots.remove(&handle_id);
+                    state.handles.remove(&handle_id);
+                }
             }
             _ => {}
         }
@@ -348,7 +375,7 @@ impl wayland_client::Dispatch<wayland_client::protocol::wl_output::WlOutput, ()>
     }
 }
 
-fn default_snapshot(handle_id: u32) -> ToplevelSnapshotEntry {
+fn default_snapshot(handle_id: u64) -> ToplevelSnapshotEntry {
     ToplevelSnapshotEntry {
         handle_id,
         app_id: None,
@@ -446,6 +473,18 @@ mod tests {
 
         let err = store.handle_for_window_id(stale_id).expect_err("stale id should fail");
         assert!(err.to_string().contains("stale"));
+    }
+
+    #[test]
+    fn mangowc_toplevel_session_reuses_protocol_id_with_fresh_handle_identity() {
+        let mut state = SessionState::default();
+        let first = state.register_protocol_handle(17);
+        assert_eq!(state.handle_id_for_protocol(17), Some(first));
+        assert_eq!(state.unregister_protocol_handle(17), Some(first));
+
+        let second = state.register_protocol_handle(17);
+        assert_ne!(second, first);
+        assert_eq!(state.handle_id_for_protocol(17), Some(second));
     }
 
     #[test]
