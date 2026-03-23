@@ -11,12 +11,12 @@
 //! use yeetnyoink::adapters::window_managers::plan_tear_out;
 //! ```
 //!
+#[cfg(any(test, target_os = "linux"))]
+pub mod hyprland;
 #[cfg(target_os = "linux")]
 pub mod i3;
 #[cfg(any(test, target_os = "linux"))]
 pub mod niri;
-#[cfg(any(test, target_os = "linux"))]
-pub mod hyprland;
 #[cfg(target_os = "macos")]
 pub mod paneru;
 #[cfg(target_os = "macos")]
@@ -26,11 +26,11 @@ pub mod yabai;
 pub use self::niri::NiriAdapter;
 
 #[cfg(target_os = "linux")]
+use crate::adapters::window_managers::hyprland::HYPRLAND_SPEC;
+#[cfg(target_os = "linux")]
 use crate::adapters::window_managers::i3::I3_SPEC;
 #[cfg(target_os = "linux")]
 use crate::adapters::window_managers::niri::NIRI_SPEC;
-#[cfg(target_os = "linux")]
-use crate::adapters::window_managers::hyprland::HYPRLAND_SPEC;
 #[cfg(target_os = "macos")]
 use crate::adapters::window_managers::paneru::PANERU_SPEC;
 #[cfg(target_os = "macos")]
@@ -38,11 +38,11 @@ use crate::adapters::window_managers::yabai::YABAI_SPEC;
 use crate::config::WmBackend;
 use crate::engine::wm::configured::WindowManagerSpec;
 #[cfg(not(target_os = "linux"))]
+pub(crate) use crate::engine::wm::configured::UNSUPPORTED_HYPRLAND_SPEC;
+#[cfg(not(target_os = "linux"))]
 pub(crate) use crate::engine::wm::configured::UNSUPPORTED_I3_SPEC;
 #[cfg(not(target_os = "linux"))]
 pub(crate) use crate::engine::wm::configured::UNSUPPORTED_NIRI_SPEC;
-#[cfg(not(target_os = "linux"))]
-pub(crate) use crate::engine::wm::configured::UNSUPPORTED_HYPRLAND_SPEC;
 #[cfg(not(target_os = "macos"))]
 pub(crate) use crate::engine::wm::configured::UNSUPPORTED_PANERU_SPEC;
 #[cfg(not(target_os = "macos"))]
