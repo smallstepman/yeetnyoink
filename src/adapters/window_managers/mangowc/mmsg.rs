@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use anyhow::{anyhow, bail, Result};
 
 use crate::engine::runtime::{self, CommandContext};
@@ -15,6 +17,12 @@ pub struct FocusedSnapshot {
     pub height: Option<u32>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct OutputSnapshot {
+    selected: bool,
+    focused: FocusedSnapshot,
+}
+
 #[derive(Debug, Default)]
 pub struct MmsgTransport;
 
@@ -25,7 +33,7 @@ impl MmsgTransport {
     }
 
     pub fn dispatch(&self, command: &str, args: &[&str]) -> Result<()> {
-        let dispatch = dispatch_args(command, args);
+        let dispatch = build_dispatch(command, args)?;
         self.run_dispatch(
             &dispatch,
             CommandContext::new(ADAPTER, "mmsg-dispatch")
@@ -62,7 +70,10 @@ impl MmsgTransport {
 
     pub fn spawn(&self, command: &[String]) -> Result<()> {
         let dispatch = build_spawn_dispatch(command)?;
-        self.run_dispatch(&dispatch, CommandContext::new(ADAPTER, "mmsg-spawn"))
+        self.run_dispatch(
+            &dispatch,
+            CommandContext::new(ADAPTER, "mmsg-spawn").with_target(command.join(" ")),
+        )
     }
 
     pub fn focused_snapshot(&self) -> Result<FocusedSnapshot> {
@@ -137,16 +148,43 @@ fn non_empty(rest: &str) -> Option<String> {
     }
 }
 
-pub fn dispatch_args(command: &str, args: &[&str]) -> Vec<String> {
+fn dispatch_args(command: &str, args: &[&str]) -> Vec<String> {
     let mut parts = Vec::with_capacity(args.len() + 1);
     parts.push(command.to_string());
     parts.extend(args.iter().map(|s| s.to_string()));
     vec!["-d".to_string(), parts.join(",")]
 }
 
+fn build_dispatch(command: &str, args: &[&str]) -> Result<Vec<String>> {
+    if args.len() > 5 {
+        bail!(
+            "mmsg dispatch supports at most 5 args, got {} for command {:?}",
+            args.len(),
+            command
+        );
+    }
+
+    for arg in args {
+        if arg.contains(',') {
+            bail!("mmsg dispatch arguments cannot contain commas: {:?}", arg);
+        }
+        if arg.trim() != *arg {
+            bail!(
+                "mmsg dispatch arguments cannot have leading or trailing whitespace: {:?}",
+                arg
+            );
+        }
+    }
+
+    Ok(dispatch_args(command, args))
+}
+
 pub fn build_spawn_dispatch(command: &[String]) -> Result<Vec<String>> {
     if command.is_empty() {
         bail!("mmsg spawn command cannot be empty");
+    }
+    if let Some(arg) = command.iter().find(|arg| arg.is_empty()) {
+        bail!("mmsg spawn command arguments cannot be empty: {:?}", arg);
     }
     if let Some(arg) = command.iter().find(|arg| arg.contains(',')) {
         bail!(
@@ -154,8 +192,15 @@ pub fn build_spawn_dispatch(command: &[String]) -> Result<Vec<String>> {
             arg
         );
     }
-    let refs: Vec<&str> = command.iter().map(|s| s.as_str()).collect();
-    Ok(dispatch_args("spawn", &refs))
+    if let Some(arg) = command.iter().find(|arg| arg.chars().any(char::is_whitespace)) {
+        bail!(
+            "mmsg spawn command arguments cannot contain whitespace because mangowc spawn expects a single space-delimited command string: {:?}",
+            arg
+        );
+    }
+
+    let joined = command.join(" ");
+    build_dispatch("spawn", &[joined.as_str()])
 }
 
 pub fn build_focusdir_dispatch(direction: &str) -> Vec<String> {
@@ -171,10 +216,10 @@ pub fn build_tagmon_dispatch(direction: &str) -> Vec<String> {
 }
 
 pub fn parse_focused_snapshot(input: &str) -> Result<FocusedSnapshot> {
-    let mut snap = FocusedSnapshot::default();
+    let mut outputs = BTreeMap::<String, OutputSnapshot>::new();
     for line in input.lines() {
         let mut parts = line.split_whitespace();
-        let _output = match parts.next() {
+        let output = match parts.next() {
             Some(v) => v,
             None => continue,
         };
@@ -183,17 +228,38 @@ pub fn parse_focused_snapshot(input: &str) -> Result<FocusedSnapshot> {
             None => continue,
         };
         let rest = parts.collect::<Vec<_>>().join(" ");
+        let entry = outputs.entry(output.to_string()).or_default();
         match key {
-            "appid" => snap.app_id = non_empty(&rest),
-            "title" => snap.title = non_empty(&rest),
-            "x" => snap.x = parse_i32(&rest),
-            "y" => snap.y = parse_i32(&rest),
-            "width" => snap.width = parse_u32(&rest),
-            "height" => snap.height = parse_u32(&rest),
+            "selmon" => entry.selected = rest.trim() == "1",
+            "appid" => entry.focused.app_id = non_empty(&rest),
+            "title" => entry.focused.title = non_empty(&rest),
+            "x" => entry.focused.x = parse_i32(&rest),
+            "y" => entry.focused.y = parse_i32(&rest),
+            "width" => entry.focused.width = parse_u32(&rest),
+            "height" => entry.focused.height = parse_u32(&rest),
             _ => {}
         }
     }
-    Ok(snap)
+
+    if outputs.is_empty() {
+        return Ok(FocusedSnapshot::default());
+    }
+
+    let mut selected = outputs
+        .values()
+        .filter(|snapshot| snapshot.selected)
+        .map(|snapshot| snapshot.focused.clone());
+
+    match (selected.next(), selected.next()) {
+        (Some(snapshot), None) => Ok(snapshot),
+        (Some(_), Some(_)) => bail!("mangowc: multiple selected mmsg outputs in focused snapshot"),
+        (None, _) if outputs.len() == 1 => Ok(outputs
+            .into_values()
+            .next()
+            .expect("single output snapshot must exist")
+            .focused),
+        (None, _) => bail!("mangowc: unable to determine selected mmsg output from focused snapshot"),
+    }
 }
 
 #[cfg(test)]
@@ -298,6 +364,12 @@ mod tests {
     }
 
     #[test]
+    fn mangowc_mmsg_dispatch_builder_rejects_more_than_five_args() {
+        let err = build_dispatch("setoption", &["1", "2", "3", "4", "5", "6"]).unwrap_err();
+        assert!(err.to_string().contains("at most 5 args"));
+    }
+
+    #[test]
     fn mangowc_mmsg_spawn_rejects_empty_command_vector() {
         assert!(build_spawn_dispatch(&[]).is_err());
     }
@@ -317,35 +389,30 @@ mod tests {
     }
 
     #[test]
-    fn mangowc_mmsg_spawn_preserves_space_containing_args() {
+    fn mangowc_mmsg_spawn_joins_command_vector_into_single_dispatch_arg() {
         assert_eq!(
             build_spawn_dispatch(&[
                 "foot".to_string(),
-                "--title".to_string(),
-                "my terminal title".to_string(),
+                "--app-id".to_string(),
+                "smoke".to_string(),
             ])
             .unwrap(),
             vec![
                 "-d".to_string(),
-                "spawn,foot,--title,my terminal title".to_string(),
+                "spawn,foot --app-id smoke".to_string(),
             ]
         );
     }
 
     #[test]
-    fn mangowc_mmsg_spawn_preserves_quote_containing_args() {
-        assert_eq!(
-            build_spawn_dispatch(&[
-                "foot".to_string(),
-                "--title".to_string(),
-                "don't panic".to_string(),
-            ])
-            .unwrap(),
-            vec![
-                "-d".to_string(),
-                "spawn,foot,--title,don't panic".to_string(),
-            ]
-        );
+    fn mangowc_mmsg_spawn_rejects_whitespace_containing_args() {
+        let err = build_spawn_dispatch(&[
+            "foot".to_string(),
+            "--title".to_string(),
+            "my terminal title".to_string(),
+        ])
+        .unwrap_err();
+        assert!(err.to_string().contains("cannot contain whitespace"));
     }
 
     #[test]
@@ -364,6 +431,43 @@ Virtual-1 height 1110\n";
         assert_eq!(snap.y, Some(16));
         assert_eq!(snap.width, Some(1764));
         assert_eq!(snap.height, Some(1110));
+    }
+
+    #[test]
+    fn mangowc_mmsg_parse_focused_snapshot_selects_active_output() {
+        let sample = "\
+HDMI-A-1 selmon 0\n\
+HDMI-A-1 title secondary shell\n\
+HDMI-A-1 appid foot\n\
+HDMI-A-1 x 20\n\
+HDMI-A-1 y 30\n\
+HDMI-A-1 width 800\n\
+HDMI-A-1 height 600\n\
+Virtual-1 selmon 1\n\
+Virtual-1 title focused shell\n\
+Virtual-1 appid kitty\n\
+Virtual-1 x 1820\n\
+Virtual-1 y 16\n\
+Virtual-1 width 1764\n\
+Virtual-1 height 1110\n";
+        let snap = parse_focused_snapshot(sample).unwrap();
+        assert_eq!(snap.app_id.as_deref(), Some("kitty"));
+        assert_eq!(snap.title.as_deref(), Some("focused shell"));
+        assert_eq!(snap.x, Some(1820));
+        assert_eq!(snap.y, Some(16));
+        assert_eq!(snap.width, Some(1764));
+        assert_eq!(snap.height, Some(1110));
+    }
+
+    #[test]
+    fn mangowc_mmsg_parse_focused_snapshot_rejects_ambiguous_multi_output_payload() {
+        let sample = "\
+HDMI-A-1 title secondary shell\n\
+HDMI-A-1 appid foot\n\
+Virtual-1 title focused shell\n\
+Virtual-1 appid kitty\n";
+        let err = parse_focused_snapshot(sample).unwrap_err();
+        assert!(err.to_string().contains("selected mmsg output"));
     }
 
     #[test]
