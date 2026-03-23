@@ -308,7 +308,9 @@ pub fn process_fd_target(pid: u32, fd: u32) -> Option<String> {
 
 /// Check if a process uses a specific TTY.
 pub fn process_uses_tty(pid: u32, tty_name: &str) -> bool {
-    tty_processes(tty_name).into_iter().any(|process| process.pid == pid)
+    tty_processes(tty_name)
+        .into_iter()
+        .any(|process| process.pid == pid)
 }
 
 /// Find the most relevant shell process attached to a specific TTY.

@@ -3,17 +3,17 @@
 //! Yabai is a tiling window manager for macOS. This adapter communicates
 //! with yabai via the `yabai -m` command-line interface.
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 
 use crate::config::WmBackend;
 use crate::engine::runtime::{self, CommandContext, ProcessId};
 use crate::engine::topology::Direction;
 use crate::engine::wm::{
-    CapabilitySupport, ConfiguredWindowManager, DirectionalCapability, FocusedWindowRecord,
-    PrimitiveWindowManagerCapabilities, ResizeIntent, WindowManagerCapabilities,
-    WindowManagerCapabilityDescriptor, WindowManagerFeatures, WindowManagerSession,
-    WindowManagerSpec, WindowRecord, validate_declared_capabilities,
+    validate_declared_capabilities, CapabilitySupport, ConfiguredWindowManager,
+    DirectionalCapability, FocusedWindowRecord, PrimitiveWindowManagerCapabilities, ResizeIntent,
+    WindowManagerCapabilities, WindowManagerCapabilityDescriptor, WindowManagerFeatures,
+    WindowManagerSession, WindowManagerSpec, WindowRecord,
 };
 
 pub struct YabaiAdapter;

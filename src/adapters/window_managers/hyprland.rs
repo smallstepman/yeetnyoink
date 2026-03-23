@@ -10,10 +10,10 @@ use crate::config::WmBackend;
 use crate::engine::runtime::{self, CommandContext, ProcessId};
 use crate::engine::topology::Direction;
 use crate::engine::wm::{
-    CapabilitySupport, ConfiguredWindowManager, DirectionalCapability, FocusedWindowRecord,
-    PrimitiveWindowManagerCapabilities, ResizeIntent, ResizeKind, WindowManagerCapabilities,
-    WindowManagerCapabilityDescriptor, WindowManagerFeatures, WindowManagerSession,
-    WindowManagerSpec, WindowRecord, validate_declared_capabilities,
+    validate_declared_capabilities, CapabilitySupport, ConfiguredWindowManager,
+    DirectionalCapability, FocusedWindowRecord, PrimitiveWindowManagerCapabilities, ResizeIntent,
+    ResizeKind, WindowManagerCapabilities, WindowManagerCapabilityDescriptor,
+    WindowManagerFeatures, WindowManagerSession, WindowManagerSpec, WindowRecord,
 };
 
 pub struct HyprlandAdapter {
@@ -412,11 +412,9 @@ mod tests {
         let clients = r#"[{"address":"0x10","class":"firefox","title":"docs","pid":100,"mapped":true},{"address":"0x20","class":"foot","title":"shell","pid":200,"mapped":true}]"#;
 
         let windows = parse_clients_with_focus(active, clients).unwrap();
-        assert!(
-            windows
-                .iter()
-                .any(|window| window.id == 0x20 && window.is_focused)
-        );
+        assert!(windows
+            .iter()
+            .any(|window| window.id == 0x20 && window.is_focused));
     }
 
     #[test]
@@ -712,12 +710,10 @@ mod tests {
 
         let result = adapter.focused_window();
         assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("no focused window")
-        );
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("no focused window"));
     }
 
     #[test]

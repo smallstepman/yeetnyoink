@@ -238,7 +238,10 @@ fn resolve_terminal_chain(
             pid = terminal_pid
         )
         .entered();
-        crate::adapters::terminal_multiplexers::active_foreground_process(host.aliases, terminal_pid)
+        crate::adapters::terminal_multiplexers::active_foreground_process(
+            host.aliases,
+            terminal_pid,
+        )
     };
     let fg_base = fg_hint
         .as_deref()
@@ -292,24 +295,24 @@ fn resolve_terminal_chain(
     });
 
     #[cfg(not(target_os = "macos"))]
-    let search_pid = if let Some(shell_pid) = shell_pid_for_host_focused_tty(terminal_pid, host, &shells)
-    {
-        Some(shell_pid)
-    } else if shells.len() <= 1 {
-        shells.first().copied()
-    } else if !fg_base.is_empty() {
-        shells
-            .iter()
-            .copied()
-            .find(|&shell_pid| shell_matches_foreground_tpgid(shell_pid, &fg_base))
-            .or_else(|| {
-                shells.iter().copied().find(|&shell_pid| {
-                    !runtime::find_descendants_by_comm(shell_pid, &fg_base).is_empty()
+    let search_pid =
+        if let Some(shell_pid) = shell_pid_for_host_focused_tty(terminal_pid, host, &shells) {
+            Some(shell_pid)
+        } else if shells.len() <= 1 {
+            shells.first().copied()
+        } else if !fg_base.is_empty() {
+            shells
+                .iter()
+                .copied()
+                .find(|&shell_pid| shell_matches_foreground_tpgid(shell_pid, &fg_base))
+                .or_else(|| {
+                    shells.iter().copied().find(|&shell_pid| {
+                        !runtime::find_descendants_by_comm(shell_pid, &fg_base).is_empty()
+                    })
                 })
-            })
-    } else {
-        None
-    };
+        } else {
+            None
+        };
 
     let Some(search_pid) = search_pid else {
         if allow_tmux_resolution {

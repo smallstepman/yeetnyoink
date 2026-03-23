@@ -73,8 +73,14 @@ struct WeztermHostTab {
 
 #[derive(Debug, Clone)]
 enum WeztermFocusPlan {
-    PaneDirection { pane_id_str: String, cli_dir: &'static str },
-    HostTab { pane_id_str: String, relative: &'static str },
+    PaneDirection {
+        pane_id_str: String,
+        cli_dir: &'static str,
+    },
+    HostTab {
+        pane_id_str: String,
+        relative: &'static str,
+    },
 }
 
 impl WeztermMux {
@@ -126,7 +132,11 @@ impl WeztermMux {
         candidates
     }
 
-    fn socket_override_for_pid<F>(pid: u32, runtime_dir: Option<&str>, socket_exists: F) -> Option<String>
+    fn socket_override_for_pid<F>(
+        pid: u32,
+        runtime_dir: Option<&str>,
+        socket_exists: F,
+    ) -> Option<String>
     where
         F: FnOnce(&std::path::Path) -> bool,
     {
@@ -462,13 +472,8 @@ impl WeztermMux {
         dir: Direction,
         allow_host_tabs: bool,
     ) -> Result<Option<WeztermFocusPlan>> {
-        let _span = tracing::debug_span!(
-            "wezterm.focus_plan_for_pid",
-            pid,
-            ?dir,
-            allow_host_tabs
-        )
-        .entered();
+        let _span = tracing::debug_span!("wezterm.focus_plan_for_pid", pid, ?dir, allow_host_tabs)
+            .entered();
         let focused_pane_from_env = Self::focused_pane_from_environment();
         let focused_pane_id = {
             let _span = tracing::debug_span!("wezterm.focus_plan.focused_pane", pid).entered();
@@ -495,7 +500,8 @@ impl WeztermMux {
             }
         }
         if {
-            let _span = tracing::debug_span!("wezterm.focus_plan.pane_direction", pid, ?dir).entered();
+            let _span =
+                tracing::debug_span!("wezterm.focus_plan.pane_direction", pid, ?dir).entered();
             self.pane_in_direction_for_pid(pid, focused_pane_id, dir)?
         }
         .is_some()
@@ -511,7 +517,9 @@ impl WeztermMux {
                 let _span = tracing::debug_span!("wezterm.focus_plan.raw_panes", pid).entered();
                 self.raw_panes_for_pid(pid)?
             };
-            if let Some(relative) = self.host_tab_relative_from_panes(focused_pane_id, &panes, dir)? {
+            if let Some(relative) =
+                self.host_tab_relative_from_panes(focused_pane_id, &panes, dir)?
+            {
                 return Ok(Some(WeztermFocusPlan::HostTab {
                     pane_id_str,
                     relative,
@@ -543,7 +551,9 @@ impl WeztermMux {
                 pane_id_str,
                 cli_dir,
             } => {
-                let _span = tracing::debug_span!("wezterm.focus_execute.pane_direction", pid, cli_dir).entered();
+                let _span =
+                    tracing::debug_span!("wezterm.focus_execute.pane_direction", pid, cli_dir)
+                        .entered();
                 self.cli_stdout_for_pid(
                     pid,
                     &[
@@ -558,7 +568,8 @@ impl WeztermMux {
                 pane_id_str,
                 relative,
             } => {
-                let _span = tracing::debug_span!("wezterm.focus_execute.host_tab", pid, relative).entered();
+                let _span =
+                    tracing::debug_span!("wezterm.focus_execute.host_tab", pid, relative).entered();
                 self.cli_stdout_for_pid(
                     pid,
                     &[
@@ -639,9 +650,7 @@ impl TerminalMultiplexerProvider for WeztermMux {
         }
         let program = Self::wezterm_executable(
             std::env::var_os("PATH").as_deref(),
-            std::env::var_os("HOME")
-                .as_deref()
-                .map(Path::new),
+            std::env::var_os("HOME").as_deref().map(Path::new),
             |path| path.exists(),
         );
         let socket_override = Self::socket_override_for_pid(
@@ -1123,11 +1132,10 @@ mod tests {
 
     #[test]
     fn socket_override_for_pid_uses_xdg_gui_socket_when_present() {
-        let sock = WeztermMux::socket_override_for_pid(
-            3350,
-            Some("/tmp/runtime"),
-            |path: &Path| path == Path::new("/tmp/runtime/wezterm/gui-sock-3350"),
-        );
+        let sock =
+            WeztermMux::socket_override_for_pid(3350, Some("/tmp/runtime"), |path: &Path| {
+                path == Path::new("/tmp/runtime/wezterm/gui-sock-3350")
+            });
 
         assert_eq!(sock.as_deref(), Some("/tmp/runtime/wezterm/gui-sock-3350"));
     }
@@ -1145,11 +1153,9 @@ mod tests {
 
     #[test]
     fn wezterm_executable_uses_macos_fallback_when_path_lookup_fails() {
-        let program = WeztermMux::wezterm_executable(
-            None,
-            Some(Path::new("/Users/m")),
-            |path| path == Path::new("/Applications/WezTerm.app/Contents/MacOS/wezterm"),
-        );
+        let program = WeztermMux::wezterm_executable(None, Some(Path::new("/Users/m")), |path| {
+            path == Path::new("/Applications/WezTerm.app/Contents/MacOS/wezterm")
+        });
 
         assert_eq!(
             program,
@@ -1159,11 +1165,9 @@ mod tests {
 
     #[test]
     fn wezterm_executable_uses_home_nix_profile_fallback() {
-        let program = WeztermMux::wezterm_executable(
-            None,
-            Some(Path::new("/Users/m")),
-            |path| path == Path::new("/Users/m/.nix-profile/bin/wezterm"),
-        );
+        let program = WeztermMux::wezterm_executable(None, Some(Path::new("/Users/m")), |path| {
+            path == Path::new("/Users/m/.nix-profile/bin/wezterm")
+        });
 
         assert_eq!(program, PathBuf::from("/Users/m/.nix-profile/bin/wezterm"));
     }

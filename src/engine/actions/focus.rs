@@ -3,9 +3,9 @@ use anyhow::{Context, Result};
 use super::context::{is_no_focused_window_error, with_focused_app_session};
 use crate::engine::contracts::TopologyHandler;
 use crate::engine::resolution::chain::resolve_root_adapter;
-use crate::engine::wm::FocusedAppRecord;
 use crate::engine::topology::Direction;
 use crate::engine::wm::ConfiguredWindowManager;
+use crate::engine::wm::FocusedAppRecord;
 use crate::logging;
 
 fn attempt_focus_adapter(
@@ -230,7 +230,9 @@ mod tests {
             _dir: Direction,
             _pid: u32,
         ) -> Result<crate::engine::contracts::TearResult> {
-            Ok(crate::engine::contracts::TearResult { spawn_command: None })
+            Ok(crate::engine::contracts::TearResult {
+                spawn_command: None,
+            })
         }
     }
 

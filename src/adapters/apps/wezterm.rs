@@ -879,8 +879,10 @@ host_tabs = "focus"
         );
 
         let app = WeztermBackend;
-        assert!(<WeztermBackend as TopologyHandler>::focus_if_possible(&app, Direction::East, pid)
-            .expect("focus_if_possible should succeed"));
+        assert!(
+            <WeztermBackend as TopologyHandler>::focus_if_possible(&app, Direction::East, pid)
+                .expect("focus_if_possible should succeed")
+        );
 
         let log = harness.command_log();
         assert_eq!(
@@ -944,8 +946,10 @@ host_tabs = "focus"
         );
 
         let app = WeztermBackend;
-        assert!(<WeztermBackend as TopologyHandler>::focus_if_possible(&app, Direction::East, pid)
-            .expect("focus_if_possible should succeed"));
+        assert!(
+            <WeztermBackend as TopologyHandler>::focus_if_possible(&app, Direction::East, pid)
+                .expect("focus_if_possible should succeed")
+        );
 
         let log = harness.command_log();
         assert_eq!(

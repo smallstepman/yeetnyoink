@@ -21,8 +21,8 @@
 /// enabled_integraton = 'niri'
 /// ```
 use crate::engine::topology::Direction;
-use anyhow::{Context, Result, anyhow};
-use etcetera::base_strategy::{BaseStrategy, choose_base_strategy};
+use anyhow::{anyhow, Context, Result};
+use etcetera::base_strategy::{choose_base_strategy, BaseStrategy};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
