@@ -218,16 +218,18 @@ pub fn build_tagmon_dispatch(direction: &str) -> Result<Vec<String>> {
 pub fn parse_focused_snapshot(input: &str) -> Result<FocusedSnapshot> {
     let mut outputs = BTreeMap::<String, OutputSnapshot>::new();
     for line in input.lines() {
-        let mut parts = line.split_whitespace();
-        let output = match parts.next() {
-            Some(v) => v,
+        let (output, remainder) = match line.split_once(char::is_whitespace) {
+            Some(parts) => parts,
             None => continue,
         };
-        let key = match parts.next() {
-            Some(v) => v,
-            None => continue,
+        let remainder = remainder.trim_start_matches(char::is_whitespace);
+        let (key, rest) = match remainder.split_once(char::is_whitespace) {
+            Some((key, rest)) => (key, rest.trim_start_matches(char::is_whitespace)),
+            None => (remainder, ""),
         };
-        let rest = parts.collect::<Vec<_>>().join(" ");
+        if key.is_empty() {
+            continue;
+        }
         let entry = outputs.entry(output.to_string()).or_default();
         match key {
             "selmon" => entry.selected = rest.trim() == "1",
@@ -464,6 +466,13 @@ Virtual-1 height 1110\n";
         assert_eq!(snap.y, Some(16));
         assert_eq!(snap.width, Some(1764));
         assert_eq!(snap.height, Some(1110));
+    }
+
+    #[test]
+    fn mangowc_mmsg_parse_focused_snapshot_preserves_internal_title_spacing() {
+        let sample = "Virtual-1 title keep  double   spaces";
+        let snap = parse_focused_snapshot(sample).unwrap();
+        assert_eq!(snap.title.as_deref(), Some("keep  double   spaces"));
     }
 
     #[test]
