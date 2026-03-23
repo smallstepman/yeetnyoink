@@ -129,6 +129,12 @@ pub fn build_spawn_dispatch(command: &[String]) -> Result<Vec<String>> {
     if command.is_empty() {
         bail!("mmsg spawn command cannot be empty");
     }
+    if let Some(arg) = command.iter().find(|arg| arg.contains(',')) {
+        bail!(
+            "mmsg spawn command arguments cannot contain commas in mmsg spawn dispatch: {:?}",
+            arg
+        );
+    }
     let refs: Vec<&str> = command.iter().map(|s| s.as_str()).collect();
     Ok(dispatch_args("spawn", &refs))
 }
@@ -250,6 +256,52 @@ mod tests {
     #[test]
     fn mangowc_mmsg_spawn_rejects_empty_command_vector() {
         assert!(build_spawn_dispatch(&[]).is_err());
+    }
+
+    #[test]
+    fn mangowc_mmsg_spawn_rejects_args_containing_commas() {
+        let err = build_spawn_dispatch(&[
+            "foot".to_string(),
+            "--title".to_string(),
+            "left,right".to_string(),
+        ])
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("cannot contain commas in mmsg spawn dispatch")
+        );
+    }
+
+    #[test]
+    fn mangowc_mmsg_spawn_preserves_space_containing_args() {
+        assert_eq!(
+            build_spawn_dispatch(&[
+                "foot".to_string(),
+                "--title".to_string(),
+                "my terminal title".to_string(),
+            ])
+            .unwrap(),
+            vec![
+                "-d".to_string(),
+                "spawn,foot,--title,my terminal title".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn mangowc_mmsg_spawn_preserves_quote_containing_args() {
+        assert_eq!(
+            build_spawn_dispatch(&[
+                "foot".to_string(),
+                "--title".to_string(),
+                "don't panic".to_string(),
+            ])
+            .unwrap(),
+            vec![
+                "-d".to_string(),
+                "spawn,foot,--title,don't panic".to_string(),
+            ]
+        );
     }
 
     #[test]
