@@ -42,7 +42,7 @@ impl MmsgTransport {
     }
 
     pub fn focusdir(&self, direction: &str) -> Result<()> {
-        let dispatch = build_focusdir_dispatch(direction);
+        let dispatch = build_focusdir_dispatch(direction)?;
         self.run_dispatch(
             &dispatch,
             CommandContext::new(ADAPTER, "mmsg-dispatch")
@@ -51,7 +51,7 @@ impl MmsgTransport {
     }
 
     pub fn exchange_client(&self, direction: &str) -> Result<()> {
-        let dispatch = build_exchange_client_dispatch(direction);
+        let dispatch = build_exchange_client_dispatch(direction)?;
         self.run_dispatch(
             &dispatch,
             CommandContext::new(ADAPTER, "mmsg-dispatch")
@@ -60,7 +60,7 @@ impl MmsgTransport {
     }
 
     pub fn tagmon(&self, direction: &str) -> Result<()> {
-        let dispatch = build_tagmon_dispatch(direction);
+        let dispatch = build_tagmon_dispatch(direction)?;
         self.run_dispatch(
             &dispatch,
             CommandContext::new(ADAPTER, "mmsg-dispatch")
@@ -203,16 +203,16 @@ pub fn build_spawn_dispatch(command: &[String]) -> Result<Vec<String>> {
     build_dispatch("spawn", &[joined.as_str()])
 }
 
-pub fn build_focusdir_dispatch(direction: &str) -> Vec<String> {
-    dispatch_args("focusdir", &[direction])
+pub fn build_focusdir_dispatch(direction: &str) -> Result<Vec<String>> {
+    build_dispatch("focusdir", &[direction])
 }
 
-pub fn build_exchange_client_dispatch(direction: &str) -> Vec<String> {
-    dispatch_args("exchange_client", &[direction])
+pub fn build_exchange_client_dispatch(direction: &str) -> Result<Vec<String>> {
+    build_dispatch("exchange_client", &[direction])
 }
 
-pub fn build_tagmon_dispatch(direction: &str) -> Vec<String> {
-    dispatch_args("tagmon", &[direction])
+pub fn build_tagmon_dispatch(direction: &str) -> Result<Vec<String>> {
+    build_dispatch("tagmon", &[direction])
 }
 
 pub fn parse_focused_snapshot(input: &str) -> Result<FocusedSnapshot> {
@@ -350,17 +350,24 @@ mod tests {
     #[test]
     fn mangowc_mmsg_builders_encode_directional_commands() {
         assert_eq!(
-            build_focusdir_dispatch("left"),
+            build_focusdir_dispatch("left").unwrap(),
             vec!["-d".to_string(), "focusdir,left".to_string()]
         );
         assert_eq!(
-            build_exchange_client_dispatch("right"),
+            build_exchange_client_dispatch("right").unwrap(),
             vec!["-d".to_string(), "exchange_client,right".to_string()]
         );
         assert_eq!(
-            build_tagmon_dispatch("next"),
+            build_tagmon_dispatch("next").unwrap(),
             vec!["-d".to_string(), "tagmon,next".to_string()]
         );
+    }
+
+    #[test]
+    fn mangowc_mmsg_directional_builders_reject_invalid_dispatch_args() {
+        assert!(build_focusdir_dispatch(" left").is_err());
+        assert!(build_exchange_client_dispatch("right ").is_err());
+        assert!(build_tagmon_dispatch("left,right").is_err());
     }
 
     #[test]
