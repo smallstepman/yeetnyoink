@@ -72,6 +72,9 @@ pub enum WmBackend {
     /// Hyprland - Wayland compositor, Linux only
     Hyprland,
 
+    /// Mangowc - Wayland compositor, Linux only
+    Mangowc,
+
     /// Paneru - sliding/scrolling tiling WM for macOS (niri-like)
     Paneru,
 
@@ -98,6 +101,7 @@ impl WmBackend {
             Self::Niri => "niri",
             Self::I3 => "i3",
             Self::Hyprland => "hyprland",
+            Self::Mangowc => "mangowc",
             Self::Paneru => "paneru",
             Self::Yabai => "yabai",
         }
@@ -105,7 +109,7 @@ impl WmBackend {
 
     pub const fn supported_on_current_platform(self) -> bool {
         match self {
-            Self::Niri | Self::I3 | Self::Hyprland => cfg!(target_os = "linux"),
+            Self::Niri | Self::I3 | Self::Hyprland | Self::Mangowc => cfg!(target_os = "linux"),
             Self::Paneru | Self::Yabai => cfg!(target_os = "macos"),
         }
     }
@@ -1865,6 +1869,16 @@ app = "wezterm"
                 .unwrap()
                 .enabled_integration,
             WmBackend::Hyprland
+        );
+    }
+
+    #[test]
+    fn mangowc_wm_backend_config_accepts_value() {
+        assert_eq!(
+            toml::from_str::<WmConfig>("enabled_integration = \"mangowc\"")
+                .unwrap()
+                .enabled_integration,
+            WmBackend::Mangowc
         );
     }
 }

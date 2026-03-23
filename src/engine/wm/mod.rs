@@ -184,9 +184,16 @@ mod tests {
         assert_spec(spec_for_backend(WmBackend::Niri));
         assert_spec(spec_for_backend(WmBackend::I3));
         assert_spec(spec_for_backend(WmBackend::Hyprland));
+        assert_spec(spec_for_backend(WmBackend::Mangowc));
         assert_spec(spec_for_backend(WmBackend::Paneru));
         assert_spec(spec_for_backend(WmBackend::Yabai));
         let _ = super::connect_selected as fn() -> Result<ConfiguredWindowManager>;
+    }
+
+    #[test]
+    fn mangowc_wm_backend_spec_is_registered() {
+        fn assert_spec(_spec: &'static dyn WindowManagerSpec) {}
+        assert_spec(spec_for_backend(WmBackend::Mangowc));
     }
 
     #[test]
