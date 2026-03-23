@@ -26,52 +26,43 @@ impl MmsgTransport {
 
     pub fn dispatch(&self, command: &str, args: &[&str]) -> Result<()> {
         let dispatch = dispatch_args(command, args);
-        let refs: Vec<&str> = dispatch.iter().map(|s| s.as_str()).collect();
-        runtime::run_command_status(
-            BINARY,
-            &refs,
-            &CommandContext::new(ADAPTER, "mmsg-dispatch")
+        self.run_dispatch(
+            &dispatch,
+            CommandContext::new(ADAPTER, "mmsg-dispatch")
                 .with_target(format!("{command}:{}", args.join(","))),
         )
     }
 
     pub fn focusdir(&self, direction: &str) -> Result<()> {
         let dispatch = build_focusdir_dispatch(direction);
-        let refs: Vec<&str> = dispatch.iter().map(|s| s.as_str()).collect();
-        runtime::run_command_status(
-            BINARY,
-            &refs,
-            &CommandContext::new(ADAPTER, "mmsg-dispatch")
+        self.run_dispatch(
+            &dispatch,
+            CommandContext::new(ADAPTER, "mmsg-dispatch")
                 .with_target(format!("focusdir:{direction}")),
         )
     }
 
     pub fn exchange_client(&self, direction: &str) -> Result<()> {
         let dispatch = build_exchange_client_dispatch(direction);
-        let refs: Vec<&str> = dispatch.iter().map(|s| s.as_str()).collect();
-        runtime::run_command_status(
-            BINARY,
-            &refs,
-            &CommandContext::new(ADAPTER, "mmsg-dispatch")
+        self.run_dispatch(
+            &dispatch,
+            CommandContext::new(ADAPTER, "mmsg-dispatch")
                 .with_target(format!("exchange_client:{direction}")),
         )
     }
 
     pub fn tagmon(&self, direction: &str) -> Result<()> {
         let dispatch = build_tagmon_dispatch(direction);
-        let refs: Vec<&str> = dispatch.iter().map(|s| s.as_str()).collect();
-        runtime::run_command_status(
-            BINARY,
-            &refs,
-            &CommandContext::new(ADAPTER, "mmsg-dispatch")
+        self.run_dispatch(
+            &dispatch,
+            CommandContext::new(ADAPTER, "mmsg-dispatch")
                 .with_target(format!("tagmon:{direction}")),
         )
     }
 
     pub fn spawn(&self, command: &[String]) -> Result<()> {
         let dispatch = build_spawn_dispatch(command)?;
-        let refs: Vec<&str> = dispatch.iter().map(|s| s.as_str()).collect();
-        runtime::run_command_status(BINARY, &refs, &CommandContext::new(ADAPTER, "mmsg-spawn"))
+        self.run_dispatch(&dispatch, CommandContext::new(ADAPTER, "mmsg-spawn"))
     }
 
     pub fn focused_snapshot(&self) -> Result<FocusedSnapshot> {
@@ -93,6 +84,11 @@ impl MmsgTransport {
             };
         }
         parse_focused_snapshot(&runtime::stdout_text(&output))
+    }
+
+    fn run_dispatch(&self, dispatch: &[String], context: CommandContext) -> Result<()> {
+        let refs: Vec<&str> = dispatch.iter().map(|s| s.as_str()).collect();
+        runtime::run_command_status(BINARY, &refs, &context)
     }
 }
 
