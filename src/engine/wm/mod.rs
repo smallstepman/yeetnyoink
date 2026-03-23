@@ -197,6 +197,17 @@ mod tests {
     }
 
     #[test]
+    fn mangowc_wm_backend_runtime_is_explicitly_unsupported() {
+        let err = match spec_for_backend(WmBackend::Mangowc).connect() {
+            Ok(_) => panic!("mangowc should stay unsupported until adapter implementation lands"),
+            Err(err) => err,
+        };
+        assert!(err
+            .to_string()
+            .contains("wm backend 'mangowc' is not yet supported at runtime"));
+    }
+
+    #[test]
     fn connect_selected_reports_configured_backend_failure_without_fallback() {
         let err =
             match super::connect_backend_for_test(WmBackend::Niri, failing_spec(WmBackend::Niri)) {

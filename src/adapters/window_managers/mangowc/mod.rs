@@ -5,7 +5,7 @@ use crate::engine::topology::Direction;
 use crate::engine::wm::{
     validate_declared_capabilities, CapabilitySupport, ConfiguredWindowManager,
     DirectionalCapability, FocusedWindowRecord, PrimitiveWindowManagerCapabilities, ResizeIntent,
-    WindowManagerCapabilities, WindowManagerCapabilityDescriptor, WindowManagerFeatures,
+    WindowManagerCapabilities, WindowManagerCapabilityDescriptor,
     WindowManagerSession, WindowManagerSpec, WindowRecord,
 };
 
@@ -25,10 +25,7 @@ impl WindowManagerSpec for MangowcSpec {
     }
 
     fn connect(&self) -> Result<ConfiguredWindowManager> {
-        ConfiguredWindowManager::try_new(
-            Box::new(MangowcAdapter::connect()?),
-            WindowManagerFeatures::default(),
-        )
+        anyhow::bail!("wm backend 'mangowc' is not yet supported at runtime")
     }
 }
 
