@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use anyhow::{anyhow, Result};
 
 pub mod mmsg;
@@ -117,7 +119,7 @@ impl WindowManagerSpec for MangowcSpec {
 
         #[cfg(not(target_os = "linux"))]
         {
-            bail!(
+            anyhow::bail!(
                 "wm backend 'mangowc' is not supported on {}",
                 std::env::consts::OS
             )
@@ -137,7 +139,7 @@ impl MangowcAdapter {
 
         #[cfg(not(target_os = "linux"))]
         {
-            bail!(
+            anyhow::bail!(
                 "mangowc adapter is not supported on {}",
                 std::env::consts::OS
             )
@@ -243,8 +245,10 @@ fn direction_for_focus(direction: Direction) -> &'static str {
 
 fn tagmon_for(direction: Direction) -> &'static str {
     match direction {
-        Direction::West | Direction::North => "prev",
-        Direction::East | Direction::South => "next",
+        Direction::West => "left",
+        Direction::East => "right",
+        Direction::North => "up",
+        Direction::South => "down",
     }
 }
 
@@ -266,38 +270,64 @@ fn disambiguate_activated_windows(
     activated: &[WindowRecord],
     focused_meta: &mmsg::FocusedSnapshot,
 ) -> Result<FocusedWindowRecord> {
-    let mut candidates: Vec<&WindowRecord> = activated.iter().collect();
+    let mut matching_ids: Option<HashSet<u64>> = None;
 
-    if let Some(app_id) = focused_meta.app_id.as_deref() {
-        let narrowed: Vec<&WindowRecord> = candidates
-            .iter()
-            .copied()
-            .filter(|window| window.app_id.as_deref() == Some(app_id))
-            .collect();
-        if !narrowed.is_empty() {
-            candidates = narrowed;
-        }
+    for ids in [
+        matching_window_ids(activated, focused_meta.app_id.as_deref(), |window| {
+            window.app_id.as_deref()
+        }),
+        matching_window_ids(activated, focused_meta.title.as_deref(), |window| {
+            window.title.as_deref()
+        }),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        matching_ids = Some(match matching_ids {
+            Some(existing) => existing.intersection(&ids).copied().collect(),
+            None => ids,
+        });
     }
 
-    if candidates.len() > 1 {
-        if let Some(title) = focused_meta.title.as_deref() {
-            let narrowed: Vec<&WindowRecord> = candidates
-                .iter()
-                .copied()
-                .filter(|window| window.title.as_deref() == Some(title))
-                .collect();
-            if !narrowed.is_empty() {
-                candidates = narrowed;
-            }
-        }
-    }
-
-    match candidates.as_slice() {
-        [single] => Ok(to_focused_record(single)),
-        _ => Err(anyhow!(
+    let Some(matching_ids) = matching_ids else {
+        return Err(anyhow!(
             "mangowc: ambiguous activated foreign toplevel windows; refusing to guess focus"
-        )),
+        ));
+    };
+
+    if matching_ids.len() != 1 {
+        return Err(anyhow!(
+            "mangowc: ambiguous activated foreign toplevel windows; refusing to guess focus"
+        ));
     }
+    let single_id = *matching_ids
+        .iter()
+        .next()
+        .expect("single matching activated window id must exist");
+
+    let single = activated
+        .iter()
+        .find(|window| window.id == single_id)
+        .expect("matching activated window id must exist");
+    Ok(to_focused_record(single))
+}
+
+fn matching_window_ids<F>(
+    activated: &[WindowRecord],
+    expected: Option<&str>,
+    field: F,
+) -> Option<HashSet<u64>>
+where
+    F: Fn(&WindowRecord) -> Option<&str>,
+{
+    let expected = expected?;
+    Some(
+        activated
+            .iter()
+            .filter(|window| field(window) == Some(expected))
+            .map(|window| window.id)
+            .collect(),
+    )
 }
 
 #[cfg(test)]
@@ -544,6 +574,30 @@ mod tests {
     }
 
     #[test]
+    fn mangowc_adapter_focused_window_errors_when_mmsg_metadata_conflicts() {
+        let windows = vec![
+            window(10, "shell-a", "foot", true, 0),
+            window(20, "shell-b", "kitty", true, 1),
+        ];
+        let snapshots = vec![mmsg::FocusedSnapshot {
+            app_id: Some("foot".to_string()),
+            title: Some("shell-b".to_string()),
+            x: Some(0),
+            y: Some(0),
+            width: Some(1000),
+            height: Some(700),
+        }];
+        let (mut adapter, _, _) = test_adapter(windows, snapshots);
+
+        let err = adapter
+            .focused_window()
+            .expect_err("conflicting metadata should error");
+        assert!(err
+            .to_string()
+            .contains("ambiguous activated foreign toplevel windows"));
+    }
+
+    #[test]
     fn mangowc_adapter_move_direction_uses_exchange_when_probe_finds_target() {
         let windows = vec![window(1, "only", "foot", true, 0)];
         let snapshots = vec![
@@ -625,7 +679,7 @@ mod tests {
                 "focused_snapshot",
                 "focusdir:right",
                 "focused_snapshot",
-                "tagmon:next",
+                "tagmon:right",
             ]
         );
     }

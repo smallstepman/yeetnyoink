@@ -197,14 +197,25 @@ mod tests {
     }
 
     #[test]
-    fn mangowc_wm_backend_runtime_is_explicitly_unsupported() {
-        let err = match spec_for_backend(WmBackend::Mangowc).connect() {
-            Ok(_) => panic!("mangowc should stay unsupported until adapter implementation lands"),
-            Err(err) => err,
-        };
-        assert!(err
-            .to_string()
-            .contains("wm backend 'mangowc' is not yet supported at runtime"));
+    fn mangowc_wm_backend_runtime_support_matches_platform() {
+        #[cfg(target_os = "linux")]
+        {
+            if let Err(err) = spec_for_backend(WmBackend::Mangowc).connect() {
+                assert!(
+                    !err.to_string()
+                        .contains("wm backend 'mangowc' is not yet supported at runtime"),
+                    "linux mangowc backend should now fail only for real runtime causes: {err}"
+                );
+            }
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        {
+            let err = spec_for_backend(WmBackend::Mangowc)
+                .connect()
+                .expect_err("non-linux mangowc backend should stay unsupported");
+            assert!(err.to_string().contains("not supported"));
+        }
     }
 
     #[test]
