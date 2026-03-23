@@ -200,10 +200,12 @@ pub fn parse_focused_snapshot(input: &str) -> Result<FocusedSnapshot> {
 mod tests {
     use std::ffi::OsString;
     use std::fs;
-    use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
     use std::sync::Mutex;
     use std::sync::OnceLock;
+
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
 
     use super::*;
 
@@ -256,6 +258,7 @@ mod tests {
         MmsgTransport::connect()
     }
 
+    #[cfg(unix)]
     fn run_with_fake_path_that_only_has_mmsg() -> Result<MmsgTransport> {
         let _guard = path_lock().lock().expect("path lock poisoned");
         let base =
@@ -369,6 +372,7 @@ Virtual-1 height 1110\n";
         assert!(err.to_string().contains("mmsg"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn mangowc_mmsg_connect_succeeds_with_path_mmsg_without_which() {
         run_with_fake_path_that_only_has_mmsg().expect("connect should find PATH mmsg directly");
