@@ -307,6 +307,10 @@ impl wayland_client::Dispatch<ForeignToplevelManager, ()> for SessionState {
             _ => {}
         }
     }
+
+    wayland_client::event_created_child!(SessionState, ForeignToplevelManager, [
+        0 => (ForeignToplevelHandle, ())
+    ]);
 }
 
 impl wayland_client::Dispatch<ForeignToplevelHandle, ()> for SessionState {
@@ -516,5 +520,28 @@ mod tests {
         })
         .expect_err("missing seat should fail");
         assert!(err.to_string().contains("wl_seat"));
+    }
+
+    #[test]
+    fn mangowc_toplevel_manager_dispatch_registers_child_factory_for_toplevel_event() {
+        use std::os::unix::net::UnixStream;
+
+        let (client, _server) = UnixStream::pair().expect("socket pair should exist");
+        let connection = wayland_client::Connection::from_socket(client)
+            .expect("client connection should construct");
+        let event_queue = connection.new_event_queue::<SessionState>();
+        let qhandle = event_queue.handle();
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            <SessionState as wayland_client::Dispatch<ForeignToplevelManager, ()>>::event_created_child(
+                0,
+                &qhandle,
+            )
+        }));
+
+        assert!(
+            result.is_ok(),
+            "toplevel manager child factory should exist for opcode 0"
+        );
     }
 }
