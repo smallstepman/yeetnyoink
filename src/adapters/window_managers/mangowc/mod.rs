@@ -1,12 +1,14 @@
 use anyhow::Result;
 
+pub mod mmsg;
+
 use crate::config::WmBackend;
 use crate::engine::topology::Direction;
 use crate::engine::wm::{
     validate_declared_capabilities, CapabilitySupport, ConfiguredWindowManager,
     DirectionalCapability, FocusedWindowRecord, PrimitiveWindowManagerCapabilities, ResizeIntent,
-    WindowManagerCapabilities, WindowManagerCapabilityDescriptor,
-    WindowManagerSession, WindowManagerSpec, WindowRecord,
+    WindowManagerCapabilities, WindowManagerCapabilityDescriptor, WindowManagerSession,
+    WindowManagerSpec, WindowRecord,
 };
 
 pub struct MangowcAdapter;
