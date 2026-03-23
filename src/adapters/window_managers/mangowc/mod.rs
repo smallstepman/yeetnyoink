@@ -1,12 +1,14 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::{anyhow, Result};
 
 pub mod mmsg;
+mod pid;
 #[cfg(target_os = "linux")]
 pub mod toplevel;
 
 use crate::config::WmBackend;
+use crate::engine::runtime::ProcessId;
 use crate::engine::topology::Direction;
 use crate::engine::wm::{
     validate_declared_capabilities, CapabilitySupport, ConfiguredWindowManager,
@@ -18,6 +20,8 @@ use crate::engine::wm::{
 pub struct MangowcAdapter {
     mmsg: Box<dyn MmsgClient>,
     toplevel: Box<dyn ToplevelClient>,
+    pid_resolver: Box<dyn pid::FocusedPidResolver>,
+    pid_cache: HashMap<u64, ProcessId>,
 }
 
 pub struct MangowcSpec;
@@ -147,8 +151,58 @@ impl MangowcAdapter {
     }
 
     fn with_clients(mmsg: Box<dyn MmsgClient>, toplevel: Box<dyn ToplevelClient>) -> Result<Self> {
+        Self::with_pid_resolver(mmsg, toplevel, Box::new(pid::RuntimeFocusedPidResolver))
+    }
+
+    fn with_pid_resolver(
+        mmsg: Box<dyn MmsgClient>,
+        toplevel: Box<dyn ToplevelClient>,
+        pid_resolver: Box<dyn pid::FocusedPidResolver>,
+    ) -> Result<Self> {
         validate_declared_capabilities::<Self>()?;
-        Ok(Self { mmsg, toplevel })
+        Ok(Self {
+            mmsg,
+            toplevel,
+            pid_resolver,
+            pid_cache: HashMap::new(),
+        })
+    }
+
+    fn snapshot_windows(&mut self) -> Result<Vec<WindowRecord>> {
+        let mut windows = self.toplevel.windows()?;
+        self.retain_cached_pids(&windows);
+        self.apply_cached_pids(&mut windows);
+        Ok(windows)
+    }
+
+    fn retain_cached_pids(&mut self, windows: &[WindowRecord]) {
+        let live_ids: HashSet<u64> = windows.iter().map(|window| window.id).collect();
+        self.pid_cache.retain(|id, _| live_ids.contains(id));
+    }
+
+    fn apply_cached_pids(&self, windows: &mut [WindowRecord]) {
+        for window in windows {
+            if window.pid.is_none() {
+                window.pid = self.pid_cache.get(&window.id).copied();
+            }
+        }
+    }
+
+    fn hydrate_focused_pid(&mut self, focused: &mut FocusedWindowRecord) {
+        if let Some(pid) = focused.pid {
+            self.pid_cache.insert(focused.id, pid);
+            return;
+        }
+
+        let Some(pid) = self
+            .pid_resolver
+            .resolve_focused_terminal_pid(focused.app_id.as_deref(), focused.title.as_deref())
+        else {
+            return;
+        };
+
+        focused.pid = Some(pid);
+        self.pid_cache.insert(focused.id, pid);
     }
 }
 
@@ -177,25 +231,31 @@ impl WindowManagerSession for MangowcAdapter {
     }
 
     fn focused_window(&mut self) -> Result<FocusedWindowRecord> {
-        let windows = self.toplevel.windows()?;
+        let windows = self.snapshot_windows()?;
         let activated: Vec<WindowRecord> = windows
             .into_iter()
             .filter(|window| window.is_focused)
             .collect();
         match activated.as_slice() {
-            [single] => Ok(to_focused_record(single)),
+            [single] => {
+                let mut focused = to_focused_record(single);
+                self.hydrate_focused_pid(&mut focused);
+                Ok(focused)
+            }
             [] => Err(anyhow!(
                 "mangowc: no activated foreign toplevel window in snapshot"
             )),
             _ => {
                 let focused_meta = self.mmsg.focused_snapshot()?;
-                disambiguate_activated_windows(&activated, &focused_meta)
+                let mut focused = disambiguate_activated_windows(&activated, &focused_meta)?;
+                self.hydrate_focused_pid(&mut focused);
+                Ok(focused)
             }
         }
     }
 
     fn windows(&mut self) -> Result<Vec<WindowRecord>> {
-        self.toplevel.windows()
+        self.snapshot_windows()
     }
 
     fn focus_direction(&mut self, direction: Direction) -> Result<()> {
@@ -470,6 +530,48 @@ mod tests {
         }
     }
 
+    #[derive(Debug, Default)]
+    struct FakePidResolverState {
+        calls: Vec<(Option<String>, Option<String>)>,
+        responses: VecDeque<Option<crate::engine::runtime::ProcessId>>,
+    }
+
+    #[derive(Clone, Debug)]
+    struct FakePidResolver {
+        state: Arc<Mutex<FakePidResolverState>>,
+    }
+
+    impl FakePidResolver {
+        fn with_responses(
+            responses: Vec<Option<crate::engine::runtime::ProcessId>>,
+        ) -> (Self, Arc<Mutex<FakePidResolverState>>) {
+            let state = Arc::new(Mutex::new(FakePidResolverState {
+                calls: Vec::new(),
+                responses: responses.into(),
+            }));
+            (
+                Self {
+                    state: Arc::clone(&state),
+                },
+                state,
+            )
+        }
+    }
+
+    impl pid::FocusedPidResolver for FakePidResolver {
+        fn resolve_focused_terminal_pid(
+            &self,
+            app_id: Option<&str>,
+            title: Option<&str>,
+        ) -> Option<crate::engine::runtime::ProcessId> {
+            let mut state = self.state.lock().expect("pid resolver lock poisoned");
+            state
+                .calls
+                .push((app_id.map(str::to_string), title.map(str::to_string)));
+            state.responses.pop_front().unwrap_or(None)
+        }
+    }
+
     fn test_adapter(
         windows: Vec<WindowRecord>,
         focused_snapshots: Vec<mmsg::FocusedSnapshot>,
@@ -483,6 +585,28 @@ mod tests {
         let adapter = MangowcAdapter::with_clients(Box::new(mmsg), Box::new(toplevel))
             .expect("test adapter should construct");
         (adapter, mmsg_state, toplevel_state)
+    }
+
+    fn test_adapter_with_pid_responses(
+        windows: Vec<WindowRecord>,
+        focused_snapshots: Vec<mmsg::FocusedSnapshot>,
+        pid_responses: Vec<Option<crate::engine::runtime::ProcessId>>,
+    ) -> (
+        MangowcAdapter,
+        Arc<Mutex<FakeMmsgState>>,
+        Arc<Mutex<FakeToplevelState>>,
+        Arc<Mutex<FakePidResolverState>>,
+    ) {
+        let (mmsg, mmsg_state) = FakeMmsg::with_snapshots(focused_snapshots);
+        let (toplevel, toplevel_state) = FakeToplevel::with_windows(windows);
+        let (pid_resolver, pid_state) = FakePidResolver::with_responses(pid_responses);
+        let adapter = MangowcAdapter::with_pid_resolver(
+            Box::new(mmsg),
+            Box::new(toplevel),
+            Box::new(pid_resolver),
+        )
+        .expect("test adapter should construct");
+        (adapter, mmsg_state, toplevel_state, pid_state)
     }
 
     fn window(id: u64, title: &str, app_id: &str, is_focused: bool, index: usize) -> WindowRecord {
@@ -732,5 +856,58 @@ mod tests {
             .focus_window_by_id(42)
             .expect_err("stale handle should error");
         assert!(err.to_string().contains("stale window id 42"));
+    }
+
+    #[test]
+    fn mangowc_adapter_windows_reuses_cached_pid_for_same_synthetic_window_id() {
+        let windows = vec![window(9, "shell", "foot", true, 0)];
+        let (mut adapter, _, _, pid_state) = test_adapter_with_pid_responses(
+            windows,
+            vec![],
+            vec![crate::engine::runtime::ProcessId::new(4242)],
+        );
+
+        let focused = adapter
+            .focused_window()
+            .expect("focused window should resolve");
+        assert_eq!(focused.pid, crate::engine::runtime::ProcessId::new(4242));
+
+        let windows = adapter.windows().expect("windows should load");
+        assert_eq!(windows[0].pid, crate::engine::runtime::ProcessId::new(4242));
+
+        let calls = pid_state
+            .lock()
+            .expect("pid resolver lock poisoned")
+            .calls
+            .clone();
+        assert_eq!(
+            calls,
+            vec![(Some("foot".to_string()), Some("shell".to_string()))]
+        );
+    }
+
+    #[test]
+    fn mangowc_adapter_windows_leave_pid_empty_when_resolution_is_ambiguous() {
+        let windows = vec![window(11, "shell", "foot", true, 0)];
+        let (mut adapter, _, _, pid_state) =
+            test_adapter_with_pid_responses(windows, vec![], vec![None]);
+
+        let focused = adapter
+            .focused_window()
+            .expect("focused window should still resolve");
+        assert_eq!(focused.pid, None);
+
+        let windows = adapter.windows().expect("windows should load");
+        assert_eq!(windows[0].pid, None);
+
+        let calls = pid_state
+            .lock()
+            .expect("pid resolver lock poisoned")
+            .calls
+            .clone();
+        assert_eq!(
+            calls,
+            vec![(Some("foot".to_string()), Some("shell".to_string()))]
+        );
     }
 }
