@@ -39,7 +39,7 @@ Run `yny setup zellij` to print the hosted `load_plugins { ... }` release URL sn
 
 ```toml
 [wm]
-enabled_integration = "niri" # or "i3" or "hyprland" on Linux
+enabled_integration = "niri" # or "i3" | "hyprland" | "mangowc" on Linux
 
 [app.terminal.wezterm]
 enabled = true
@@ -104,7 +104,7 @@ and Home Manager renders them to `~/.config/yeetnyoink/config.toml`.
   programs.yeetnyoink = {
     enable = true;
     config = {
-      wm.enabled_integration = "niri";
+      wm.enabled_integration = "niri"; # or "mangowc" on Linux
 
       app.terminal.wezterm = {
         enabled = true;
@@ -167,5 +167,8 @@ Current built-in WM adapters:
 - `niri`
 - `i3`
 - `hyprland`
+- `mangowc` (Linux only)
 
 Adapter selection is driven by `wm.enabled_integration`. No runtime probing occurs; selection is explicit and must be set in your config or via the CLI.
+
+`mangowc` currently uses a hybrid `mmsg` + Wayland foreign-toplevel backend. In v1 it does not claim WM resize parity or tear-out composition, and PID recovery is best-effort for supported terminal hosts only.

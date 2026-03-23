@@ -55,7 +55,7 @@ pub struct WmConfig {
     ///
     /// ```toml
     /// [wm]
-    /// enabled_integration = "yabai"
+    /// enabled_integration = "mangowc"
     /// ```
     pub enabled_integration: WmBackend,
 }
