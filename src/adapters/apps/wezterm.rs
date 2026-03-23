@@ -154,7 +154,7 @@ use crate::engine::topology::Direction;
 pub struct WeztermBackend;
 pub const ADAPTER_NAME: &str = "terminal";
 pub const ADAPTER_ALIASES: &[&str] = terminal_multiplexers::WEZTERM_HOST_ALIASES;
-pub const APP_IDS: &[&str] = &["org.wezfurlong.wezterm"];
+pub const APP_IDS: &[&str] = &["org.wezfurlong.wezterm", "com.github.wez.wezterm"];
 
 /// Terminal launch prefix for composing spawn commands (e.g. `["wezterm", "-e"]`).
 pub const TERMINAL_LAUNCH_PREFIX: &[&str] = &["wezterm", "-e"];

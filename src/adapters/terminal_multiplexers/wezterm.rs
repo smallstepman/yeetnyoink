@@ -71,6 +71,15 @@ struct WeztermHostTab {
 }
 
 impl WeztermMux {
+    fn socket_override_for_pid<F>(pid: u32, runtime_dir: Option<&str>, socket_exists: F) -> Option<String>
+    where
+        F: FnOnce(&std::path::Path) -> bool,
+    {
+        let runtime_dir = runtime_dir?;
+        let sock_path = PathBuf::from(format!("{runtime_dir}/wezterm/gui-sock-{pid}"));
+        socket_exists(&sock_path).then(|| sock_path.to_string_lossy().to_string())
+    }
+
     fn raw_panes_for_pid(&self, pid: u32) -> Result<Vec<WeztermMuxPane>> {
         if let Some(panes) = WEZTERM_QUERY_CACHE.with(|cache| {
             cache
@@ -399,22 +408,28 @@ impl WeztermMux {
 
 impl TerminalMultiplexerProvider for WeztermMux {
     fn cli_output_for_pid(&self, pid: u32, args: &[&str]) -> Result<std::process::Output> {
-        let runtime_dir = std::env::var("XDG_RUNTIME_DIR")
-            .context("XDG_RUNTIME_DIR is not set; cannot locate wezterm socket")?;
-        let sock_path = PathBuf::from(format!("{runtime_dir}/wezterm/gui-sock-{pid}"));
-        if !sock_path.exists() {
-            bail!("wezterm socket not found: {}", sock_path.display());
-        }
         if !Self::preserves_query_cache(args) {
             self.invalidate_query_cache(pid);
         }
-        let sock = sock_path.to_string_lossy().to_string();
-        logging::debug(format!(
-            "wezterm: pid={} cli {:?} via WEZTERM_UNIX_SOCKET",
-            pid, args
-        ));
-        let output = Command::new("wezterm")
-            .env("WEZTERM_UNIX_SOCKET", &sock)
+        let socket_override = Self::socket_override_for_pid(
+            pid,
+            std::env::var("XDG_RUNTIME_DIR").ok().as_deref(),
+            |path| path.exists(),
+        );
+        let mut command = Command::new("wezterm");
+        if let Some(sock) = socket_override.as_deref() {
+            logging::debug(format!(
+                "wezterm: pid={} cli {:?} via WEZTERM_UNIX_SOCKET",
+                pid, args
+            ));
+            command.env("WEZTERM_UNIX_SOCKET", sock);
+        } else {
+            logging::debug(format!(
+                "wezterm: pid={} cli {:?} via wezterm auto-discovery",
+                pid, args
+            ));
+        }
+        let output = command
             .args(["cli"])
             .args(args)
             .output()
@@ -810,6 +825,7 @@ impl TopologyHandler for WeztermMux {
 #[cfg(test)]
 mod tests {
     use super::{WeztermMux, WeztermMuxPane};
+    use std::path::Path;
 
     #[test]
     fn pane_foreground_process_uses_tty_fallback_when_snapshot_field_is_empty() {
@@ -846,5 +862,28 @@ mod tests {
         });
 
         assert_eq!(fg.as_deref(), Some("tmux"));
+    }
+
+    #[test]
+    fn socket_override_for_pid_returns_none_without_runtime_dir() {
+        let sock = WeztermMux::socket_override_for_pid(3350, None, |_path| true);
+        assert_eq!(sock, None);
+    }
+
+    #[test]
+    fn socket_override_for_pid_returns_none_when_socket_path_is_missing() {
+        let sock = WeztermMux::socket_override_for_pid(3350, Some("/tmp/runtime"), |_path| false);
+        assert_eq!(sock, None);
+    }
+
+    #[test]
+    fn socket_override_for_pid_uses_xdg_gui_socket_when_present() {
+        let sock = WeztermMux::socket_override_for_pid(
+            3350,
+            Some("/tmp/runtime"),
+            |path: &Path| path == Path::new("/tmp/runtime/wezterm/gui-sock-3350"),
+        );
+
+        assert_eq!(sock.as_deref(), Some("/tmp/runtime/wezterm/gui-sock-3350"));
     }
 }

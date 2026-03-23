@@ -286,9 +286,21 @@ where
     fn focus_direction_inner(&self, direction: Direction) -> anyhow::Result<()> {
         let topology = self.ctx.topology_snapshot().map_err(map_probe_error)?;
         let focused = focused_window_from_topology(&topology).map_err(map_probe_error)?;
-        let rects = active_directed_rects(&topology);
-        let target_id = select_closest_in_direction(&rects, focused.id, direction)
-            .with_context(|| format!("macos_native: no window to focus {direction}"))?;
+        let rects = display_index_for_space(&topology, focused.space_id)
+            .map(|display_index| active_directed_rects_for_display(&topology, display_index))
+            .filter(|rects| !rects.is_empty())
+            .unwrap_or_else(|| active_directed_rects(&topology));
+        let Some(target_id) = select_closest_in_direction(&rects, focused.id, direction) else {
+            if let Some(target_space_id) =
+                adjacent_space_in_direction(&topology, focused.space_id, direction)
+            {
+                return self
+                    .ctx
+                    .switch_space(target_space_id)
+                    .map_err(map_operation_error);
+            }
+            anyhow::bail!("macos_native: no window to focus {direction}");
+        };
         self.ctx
             .focus_window(target_id)
             .map_err(map_operation_error)
@@ -1443,6 +1455,7 @@ const FULLSCREEN_SPACE_TYPE: i32 = 4;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RawSpaceRecord {
     managed_space_id: u64,
+    display_index: usize,
     space_type: i32,
     tile_spaces: Vec<u64>,
     has_tile_layout_manager: bool,
@@ -1740,7 +1753,7 @@ fn parse_managed_spaces(payload: CFArrayRef) -> Result<Vec<RawSpaceRecord>, Maco
     let spaces_key = cf_string("Spaces")?;
     let mut spaces = Vec::new();
 
-    for display in cf_array_iter(payload) {
+    for (display_index, display) in cf_array_iter(payload).enumerate() {
         let display = cf_as_dictionary(display).ok_or(MacosNativeProbeError::MissingTopology(
             "SLSCopyManagedDisplaySpaces",
         ))?;
@@ -1753,14 +1766,17 @@ fn parse_managed_spaces(payload: CFArrayRef) -> Result<Vec<RawSpaceRecord>, Maco
             let space = cf_as_dictionary(space).ok_or(MacosNativeProbeError::MissingTopology(
                 "SLSCopyManagedDisplaySpaces",
             ))?;
-            spaces.push(parse_raw_space_record(space)?);
+            spaces.push(parse_raw_space_record(space, display_index)?);
         }
     }
 
     Ok(spaces)
 }
 
-fn parse_raw_space_record(space: CFDictionaryRef) -> Result<RawSpaceRecord, MacosNativeProbeError> {
+fn parse_raw_space_record(
+    space: CFDictionaryRef,
+    display_index: usize,
+) -> Result<RawSpaceRecord, MacosNativeProbeError> {
     let managed_space_id_key = cf_string("ManagedSpaceID")?;
     let space_type_key = cf_string("type")?;
     let tile_layout_manager_key = cf_string("TileLayoutManager")?;
@@ -1792,6 +1808,7 @@ fn parse_raw_space_record(space: CFDictionaryRef) -> Result<RawSpaceRecord, Maco
 
     Ok(RawSpaceRecord {
         managed_space_id,
+        display_index,
         space_type,
         tile_spaces,
         has_tile_layout_manager,
@@ -2029,6 +2046,27 @@ fn active_directed_rects(topology: &RawTopologySnapshot) -> Vec<DirectedRect<u64
         .collect()
 }
 
+fn active_directed_rects_for_display(
+    topology: &RawTopologySnapshot,
+    display_index: usize,
+) -> Vec<DirectedRect<u64>> {
+    topology
+        .active_space_windows
+        .iter()
+        .filter_map(|(space_id, windows)| {
+            (display_index_for_space(topology, *space_id) == Some(display_index)).then_some(windows)
+        })
+        .flat_map(|windows| {
+            windows.iter().filter_map(|window| {
+                window.frame.map(|rect| DirectedRect {
+                    id: window.id,
+                    rect,
+                })
+            })
+        })
+        .collect()
+}
+
 fn active_window_by_id(topology: &RawTopologySnapshot, window_id: u64) -> Option<&RawWindow> {
     topology
         .active_space_windows
@@ -2177,6 +2215,46 @@ fn space_id_for_window(topology: &RawTopologySnapshot, window_id: u64) -> Option
         })
 }
 
+fn display_index_for_space(topology: &RawTopologySnapshot, space_id: u64) -> Option<usize> {
+    topology
+        .spaces
+        .iter()
+        .find(|space| space.managed_space_id == space_id)
+        .map(|space| space.display_index)
+}
+
+fn adjacent_space_in_direction(
+    topology: &RawTopologySnapshot,
+    source_space_id: u64,
+    direction: Direction,
+) -> Option<u64> {
+    let source_space = topology
+        .spaces
+        .iter()
+        .find(|space| space.managed_space_id == source_space_id)?;
+    let display_spaces = topology
+        .spaces
+        .iter()
+        .filter(|space| space.display_index == source_space.display_index)
+        .collect::<Vec<_>>();
+    let source_index = display_spaces
+        .iter()
+        .position(|space| space.managed_space_id == source_space_id)?;
+
+    match direction {
+        Direction::West => display_spaces[..source_index]
+            .iter()
+            .rev()
+            .find(|space| classify_space(space) != SpaceKind::StageManagerOpaque)
+            .map(|space| space.managed_space_id),
+        Direction::East => display_spaces[source_index + 1..]
+            .iter()
+            .find(|space| classify_space(space) != SpaceKind::StageManagerOpaque)
+            .map(|space| space.managed_space_id),
+        Direction::North | Direction::South => None,
+    }
+}
+
 fn ensure_supported_target_space(
     topology: &RawTopologySnapshot,
     space_id: u64,
@@ -2301,9 +2379,9 @@ mod tests {
         fn multi_display_topology_fixture() -> RawTopologySnapshot {
             RawTopologySnapshot {
                 spaces: vec![
-                    raw_desktop_space(1),
-                    raw_split_space(2, &[21, 22]),
-                    raw_fullscreen_space(3),
+                    raw_desktop_space_on_display(1, 0),
+                    raw_split_space_on_display(2, &[21, 22], 0),
+                    raw_fullscreen_space_on_display(3, 1),
                 ],
                 active_space_ids: HashSet::from([1, 3]),
                 active_space_windows: HashMap::from([
@@ -2726,9 +2804,10 @@ mod tests {
         }
     }
 
-    fn raw_desktop_space(managed_space_id: u64) -> RawSpaceRecord {
+    fn raw_desktop_space_on_display(managed_space_id: u64, display_index: usize) -> RawSpaceRecord {
         RawSpaceRecord {
             managed_space_id,
+            display_index,
             space_type: DESKTOP_SPACE_TYPE,
             tile_spaces: Vec::new(),
             has_tile_layout_manager: false,
@@ -2736,9 +2815,17 @@ mod tests {
         }
     }
 
-    fn raw_fullscreen_space(managed_space_id: u64) -> RawSpaceRecord {
+    fn raw_desktop_space(managed_space_id: u64) -> RawSpaceRecord {
+        raw_desktop_space_on_display(managed_space_id, 0)
+    }
+
+    fn raw_fullscreen_space_on_display(
+        managed_space_id: u64,
+        display_index: usize,
+    ) -> RawSpaceRecord {
         RawSpaceRecord {
             managed_space_id,
+            display_index,
             space_type: FULLSCREEN_SPACE_TYPE,
             tile_spaces: Vec::new(),
             has_tile_layout_manager: false,
@@ -2746,9 +2833,18 @@ mod tests {
         }
     }
 
-    fn raw_split_space(managed_space_id: u64, tile_spaces: &[u64]) -> RawSpaceRecord {
+    fn raw_fullscreen_space(managed_space_id: u64) -> RawSpaceRecord {
+        raw_fullscreen_space_on_display(managed_space_id, 0)
+    }
+
+    fn raw_split_space_on_display(
+        managed_space_id: u64,
+        tile_spaces: &[u64],
+        display_index: usize,
+    ) -> RawSpaceRecord {
         RawSpaceRecord {
             managed_space_id,
+            display_index,
             space_type: DESKTOP_SPACE_TYPE,
             tile_spaces: tile_spaces.to_vec(),
             has_tile_layout_manager: true,
@@ -2756,14 +2852,26 @@ mod tests {
         }
     }
 
-    fn raw_stage_manager_space(managed_space_id: u64) -> RawSpaceRecord {
+    fn raw_split_space(managed_space_id: u64, tile_spaces: &[u64]) -> RawSpaceRecord {
+        raw_split_space_on_display(managed_space_id, tile_spaces, 0)
+    }
+
+    fn raw_stage_manager_space_on_display(
+        managed_space_id: u64,
+        display_index: usize,
+    ) -> RawSpaceRecord {
         RawSpaceRecord {
             managed_space_id,
+            display_index,
             space_type: DESKTOP_SPACE_TYPE,
             tile_spaces: Vec::new(),
             has_tile_layout_manager: false,
             stage_manager_managed: true,
         }
+    }
+
+    fn raw_stage_manager_space(managed_space_id: u64) -> RawSpaceRecord {
+        raw_stage_manager_space_on_display(managed_space_id, 0)
     }
 
     fn fake_context_with_spaces() -> MacosNativeContext<FakeNativeApi> {
@@ -3311,6 +3419,98 @@ mod tests {
     }
 
     #[test]
+    fn backend_focus_direction_switches_to_previous_space_when_no_west_window_exists() {
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let topology = RawTopologySnapshot {
+            spaces: vec![
+                raw_desktop_space(1),
+                raw_desktop_space(2),
+                raw_desktop_space(3),
+            ],
+            active_space_ids: HashSet::from([2]),
+            active_space_windows: HashMap::from([(
+                2,
+                vec![
+                    raw_window(20)
+                        .with_visible_index(0)
+                        .with_pid(2020)
+                        .with_app_id("com.example.center")
+                        .with_title("center")
+                        .with_frame(crate::engine::topology::Rect {
+                            x: 120,
+                            y: 0,
+                            w: 100,
+                            h: 100,
+                        }),
+                ],
+            )]),
+            inactive_space_window_ids: HashMap::from([(1, vec![10]), (3, vec![30])]),
+            focused_window_id: Some(20),
+        };
+        let api = FakeNativeApi::default()
+            .with_calls(calls.clone())
+            .with_topology(topology);
+        let adapter = MacosNativeAdapter::connect_with_api(api).unwrap();
+
+        adapter.focus_direction_inner(Direction::West).unwrap();
+
+        assert_eq!(take_calls(&calls), vec!["switch_space:1"]);
+    }
+
+    #[test]
+    fn backend_focus_direction_switches_to_previous_space_on_same_display_only() {
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let topology = RawTopologySnapshot {
+            spaces: vec![
+                raw_desktop_space_on_display(1, 0),
+                raw_desktop_space_on_display(2, 0),
+                raw_desktop_space_on_display(10, 1),
+                raw_desktop_space_on_display(11, 1),
+            ],
+            active_space_ids: HashSet::from([2, 11]),
+            active_space_windows: HashMap::from([
+                (
+                    2,
+                    vec![raw_window(200)
+                        .with_pid(2200)
+                        .with_app_id("com.example.left-display")
+                        .with_title("left display")
+                        .with_frame(crate::engine::topology::Rect {
+                            x: 0,
+                            y: 0,
+                            w: 100,
+                            h: 100,
+                        })],
+                ),
+                (
+                    11,
+                    vec![raw_window(1100)
+                        .with_visible_index(0)
+                        .with_pid(1111)
+                        .with_app_id("com.example.right-display")
+                        .with_title("right display")
+                        .with_frame(crate::engine::topology::Rect {
+                            x: 120,
+                            y: 0,
+                            w: 100,
+                            h: 100,
+                        })],
+                ),
+            ]),
+            inactive_space_window_ids: HashMap::from([(1, vec![100]), (10, vec![1000])]),
+            focused_window_id: Some(1100),
+        };
+        let api = FakeNativeApi::default()
+            .with_calls(calls.clone())
+            .with_topology(topology);
+        let adapter = MacosNativeAdapter::connect_with_api(api).unwrap();
+
+        adapter.focus_direction_inner(Direction::West).unwrap();
+
+        assert_eq!(take_calls(&calls), vec!["switch_space:10"]);
+    }
+
+    #[test]
     fn backend_move_direction_swaps_with_directional_neighbor() {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let topology = RawTopologySnapshot {
@@ -3553,10 +3753,63 @@ mod tests {
             ),
         ]);
 
-        let parsed = parse_raw_space_record(raw_space.as_type_ref() as CFDictionaryRef).unwrap();
+        let parsed = parse_raw_space_record(raw_space.as_type_ref() as CFDictionaryRef, 3).unwrap();
 
         assert_eq!(parsed.managed_space_id, 7);
+        assert_eq!(parsed.display_index, 3);
         assert_eq!(parsed.tile_spaces, vec![11, 12]);
         assert!(parsed.has_tile_layout_manager);
+    }
+
+    #[test]
+    fn parse_managed_spaces_preserves_display_grouping() {
+        let display_identifier_key = cf_string("Display Identifier").unwrap();
+        let spaces_key = cf_string("Spaces").unwrap();
+        let managed_space_id_key = cf_string("ManagedSpaceID").unwrap();
+        let space_type_key = cf_string("type").unwrap();
+        let space_type = cf_number_from_u64(DESKTOP_SPACE_TYPE as u64).unwrap();
+
+        let display0_space = cf_test_dictionary(&[
+            (
+                managed_space_id_key.as_type_ref(),
+                cf_number_from_u64(1).unwrap().as_type_ref(),
+            ),
+            (space_type_key.as_type_ref(), space_type.as_type_ref()),
+        ]);
+        let display1_space = cf_test_dictionary(&[
+            (
+                managed_space_id_key.as_type_ref(),
+                cf_number_from_u64(9).unwrap().as_type_ref(),
+            ),
+            (space_type_key.as_type_ref(), space_type.as_type_ref()),
+        ]);
+        let display0 = cf_test_dictionary(&[
+            (
+                display_identifier_key.as_type_ref(),
+                cf_string("display-0").unwrap().as_type_ref(),
+            ),
+            (
+                spaces_key.as_type_ref(),
+                cf_test_array(&[display0_space.as_type_ref()]).as_type_ref(),
+            ),
+        ]);
+        let display1 = cf_test_dictionary(&[
+            (
+                display_identifier_key.as_type_ref(),
+                cf_string("display-1").unwrap().as_type_ref(),
+            ),
+            (
+                spaces_key.as_type_ref(),
+                cf_test_array(&[display1_space.as_type_ref()]).as_type_ref(),
+            ),
+        ]);
+        let payload = cf_test_array(&[display0.as_type_ref(), display1.as_type_ref()]);
+
+        let parsed = parse_managed_spaces(payload.as_type_ref() as CFArrayRef).unwrap();
+
+        assert_eq!(parsed[0].managed_space_id, 1);
+        assert_eq!(parsed[0].display_index, 0);
+        assert_eq!(parsed[1].managed_space_id, 9);
+        assert_eq!(parsed[1].display_index, 1);
     }
 }

@@ -756,6 +756,33 @@ enabled = true
     }
 
     #[test]
+    fn wezterm_macos_bundle_id_resolves_terminal_chain() {
+        let _guard = env_guard();
+        let root = unique_temp_dir("wezterm-terminal-chain");
+        let config_dir = root.join("yeetnyoink");
+        fs::create_dir_all(&config_dir).expect("config dir should be created");
+        fs::write(
+            config_dir.join("config.toml"),
+            r#"
+[app.terminal.wezterm]
+enabled = true
+"#,
+        )
+        .expect("config file should be writable");
+        let old_config = load_config(&config_dir.join("config.toml"));
+
+        let chain = resolve_app_chain("com.github.wez.wezterm", 0, "");
+        assert!(!chain.is_empty());
+        assert_eq!(
+            chain.last().map(|adapter| adapter.adapter_name()),
+            Some("terminal")
+        );
+
+        restore_config(old_config);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn foot_terminal_app_id_resolves_terminal_chain() {
         let _guard = env_guard();
         let root = unique_temp_dir("foot-terminal-chain");
