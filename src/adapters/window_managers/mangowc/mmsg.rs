@@ -1,4 +1,4 @@
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{anyhow, bail, Result};
 
 use crate::engine::runtime::{self, CommandContext};
 
@@ -93,12 +93,31 @@ impl MmsgTransport {
 }
 
 fn ensure_binary_present() -> Result<()> {
-    runtime::run_command_status(
-        "which",
-        &[BINARY],
-        &CommandContext::new(ADAPTER, "mmsg-connect"),
-    )
-    .with_context(|| format!("{ADAPTER}: required binary '{BINARY}' not found"))
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let found = std::env::split_paths(&path).any(|dir| {
+        let candidate = dir.join(BINARY);
+        candidate
+            .metadata()
+            .map(|meta| meta.is_file() && is_executable(&meta))
+            .unwrap_or(false)
+    });
+
+    if found {
+        Ok(())
+    } else {
+        Err(anyhow!("{ADAPTER}: required binary '{BINARY}' not found"))
+    }
+}
+
+#[cfg(unix)]
+fn is_executable(meta: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    meta.permissions().mode() & 0o111 != 0
+}
+
+#[cfg(not(unix))]
+fn is_executable(_meta: &std::fs::Metadata) -> bool {
+    false
 }
 
 fn parse_u32(value: &str) -> Option<u32> {
@@ -181,6 +200,7 @@ pub fn parse_focused_snapshot(input: &str) -> Result<FocusedSnapshot> {
 mod tests {
     use std::ffi::OsString;
     use std::fs;
+    use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
     use std::sync::Mutex;
     use std::sync::OnceLock;
@@ -194,21 +214,24 @@ mod tests {
 
     struct PathGuard {
         previous: Option<OsString>,
-        fake_dir: PathBuf,
+        fake_dirs: Vec<PathBuf>,
     }
 
     impl PathGuard {
-        fn install() -> Result<Self> {
-            let fake_dir = std::env::temp_dir()
-                .join(format!("yeetnyoink-mmsg-missing-{}", std::process::id()));
-            if fake_dir.exists() {
-                fs::remove_dir_all(&fake_dir)?;
+        fn install(fake_dirs: Vec<PathBuf>) -> Result<Self> {
+            for dir in &fake_dirs {
+                if dir.exists() {
+                    fs::remove_dir_all(dir)?;
+                }
+                fs::create_dir_all(dir)?;
             }
-            fs::create_dir_all(&fake_dir)?;
             let previous = std::env::var_os("PATH");
-            // Empty dir should hide binaries from PATH lookup.
-            std::env::set_var("PATH", &fake_dir);
-            Ok(Self { previous, fake_dir })
+            let joined = std::env::join_paths(&fake_dirs)?;
+            std::env::set_var("PATH", joined);
+            Ok(Self {
+                previous,
+                fake_dirs,
+            })
         }
     }
 
@@ -219,14 +242,32 @@ mod tests {
             } else {
                 std::env::remove_var("PATH");
             }
-            let _ = fs::remove_dir_all(&self.fake_dir);
+            for dir in &self.fake_dirs {
+                let _ = fs::remove_dir_all(dir);
+            }
         }
     }
 
-    fn run_with_fake_path_that_hides_mmsg() -> Result<()> {
+    fn run_with_fake_path_that_hides_mmsg() -> Result<MmsgTransport> {
         let _guard = path_lock().lock().expect("path lock poisoned");
-        let _path = PathGuard::install()?;
-        ensure_binary_present()
+        let fake_dir =
+            std::env::temp_dir().join(format!("yeetnyoink-mmsg-missing-{}", std::process::id()));
+        let _path = PathGuard::install(vec![fake_dir])?;
+        MmsgTransport::connect()
+    }
+
+    fn run_with_fake_path_that_only_has_mmsg() -> Result<MmsgTransport> {
+        let _guard = path_lock().lock().expect("path lock poisoned");
+        let base =
+            std::env::temp_dir().join(format!("yeetnyoink-mmsg-connect-{}", std::process::id()));
+        let bin_dir = base.join("bin");
+        let mmsg = bin_dir.join(BINARY);
+        let _path = PathGuard::install(vec![bin_dir])?;
+        fs::write(&mmsg, "#!/bin/sh\nexit 0\n")?;
+        let mut perms = fs::metadata(&mmsg)?.permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&mmsg, perms)?;
+        MmsgTransport::connect()
     }
 
     #[test]
@@ -326,5 +367,10 @@ Virtual-1 height 1110\n";
     fn mangowc_mmsg_reports_missing_binary_cleanly() {
         let err = run_with_fake_path_that_hides_mmsg().unwrap_err();
         assert!(err.to_string().contains("mmsg"));
+    }
+
+    #[test]
+    fn mangowc_mmsg_connect_succeeds_with_path_mmsg_without_which() {
+        run_with_fake_path_that_only_has_mmsg().expect("connect should find PATH mmsg directly");
     }
 }
