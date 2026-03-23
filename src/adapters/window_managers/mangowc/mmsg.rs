@@ -36,15 +36,36 @@ impl MmsgTransport {
     }
 
     pub fn focusdir(&self, direction: &str) -> Result<()> {
-        self.dispatch("focusdir", &[direction])
+        let dispatch = build_focusdir_dispatch(direction);
+        let refs: Vec<&str> = dispatch.iter().map(|s| s.as_str()).collect();
+        runtime::run_command_status(
+            BINARY,
+            &refs,
+            &CommandContext::new(ADAPTER, "mmsg-dispatch")
+                .with_target(format!("focusdir:{direction}")),
+        )
     }
 
     pub fn exchange_client(&self, direction: &str) -> Result<()> {
-        self.dispatch("exchange_client", &[direction])
+        let dispatch = build_exchange_client_dispatch(direction);
+        let refs: Vec<&str> = dispatch.iter().map(|s| s.as_str()).collect();
+        runtime::run_command_status(
+            BINARY,
+            &refs,
+            &CommandContext::new(ADAPTER, "mmsg-dispatch")
+                .with_target(format!("exchange_client:{direction}")),
+        )
     }
 
     pub fn tagmon(&self, direction: &str) -> Result<()> {
-        self.dispatch("tagmon", &[direction])
+        let dispatch = build_tagmon_dispatch(direction);
+        let refs: Vec<&str> = dispatch.iter().map(|s| s.as_str()).collect();
+        runtime::run_command_status(
+            BINARY,
+            &refs,
+            &CommandContext::new(ADAPTER, "mmsg-dispatch")
+                .with_target(format!("tagmon:{direction}")),
+        )
     }
 
     pub fn spawn(&self, command: &[String]) -> Result<()> {
@@ -114,6 +135,18 @@ pub fn build_spawn_dispatch(command: &[String]) -> Result<Vec<String>> {
     }
     let refs: Vec<&str> = command.iter().map(|s| s.as_str()).collect();
     Ok(dispatch_args("spawn", &refs))
+}
+
+pub fn build_focusdir_dispatch(direction: &str) -> Vec<String> {
+    dispatch_args("focusdir", &[direction])
+}
+
+pub fn build_exchange_client_dispatch(direction: &str) -> Vec<String> {
+    dispatch_args("exchange_client", &[direction])
+}
+
+pub fn build_tagmon_dispatch(direction: &str) -> Vec<String> {
+    dispatch_args("tagmon", &[direction])
 }
 
 pub fn parse_focused_snapshot(input: &str) -> Result<FocusedSnapshot> {
@@ -203,6 +236,22 @@ mod tests {
     }
 
     #[test]
+    fn mangowc_mmsg_builders_encode_directional_commands() {
+        assert_eq!(
+            build_focusdir_dispatch("left"),
+            vec!["-d".to_string(), "focusdir,left".to_string()]
+        );
+        assert_eq!(
+            build_exchange_client_dispatch("right"),
+            vec!["-d".to_string(), "exchange_client,right".to_string()]
+        );
+        assert_eq!(
+            build_tagmon_dispatch("next"),
+            vec!["-d".to_string(), "tagmon,next".to_string()]
+        );
+    }
+
+    #[test]
     fn mangowc_mmsg_spawn_rejects_empty_command_vector() {
         assert!(build_spawn_dispatch(&[]).is_err());
     }
@@ -219,7 +268,10 @@ Virtual-1 height 1110\n";
         let snap = parse_focused_snapshot(sample).unwrap();
         assert_eq!(snap.app_id.as_deref(), Some("foot"));
         assert_eq!(snap.title.as_deref(), Some("zsh in repo"));
+        assert_eq!(snap.x, Some(1820));
+        assert_eq!(snap.y, Some(16));
         assert_eq!(snap.width, Some(1764));
+        assert_eq!(snap.height, Some(1110));
     }
 
     #[test]
