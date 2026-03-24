@@ -17,13 +17,13 @@
 /// app = "wezterm"
 /// mux_backend = "inherit"
 ///
-/// [wm]
-/// enabled_integraton = 'niri'
+/// [wm.niri]
+/// enabled = true
 /// ```
 use crate::engine::topology::Direction;
-use anyhow::{anyhow, Context, Result};
-use etcetera::base_strategy::{choose_base_strategy, BaseStrategy};
-use serde::{Deserialize, Serialize};
+use anyhow::{Context, Result, anyhow, bail};
+use etcetera::base_strategy::{BaseStrategy, choose_base_strategy};
+use serde::{Deserialize, Deserializer, Serialize, de::DeserializeOwned};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{OnceLock, RwLock};
@@ -49,15 +49,207 @@ pub struct Config {
 // Window manager selection
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct WmConfig {
-    /// Selects the active WM integration. Only one can be active at a time.
-    ///
-    /// ```toml
-    /// [wm]
-    /// enabled_integration = "yabai"
-    /// ```
-    pub enabled_integration: WmBackend,
+    pub macos_native: Option<MacosNativeWmConfig>,
+    pub niri: Option<EnabledWmConfig>,
+    pub i3: Option<EnabledWmConfig>,
+    pub hyprland: Option<EnabledWmConfig>,
+    pub paneru: Option<EnabledWmConfig>,
+    pub yabai: Option<EnabledWmConfig>,
+}
+
+impl Default for WmConfig {
+    fn default() -> Self {
+        #[cfg(target_os = "linux")]
+        {
+            Self {
+                macos_native: None,
+                niri: Some(EnabledWmConfig { enabled: true }),
+                i3: None,
+                hyprland: None,
+                paneru: None,
+                yabai: None,
+            }
+        }
+        #[cfg(target_os = "macos")]
+        {
+            Self {
+                macos_native: None,
+                niri: None,
+                i3: None,
+                hyprland: None,
+                paneru: None,
+                yabai: Some(EnabledWmConfig { enabled: true }),
+            }
+        }
+    }
+}
+
+impl WmConfig {
+    fn configured_backends(&self) -> [Option<WmBackend>; 6] {
+        [
+            self.macos_native
+                .as_ref()
+                .and_then(|cfg| cfg.enabled.then_some(WmBackend::MacosNative)),
+            self.niri
+                .as_ref()
+                .and_then(|cfg| cfg.enabled.then_some(WmBackend::Niri)),
+            self.i3
+                .as_ref()
+                .and_then(|cfg| cfg.enabled.then_some(WmBackend::I3)),
+            self.hyprland
+                .as_ref()
+                .and_then(|cfg| cfg.enabled.then_some(WmBackend::Hyprland)),
+            self.paneru
+                .as_ref()
+                .and_then(|cfg| cfg.enabled.then_some(WmBackend::Paneru)),
+            self.yabai
+                .as_ref()
+                .and_then(|cfg| cfg.enabled.then_some(WmBackend::Yabai)),
+        ]
+    }
+
+    pub fn selected_backend(&self) -> Option<WmBackend> {
+        let mut configured = self.configured_backends().into_iter().flatten();
+        let selected = configured.next()?;
+        if configured.next().is_some() {
+            return None;
+        }
+        Some(selected)
+    }
+
+    fn validate(&self) -> Result<()> {
+        if let Some(macos_native) = &self.macos_native {
+            macos_native.validate()?;
+        }
+
+        if self.selected_backend().is_some() {
+            return Ok(());
+        }
+
+        bail!("config must enable exactly one window manager backend")
+    }
+}
+
+impl<'de> Deserialize<'de> for WmConfig {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        const FIELDS: &[&str] = &["macos_native", "niri", "i3", "hyprland", "paneru", "yabai"];
+
+        let mut raw = toml::Table::deserialize(deserializer)?;
+        let parsed = Self {
+            macos_native: take_typed_wm_table::<MacosNativeWmConfig, D::Error>(
+                &mut raw,
+                "macos_native",
+            )?,
+            niri: take_typed_wm_table::<EnabledWmConfig, D::Error>(&mut raw, "niri")?,
+            i3: take_typed_wm_table::<EnabledWmConfig, D::Error>(&mut raw, "i3")?,
+            hyprland: take_typed_wm_table::<EnabledWmConfig, D::Error>(&mut raw, "hyprland")?,
+            paneru: take_typed_wm_table::<EnabledWmConfig, D::Error>(&mut raw, "paneru")?,
+            yabai: take_typed_wm_table::<EnabledWmConfig, D::Error>(&mut raw, "yabai")?,
+        };
+
+        if let Some((unknown, _)) = raw.into_iter().next() {
+            return Err(serde::de::Error::unknown_field(&unknown, FIELDS));
+        }
+
+        Ok(parsed)
+    }
+}
+
+fn take_typed_wm_table<T, E>(
+    raw: &mut toml::Table,
+    key: &'static str,
+) -> std::result::Result<Option<T>, E>
+where
+    T: DeserializeOwned,
+    E: serde::de::Error,
+{
+    let Some(value) = raw.remove(key) else {
+        return Ok(None);
+    };
+
+    value.try_into().map(Some).map_err(E::custom)
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct EnabledWmConfig {
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MacosNativeWmConfig {
+    pub enabled: bool,
+    pub mission_control_keyboard_shortcuts: MissionControlKeyboardShortcutsConfig,
+}
+
+impl MacosNativeWmConfig {
+    fn validate(&self) -> Result<()> {
+        self.mission_control_keyboard_shortcuts.validate()
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MissionControlKeyboardShortcutsConfig {
+    pub move_left_a_space: MissionControlShortcutConfig,
+    pub move_right_a_space: MissionControlShortcutConfig,
+}
+
+impl MissionControlKeyboardShortcutsConfig {
+    fn validate(&self) -> Result<()> {
+        self.move_left_a_space.validate()?;
+        self.move_right_a_space.validate()?;
+        Ok(())
+    }
+
+    pub fn shortcut_for(&self, direction: Direction) -> Option<&MissionControlShortcutConfig> {
+        match direction {
+            Direction::West => Some(&self.move_left_a_space),
+            Direction::East => Some(&self.move_right_a_space),
+            Direction::North | Direction::South => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MissionControlShortcutConfig {
+    pub keycode: String,
+    pub shift: bool,
+    pub ctrl: bool,
+    pub option: bool,
+    pub command: bool,
+    pub r#fn: bool,
+}
+
+impl MissionControlShortcutConfig {
+    fn validate(&self) -> Result<()> {
+        self.parse_keycode()?;
+        Ok(())
+    }
+
+    pub fn parse_keycode(&self) -> Result<u16> {
+        parse_macos_keycode(&self.keycode)
+    }
+}
+
+fn parse_macos_keycode(raw: &str) -> Result<u16> {
+    let trimmed = raw.trim();
+    let Some(hex) = trimmed
+        .strip_prefix("0x")
+        .or_else(|| trimmed.strip_prefix("0X"))
+    else {
+        bail!("invalid macOS Mission Control keycode `{trimmed}`");
+    };
+
+    u16::from_str_radix(hex, 16)
+        .map_err(|_| anyhow!("invalid macOS Mission Control keycode `{trimmed}`"))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -80,19 +272,6 @@ pub enum WmBackend {
 
     /// Yabai - tiling WM for macOS
     Yabai,
-}
-
-impl Default for WmBackend {
-    fn default() -> Self {
-        #[cfg(target_os = "linux")]
-        {
-            Self::Niri
-        }
-        #[cfg(target_os = "macos")]
-        {
-            Self::Yabai
-        }
-    }
 }
 
 impl WmBackend {
@@ -765,7 +944,13 @@ fn resolve_config_path(explicit: Option<&Path>) -> Result<(PathBuf, bool)> {
 fn load_config_from(path: &Path) -> Result<Config> {
     let raw = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read config file {}", path.display()))?;
-    toml::from_str(&raw).with_context(|| format!("failed to parse config file {}", path.display()))
+    let parsed: Config = toml::from_str(&raw)
+        .with_context(|| format!("failed to parse config file {}", path.display()))?;
+    parsed
+        .wm
+        .validate()
+        .map_err(|err| anyhow!("failed to validate config file {}: {err}", path.display()))?;
+    Ok(parsed)
 }
 
 pub fn prepare() -> Result<()> {
@@ -1064,7 +1249,25 @@ fn app_enabled_from(cfg: &Config, section: AppSection, aliases: &[&str]) -> bool
 }
 
 pub fn selected_wm_backend() -> WmBackend {
-    read_config().wm.enabled_integration
+    read_config()
+        .wm
+        .selected_backend()
+        .expect("validated config must select exactly one window manager backend")
+}
+
+pub fn macos_native_mission_control_shortcut(
+    direction: Direction,
+) -> Option<MissionControlShortcutConfig> {
+    read_config()
+        .wm
+        .macos_native
+        .as_ref()
+        .filter(|cfg| cfg.enabled)
+        .and_then(|cfg| {
+            cfg.mission_control_keyboard_shortcuts
+                .shortcut_for(direction)
+        })
+        .cloned()
 }
 
 fn app_adapter_override_from(cfg: &Config) -> Option<String> {
@@ -1851,30 +2054,144 @@ app = "wezterm"
     }
 
     #[test]
-    fn wm_backend_deserializes_any_builtin_name() {
-        assert_eq!(
-            toml::from_str::<WmConfig>("enabled_integration = \"niri\"")
-                .unwrap()
-                .enabled_integration,
-            WmBackend::Niri
+    fn wm_config_selects_backend_from_single_enabled_table() {
+        let parsed = toml::from_str::<WmConfig>(
+            r#"
+[niri]
+enabled = true
+
+[yabai]
+enabled = false
+"#,
+        )
+        .unwrap();
+        assert_eq!(parsed.selected_backend(), Some(WmBackend::Niri));
+
+        let parsed = toml::from_str::<WmConfig>("[yabai]\nenabled = true\n").unwrap();
+        assert_eq!(parsed.selected_backend(), Some(WmBackend::Yabai));
+
+        let parsed = toml::from_str::<WmConfig>(
+            r#"
+[macos_native]
+enabled = true
+
+[macos_native.mission_control_keyboard_shortcuts.move_left_a_space]
+keycode = "0x7B"
+ctrl = true
+fn = true
+shift = false
+option = false
+command = false
+
+[macos_native.mission_control_keyboard_shortcuts.move_right_a_space]
+keycode = "0x7C"
+ctrl = true
+fn = true
+shift = false
+option = false
+command = false
+"#,
+        )
+        .unwrap();
+        assert_eq!(parsed.selected_backend(), Some(WmBackend::MacosNative));
+    }
+
+    #[test]
+    fn wm_config_rejects_backend_table_without_enabled_field() {
+        let err = toml::from_str::<WmConfig>("[niri]\n")
+            .expect_err("wm backend tables must declare enabled");
+        assert!(err.to_string().contains("enabled"));
+    }
+
+    #[test]
+    fn wm_config_rejects_legacy_enabled_integration_field() {
+        let err = toml::from_str::<WmConfig>("enabled_integration = \"niri\"")
+            .expect_err("legacy wm selector should be rejected");
+        assert!(err.to_string().contains("unknown field"));
+    }
+
+    #[test]
+    fn prepare_with_path_rejects_multiple_configured_window_managers() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time should be after unix epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "yeetnyoink-config-wm-validation-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).expect("temp dir should be created");
+        let config_path = root.join("config.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+[wm.niri]
+enabled = true
+
+[wm.yabai]
+enabled = true
+"#,
+        )
+        .expect("config file should be writable");
+
+        let old = snapshot();
+        let err = prepare_with_path(Some(&config_path))
+            .expect_err("multiple configured window managers should be rejected");
+        install(old);
+        let _ = std::fs::remove_dir_all(&root);
+
+        assert!(
+            err.to_string()
+                .contains("enable exactly one window manager backend")
         );
-        assert_eq!(
-            toml::from_str::<WmConfig>("enabled_integration = \"yabai\"")
-                .unwrap()
-                .enabled_integration,
-            WmBackend::Yabai
-        );
-        assert_eq!(
-            toml::from_str::<WmConfig>("enabled_integration = \"macos_native\"")
-                .unwrap()
-                .enabled_integration,
-            WmBackend::MacosNative
-        );
-        assert_eq!(
-            toml::from_str::<WmConfig>("enabled_integration = \"hyprland\"")
-                .unwrap()
-                .enabled_integration,
-            WmBackend::Hyprland
+    }
+
+    #[test]
+    fn prepare_with_path_rejects_invalid_macos_native_keycode() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time should be after unix epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "yeetnyoink-config-wm-macos-keycode-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).expect("temp dir should be created");
+        let config_path = root.join("config.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+[wm.macos_native]
+enabled = true
+
+[wm.macos_native.mission_control_keyboard_shortcuts.move_left_a_space]
+keycode = "left"
+ctrl = true
+fn = true
+shift = false
+option = false
+command = false
+
+[wm.macos_native.mission_control_keyboard_shortcuts.move_right_a_space]
+keycode = "0x7C"
+ctrl = true
+fn = true
+shift = false
+option = false
+command = false
+"#,
+        )
+        .expect("config file should be writable");
+
+        let old = snapshot();
+        let err = prepare_with_path(Some(&config_path))
+            .expect_err("invalid macOS-native keycodes should be rejected");
+        install(old);
+        let _ = std::fs::remove_dir_all(&root);
+
+        assert!(
+            err.to_string()
+                .contains("invalid macOS Mission Control keycode")
         );
     }
 }

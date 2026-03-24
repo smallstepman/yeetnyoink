@@ -16,8 +16,27 @@
 #   (single-letter aliases like `W`, `E`, `N`, `S` also parse).
 #
 
-[wm]
-enabled_integration = "niri" # niri | i3 | hyprland | macos_native | paneru | yabai
+[wm.niri] # or [wm.i3]/[wm.hyprland] on Linux, [wm.paneru]/[wm.yabai] on macOS
+enabled = true
+
+# Example macOS-native config (choose this instead of another wm.* table):
+# [wm.macos_native]
+# enabled = true
+# [wm.macos_native.mission_control_keyboard_shortcuts.move_left_a_space]
+# keycode = "0x7B"
+# ctrl = true
+# fn = true
+# shift = false
+# option = false
+# command = false
+#
+# [wm.macos_native.mission_control_keyboard_shortcuts.move_right_a_space]
+# keycode = "0x7C"
+# ctrl = true
+# fn = true
+# shift = false
+# option = false
+# command = false
 
 # ---------------------------------------------------------------------------
 # Instrumentation (logging and profiling)

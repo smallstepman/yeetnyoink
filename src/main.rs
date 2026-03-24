@@ -16,10 +16,10 @@ use yeetnyoink::profiling::ProfileConfig;
 #[command(
     name = "yeetnyoink",
     about = "Deep focus/move integration for your configured window manager",
-    after_help = "Choose the built-in window manager integration in your config via [wm].enabled_integration. No runtime window-manager detection or probing occurs."
+    after_help = "Choose the built-in window manager integration by setting `enabled = true` in exactly one [wm.<backend>] table. No runtime window-manager detection or probing occurs."
 )]
 struct Cli {
-    /// Load config from an explicit path; [wm].enabled_integration selects the built-in WM integration.
+    /// Load config from an explicit path; exactly one [wm.<backend>] table with `enabled = true` selects the built-in WM integration.
     #[arg(long, global = true, value_name = "PATH")]
     config: Option<PathBuf>,
 

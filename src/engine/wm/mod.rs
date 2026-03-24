@@ -12,7 +12,7 @@ pub use session::*;
 
 use crate::adapters::window_managers::spec_for_backend;
 use crate::config::selected_wm_backend;
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 
 fn connect_backend(
     backend: crate::config::WmBackend,
@@ -54,17 +54,17 @@ pub fn connect_selected() -> Result<ConfiguredWindowManager> {
 #[cfg(test)]
 mod tests {
     use super::{
-        plan_resize, plan_tear_out, validate_declared_capabilities, CapabilitySupport,
-        ConfiguredWindowManager, DirectionalCapability, FocusedWindowRecord,
+        CapabilitySupport, ConfiguredWindowManager, DirectionalCapability, FocusedWindowRecord,
         PrimitiveWindowManagerCapabilities, ResizeIntent, WindowCycleProvider, WindowCycleRequest,
         WindowManagerCapabilities, WindowManagerCapabilityDescriptor, WindowManagerFeatures,
-        WindowManagerSession, WindowManagerSpec, WindowRecord, WindowTearOutComposer,
+        WindowManagerSession, WindowManagerSpec, WindowRecord, WindowTearOutComposer, plan_resize,
+        plan_tear_out, validate_declared_capabilities,
     };
+    #[cfg(target_os = "linux")]
+    use crate::adapters::window_managers::NiriAdapter;
     use crate::adapters::window_managers::spec_for_backend;
     #[cfg(target_os = "macos")]
     use crate::adapters::window_managers::yabai::YabaiAdapter;
-    #[cfg(target_os = "linux")]
-    use crate::adapters::window_managers::NiriAdapter;
     use crate::config::WmBackend;
     use crate::engine::topology::Direction;
     use anyhow::Result;
@@ -132,9 +132,11 @@ mod tests {
     fn declared_capabilities_fail_validation_when_composed_primitives_missing() {
         let error = validate_declared_capabilities::<InvalidComposedCapabilities>()
             .expect_err("invalid composed capabilities should fail validation");
-        assert!(error
-            .to_string()
-            .contains("invalid capabilities for adapter"));
+        assert!(
+            error
+                .to_string()
+                .contains("invalid capabilities for adapter")
+        );
     }
 
     #[cfg(target_os = "linux")]
@@ -218,8 +220,8 @@ mod tests {
             &config_path,
             format!(
                 r#"
-[wm]
-enabled_integration = "{backend}"
+[wm.{backend}]
+enabled = true
 "#,
                 backend = unsupported_backend().as_str()
             ),
@@ -238,11 +240,13 @@ enabled_integration = "{backend}"
         let _ = std::fs::remove_dir_all(root);
 
         assert!(result.is_err(), "unsupported backend should fail quickly");
-        assert!(span_names
-            .lock()
-            .expect("span names lock should not be poisoned")
-            .iter()
-            .any(|name| name == "window_managers.connect_selected"));
+        assert!(
+            span_names
+                .lock()
+                .expect("span names lock should not be poisoned")
+                .iter()
+                .any(|name| name == "window_managers.connect_selected")
+        );
     }
 
     #[test]

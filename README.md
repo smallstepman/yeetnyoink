@@ -38,8 +38,8 @@ Run `yny setup zellij` to print the hosted `load_plugins { ... }` release URL sn
 ## Minimal config example
 
 ```toml
-[wm]
-enabled_integration = "niri" # or "i3"/"hyprland" on Linux, "macos_native"/"paneru"/"yabai" on macOS
+[wm.niri] # or [wm.i3]/[wm.hyprland] on Linux, [wm.paneru]/[wm.yabai] on macOS
+enabled = true
 
 [app.terminal.wezterm]
 enabled = true
@@ -70,6 +70,11 @@ enabled = true
 # Use `vertical_flipped` if your browser feels inverted with `vertical`.
 tab_axis = "vertical"
 ```
+
+If you choose `wm.macos_native`, set `wm.macos_native.enabled = true` and configure both
+`wm.macos_native.mission_control_keyboard_shortcuts.move_left_a_space` and
+`.move_right_a_space` with `keycode = "0x..."` plus `shift`/`ctrl`/`option`/`command`/`fn`
+booleans.
 
 Terminal-hosted editors use `app.editor.<editor>.ui.terminal` to describe which terminal UI they
 run inside and which mux backend to use there. Direct graphical editors can additionally describe
@@ -104,7 +109,7 @@ and Home Manager renders them to `~/.config/yeetnyoink/config.toml`.
   programs.yeetnyoink = {
     enable = true;
     config = {
-      wm.enabled_integration = "niri";
+      wm.niri.enabled = true;
 
       app.terminal.wezterm = {
         enabled = true;
@@ -171,4 +176,4 @@ Current built-in WM adapters:
 - `paneru`
 - `yabai`
 
-Adapter selection is driven by `wm.enabled_integration`. No runtime probing occurs; selection is explicit and must be set in your config or via the CLI.
+Adapter selection is driven by the single `wm.<backend>` table whose `enabled` field is `true`. No runtime probing occurs; selection is explicit and must be set in your config or via the CLI.

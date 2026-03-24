@@ -1,9 +1,9 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 
 use crate::config::WmBackend;
 use crate::engine::topology::Direction;
 use crate::engine::wm::capabilities::{
-    plan_tear_out, CapabilitySupport, WindowManagerCapabilities,
+    CapabilitySupport, WindowManagerCapabilities, plan_tear_out,
 };
 use crate::engine::wm::session::{
     FocusedWindowRecord, ResizeIntent, WindowCycleProvider, WindowManagerDomainFactory,

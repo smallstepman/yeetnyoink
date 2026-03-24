@@ -85,8 +85,8 @@ trait AppAdapter: Send + TopologyHandler + ChainResolver {
 Hierarchical TOML-based configuration:
 
 ```toml
-[wm]
-enabled_integration = "niri"
+[wm.niri]
+enabled = true
 
 [app.terminal.wezterm]
 enabled = true
@@ -162,7 +162,7 @@ Key mux operations:
 ### Window Managers (`src/adapters/window_managers/`)
 
 WM selection is config-driven rather than probe-driven:
-- `config.toml` selects one built-in backend with `[wm].enabled_integration`
+- `config.toml` selects one built-in backend by setting `enabled = true` in exactly one `[wm.<backend>]` table
 - `connect_selected()` resolves that enum to a built-in `WindowManagerSpec`
 - There is **no runtime WM probing/detection or fallback chain**
 
@@ -277,7 +277,7 @@ The system is heavily configuration-driven:
 
 ### Override Points
 - `app_adapter_override()`: Pin to specific app
-- `[wm].enabled_integration`: Select the built-in WM backend
+- `[wm.<backend>].enabled`: Select the built-in WM backend
 - `--config <path>`: Explicit config file path
 
 ## Error Handling Philosophy

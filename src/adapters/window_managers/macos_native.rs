@@ -1,21 +1,20 @@
-use anyhow::{bail, Context};
+use anyhow::{Context, bail};
 use std::{
     collections::{HashMap, HashSet},
-    ffi::{c_char, c_int, c_void, CStr, CString},
+    ffi::{CStr, CString, c_char, c_int, c_void},
     fmt,
     ptr::{self, NonNull},
     time::{Duration, Instant},
 };
 
-use crate::config::WmBackend;
+use crate::config::{self, MissionControlShortcutConfig, WmBackend};
 use crate::engine::runtime::{self, CommandContext, ProcessId};
-use crate::engine::topology::{select_closest_in_direction, DirectedRect, Direction, Rect};
+use crate::engine::topology::{DirectedRect, Direction, Rect, select_closest_in_direction};
 use crate::engine::wm::{
-    validate_declared_capabilities, CapabilitySupport, ConfiguredWindowManager,
-    DirectionalCapability, FocusedAppRecord, FocusedWindowRecord,
-    PrimitiveWindowManagerCapabilities, ResizeIntent, WindowManagerCapabilities,
-    WindowManagerCapabilityDescriptor, WindowManagerFeatures, WindowManagerSession,
-    WindowManagerSpec, WindowRecord,
+    CapabilitySupport, ConfiguredWindowManager, DirectionalCapability, FocusedAppRecord,
+    FocusedWindowRecord, PrimitiveWindowManagerCapabilities, ResizeIntent,
+    WindowManagerCapabilities, WindowManagerCapabilityDescriptor, WindowManagerFeatures,
+    WindowManagerSession, WindowManagerSpec, WindowRecord, validate_declared_capabilities,
 };
 use crate::logging;
 use tracing::debug;
@@ -50,10 +49,11 @@ const K_CG_NULL_WINDOW_ID: CGWindowID = 0;
 const K_CG_WINDOW_LIST_OPTION_ON_SCREEN_ONLY: CGWindowListOption = 1 << 0;
 const K_CG_WINDOW_LIST_EXCLUDE_DESKTOP_ELEMENTS: CGWindowListOption = 1 << 4;
 const K_CG_HID_EVENT_TAP: CGEventTapLocation = 0;
+const K_CG_EVENT_FLAG_MASK_SHIFT: CGEventFlags = 1 << 17;
 const K_CG_EVENT_FLAG_MASK_CONTROL: CGEventFlags = 1 << 18;
+const K_CG_EVENT_FLAG_MASK_ALTERNATE: CGEventFlags = 1 << 19;
+const K_CG_EVENT_FLAG_MASK_COMMAND: CGEventFlags = 1 << 20;
 const K_CG_EVENT_FLAG_MASK_SECONDARY_FN: CGEventFlags = 1 << 23;
-const K_CG_KEY_CODE_LEFT_ARROW: CGKeyCode = 123;
-const K_CG_KEY_CODE_RIGHT_ARROW: CGKeyCode = 124;
 const K_AX_VALUE_TYPE_CGPOINT: AXValueType = 1;
 const K_AX_VALUE_TYPE_CGSIZE: AXValueType = 2;
 const CPS_USER_GENERATED: u32 = 0x200;
@@ -291,6 +291,49 @@ where
     }
 }
 
+fn mission_control_shortcut_flags(shortcut: &MissionControlShortcutConfig) -> CGEventFlags {
+    let mut flags = 0;
+    if shortcut.shift {
+        flags |= K_CG_EVENT_FLAG_MASK_SHIFT;
+    }
+    if shortcut.ctrl {
+        flags |= K_CG_EVENT_FLAG_MASK_CONTROL;
+    }
+    if shortcut.option {
+        flags |= K_CG_EVENT_FLAG_MASK_ALTERNATE;
+    }
+    if shortcut.command {
+        flags |= K_CG_EVENT_FLAG_MASK_COMMAND;
+    }
+    if shortcut.r#fn {
+        flags |= K_CG_EVENT_FLAG_MASK_SECONDARY_FN;
+    }
+    flags
+}
+
+fn configured_mission_control_shortcut(
+    direction: Direction,
+) -> Result<(CGKeyCode, CGEventFlags), MacosNativeOperationError> {
+    let shortcut = match direction {
+        Direction::West | Direction::East => {
+            config::macos_native_mission_control_shortcut(direction).ok_or(
+                MacosNativeOperationError::CallFailed("adjacent_space_hotkey_config"),
+            )?
+        }
+        Direction::North | Direction::South => {
+            return Err(MacosNativeOperationError::CallFailed(
+                "adjacent_space_hotkey_direction",
+            ));
+        }
+    };
+
+    let key_code = shortcut
+        .parse_keycode()
+        .map_err(|_| MacosNativeOperationError::CallFailed("adjacent_space_hotkey_config"))?
+        as CGKeyCode;
+    Ok((key_code, mission_control_shortcut_flags(&shortcut)))
+}
+
 fn switch_adjacent_space_via_hotkey<PostKeyEvent>(
     direction: Direction,
     mut post_key_event: PostKeyEvent,
@@ -298,21 +341,7 @@ fn switch_adjacent_space_via_hotkey<PostKeyEvent>(
 where
     PostKeyEvent: FnMut(CGKeyCode, bool, CGEventFlags) -> Result<(), MacosNativeOperationError>,
 {
-    let (key_code, flags) = match direction {
-        Direction::West => (
-            K_CG_KEY_CODE_LEFT_ARROW,
-            K_CG_EVENT_FLAG_MASK_CONTROL | K_CG_EVENT_FLAG_MASK_SECONDARY_FN,
-        ),
-        Direction::East => (
-            K_CG_KEY_CODE_RIGHT_ARROW,
-            K_CG_EVENT_FLAG_MASK_CONTROL | K_CG_EVENT_FLAG_MASK_SECONDARY_FN,
-        ),
-        Direction::North | Direction::South => {
-            return Err(MacosNativeOperationError::CallFailed(
-                "adjacent_space_hotkey_direction",
-            ));
-        }
-    };
+    let (key_code, flags) = configured_mission_control_shortcut(direction)?;
 
     post_key_event(key_code, true, flags)?;
     post_key_event(key_code, false, flags)
@@ -417,7 +446,10 @@ where
             if let Some(target_space_id) =
                 adjacent_space_in_direction(&topology, focused.space_id, direction)
             {
-                match self.ctx.focus_described_window_in_space(target_space_id, direction) {
+                match self
+                    .ctx
+                    .focus_described_window_in_space(target_space_id, direction)
+                {
                     Ok(true) => return Ok(()),
                     Ok(false) => {}
                     Err(err) => {
@@ -908,14 +940,16 @@ where
         let Some(target_window_id) = best_window_id_from_windows(direction, &windows) else {
             return Ok(false);
         };
-        let Some(target_window) = windows.iter().find(|window| window.id == target_window_id) else {
+        let Some(target_window) = windows.iter().find(|window| window.id == target_window_id)
+        else {
             return Ok(false);
         };
         let Some(pid) = target_window.pid else {
             return Ok(false);
         };
 
-        self.api.focus_window_with_known_pid(target_window_id, pid)?;
+        self.api
+            .focus_window_with_known_pid(target_window_id, pid)?;
         Ok(true)
     }
 
@@ -940,7 +974,8 @@ where
                 logging::debug(format!(
                     "macos_native: focusing window {window_id} in active space via known pid {pid}"
                 ));
-                self.api.focus_window_in_active_space_with_known_pid(window_id, pid)
+                self.api
+                    .focus_window_in_active_space_with_known_pid(window_id, pid)
             } else {
                 logging::debug(format!(
                     "macos_native: focusing window {window_id} via known pid {pid}"
@@ -1891,8 +1926,9 @@ impl MacosNativeApi for RealNativeApi {
             return self.active_space_windows(space_id);
         }
 
-        let window_ids =
-            parse_window_ids(self.copy_windows_for_space_raw(space_id)?.as_type_ref() as CFArrayRef)?;
+        let window_ids = parse_window_ids(
+            self.copy_windows_for_space_raw(space_id)?.as_type_ref() as CFArrayRef,
+        )?;
         let mut windows = self.window_descriptions_for_space_without_visible_order(space_id)?;
         if !windows.is_empty() || window_ids.is_empty() {
             return Ok(windows);
@@ -1995,7 +2031,9 @@ impl MacosNativeApi for RealNativeApi {
             |resolved_pid| self.process_serial_number_for_pid(resolved_pid),
             |psn, target_window_id| self.front_process_window(psn, target_window_id),
             |psn, target_window_id| self.make_key_window(psn, target_window_id),
-            |target_window_id, resolved_pid| self.raise_window_via_ax(target_window_id, resolved_pid),
+            |target_window_id, resolved_pid| {
+                self.raise_window_via_ax(target_window_id, resolved_pid)
+            },
         ) {
             Err(MacosNativeOperationError::MissingWindow(missing_window_id))
                 if missing_window_id == window_id =>
@@ -2033,7 +2071,9 @@ impl MacosNativeApi for RealNativeApi {
             |_| Ok(pid),
             |resolved_pid| self.process_serial_number_for_pid(resolved_pid),
             |psn, target_window_id| self.make_key_window(psn, target_window_id),
-            |target_window_id, resolved_pid| self.raise_window_via_ax(target_window_id, resolved_pid),
+            |target_window_id, resolved_pid| {
+                self.raise_window_via_ax(target_window_id, resolved_pid)
+            },
         ) {
             Err(MacosNativeOperationError::MissingWindow(missing_window_id))
                 if missing_window_id == window_id =>
@@ -2246,11 +2286,7 @@ impl DylibHandle {
     #[allow(dead_code)]
     fn resolve(&self, symbol: &CStr) -> Option<*mut c_void> {
         let raw = unsafe { dlsym(self.raw, symbol.as_ptr()) };
-        if raw.is_null() {
-            None
-        } else {
-            Some(raw)
-        }
+        if raw.is_null() { None } else { Some(raw) }
     }
 }
 
@@ -2431,7 +2467,10 @@ fn cf_array_from_u64s(values: &[u64]) -> Result<CfOwned, MacosNativeProbeError> 
         .iter()
         .map(|value| cf_number_from_u64(*value))
         .collect::<Result<Vec<_>, _>>()?;
-    let refs = numbers.iter().map(|number| number.as_type_ref()).collect::<Vec<_>>();
+    let refs = numbers
+        .iter()
+        .map(|number| number.as_type_ref())
+        .collect::<Vec<_>>();
     unsafe {
         CfOwned::from_create_rule(CFArrayCreate(
             ptr::null(),
@@ -3394,11 +3433,13 @@ mod tests {
                 active_space_ids: HashSet::from([1]),
                 active_space_windows: HashMap::from([(
                     1,
-                    vec![raw_window(active_window_id)
-                        .with_visible_index(0)
-                        .with_pid(4242)
-                        .with_app_id("com.example.focused")
-                        .with_title("Focused window")],
+                    vec![
+                        raw_window(active_window_id)
+                            .with_visible_index(0)
+                            .with_pid(4242)
+                            .with_app_id("com.example.focused")
+                            .with_title("Focused window"),
+                    ],
                 )]),
                 inactive_space_window_ids: HashMap::from([(2, vec![21, 22])]),
                 focused_window_id: Some(active_window_id),
@@ -3416,19 +3457,23 @@ mod tests {
                 active_space_windows: HashMap::from([
                     (
                         1,
-                        vec![raw_window(11)
-                            .with_visible_index(2)
-                            .with_pid(1111)
-                            .with_app_id("com.example.left")
-                            .with_title("Left display")],
+                        vec![
+                            raw_window(11)
+                                .with_visible_index(2)
+                                .with_pid(1111)
+                                .with_app_id("com.example.left")
+                                .with_title("Left display"),
+                        ],
                     ),
                     (
                         3,
-                        vec![raw_window(31)
-                            .with_visible_index(0)
-                            .with_pid(3333)
-                            .with_app_id("com.example.right")
-                            .with_title("Right display")],
+                        vec![
+                            raw_window(31)
+                                .with_visible_index(0)
+                                .with_pid(3333)
+                                .with_app_id("com.example.right")
+                                .with_title("Right display"),
+                        ],
                     ),
                 ]),
                 inactive_space_window_ids: HashMap::from([(2, vec![21, 22])]),
@@ -5306,7 +5351,10 @@ mod tests {
                 }),
         ];
 
-        assert_eq!(best_window_id_from_windows(Direction::East, &windows), Some(159));
+        assert_eq!(
+            best_window_id_from_windows(Direction::East, &windows),
+            Some(159)
+        );
     }
 
     #[test]
@@ -5359,12 +5407,16 @@ mod tests {
         let ctx = fake_context_with_spaces();
         let spaces = ctx.spaces().unwrap();
 
-        assert!(spaces
-            .iter()
-            .any(|space| space.kind == SpaceKind::Desktop && space.is_active));
-        assert!(spaces
-            .iter()
-            .any(|space| space.kind == SpaceKind::SplitView));
+        assert!(
+            spaces
+                .iter()
+                .any(|space| space.kind == SpaceKind::Desktop && space.is_active)
+        );
+        assert!(
+            spaces
+                .iter()
+                .any(|space| space.kind == SpaceKind::SplitView)
+        );
     }
 
     #[test]
@@ -5560,7 +5612,33 @@ mod tests {
     }
 
     #[test]
-    fn switch_adjacent_space_via_hotkey_posts_control_right_arrow_for_east() {
+    fn switch_adjacent_space_via_hotkey_posts_configured_shortcut_for_east() {
+        let old = crate::config::snapshot();
+        let parsed: crate::config::Config = toml::from_str(
+            r#"
+[wm.macos_native]
+enabled = true
+
+[wm.macos_native.mission_control_keyboard_shortcuts.move_left_a_space]
+keycode = "0x7B"
+ctrl = true
+fn = true
+shift = false
+option = false
+command = false
+
+[wm.macos_native.mission_control_keyboard_shortcuts.move_right_a_space]
+keycode = "0x1A"
+ctrl = false
+fn = false
+shift = true
+option = true
+command = true
+"#,
+        )
+        .expect("config should parse");
+        crate::config::install(parsed);
+
         let calls = Rc::new(RefCell::new(Vec::new()));
 
         switch_adjacent_space_via_hotkey(Direction::East, |key_code, key_down, flags| {
@@ -5572,12 +5650,16 @@ mod tests {
         })
         .unwrap();
 
-        let flags = K_CG_EVENT_FLAG_MASK_CONTROL | K_CG_EVENT_FLAG_MASK_SECONDARY_FN;
+        crate::config::install(old);
+
+        let flags = K_CG_EVENT_FLAG_MASK_SHIFT
+            | K_CG_EVENT_FLAG_MASK_ALTERNATE
+            | K_CG_EVENT_FLAG_MASK_COMMAND;
         assert_eq!(
             take_calls(&calls),
             vec![
-                format!("key:{}:down:{flags}", K_CG_KEY_CODE_RIGHT_ARROW),
-                format!("key:{}:up:{flags}", K_CG_KEY_CODE_RIGHT_ARROW),
+                format!("key:{}:down:{flags}", 0x1A),
+                format!("key:{}:up:{flags}", 0x1A),
             ]
         );
     }
@@ -6177,17 +6259,19 @@ mod tests {
             active_space_ids: HashSet::from([1]),
             active_space_windows: HashMap::from([(
                 1,
-                vec![raw_window(20)
-                    .with_visible_index(0)
-                    .with_pid(2020)
-                    .with_app_id("com.example.source")
-                    .with_title("source")
-                    .with_frame(Rect {
-                        x: 0,
-                        y: 0,
-                        w: 100,
-                        h: 100,
-                    })],
+                vec![
+                    raw_window(20)
+                        .with_visible_index(0)
+                        .with_pid(2020)
+                        .with_app_id("com.example.source")
+                        .with_title("source")
+                        .with_frame(Rect {
+                            x: 0,
+                            y: 0,
+                            w: 100,
+                            h: 100,
+                        }),
+                ],
             )]),
             inactive_space_window_ids: HashMap::new(),
             focused_window_id: Some(20),
@@ -6208,17 +6292,19 @@ mod tests {
             active_space_ids: HashSet::from([1]),
             active_space_windows: HashMap::from([(
                 1,
-                vec![raw_window(10)
-                    .with_visible_index(0)
-                    .with_pid(1010)
-                    .with_app_id("com.example.source")
-                    .with_title("source")
-                    .with_frame(Rect {
-                        x: 0,
-                        y: 0,
-                        w: 100,
-                        h: 100,
-                    })],
+                vec![
+                    raw_window(10)
+                        .with_visible_index(0)
+                        .with_pid(1010)
+                        .with_app_id("com.example.source")
+                        .with_title("source")
+                        .with_frame(Rect {
+                            x: 0,
+                            y: 0,
+                            w: 100,
+                            h: 100,
+                        }),
+                ],
             )]),
             inactive_space_window_ids: HashMap::from([(2, vec![21, 22])]),
             focused_window_id: Some(10),
@@ -6228,17 +6314,19 @@ mod tests {
             active_space_ids: HashSet::from([2]),
             active_space_windows: HashMap::from([(
                 2,
-                vec![raw_window(21)
-                    .with_visible_index(0)
-                    .with_pid(2121)
-                    .with_app_id("com.example.visible")
-                    .with_title("visible")
-                    .with_frame(Rect {
-                        x: 0,
-                        y: 0,
-                        w: 100,
-                        h: 100,
-                    })],
+                vec![
+                    raw_window(21)
+                        .with_visible_index(0)
+                        .with_pid(2121)
+                        .with_app_id("com.example.visible")
+                        .with_title("visible")
+                        .with_frame(Rect {
+                            x: 0,
+                            y: 0,
+                            w: 100,
+                            h: 100,
+                        }),
+                ],
             )]),
             inactive_space_window_ids: HashMap::new(),
             focused_window_id: Some(21),
@@ -6248,17 +6336,19 @@ mod tests {
             active_space_ids: HashSet::from([2]),
             active_space_windows: HashMap::from([(
                 2,
-                vec![raw_window(22)
-                    .with_visible_index(0)
-                    .with_pid(2222)
-                    .with_app_id("com.example.drifted")
-                    .with_title("drifted")
-                    .with_frame(Rect {
-                        x: 240,
-                        y: 0,
-                        w: 100,
-                        h: 100,
-                    })],
+                vec![
+                    raw_window(22)
+                        .with_visible_index(0)
+                        .with_pid(2222)
+                        .with_app_id("com.example.drifted")
+                        .with_title("drifted")
+                        .with_frame(Rect {
+                            x: 240,
+                            y: 0,
+                            w: 100,
+                            h: 100,
+                        }),
+                ],
             )]),
             inactive_space_window_ids: HashMap::new(),
             focused_window_id: Some(22),
@@ -6277,12 +6367,15 @@ mod tests {
 
         adapter.focus_direction_inner(Direction::East).unwrap();
 
-        assert_eq!(take_calls(&calls), vec!["switch_space:2", "focus_window:21"]);
+        assert_eq!(
+            take_calls(&calls),
+            vec!["switch_space:2", "focus_window:21"]
+        );
     }
 
     #[test]
-    fn backend_focus_direction_switches_then_focuses_window_in_previous_space_when_no_west_window_exists(
-    ) {
+    fn backend_focus_direction_switches_then_focuses_window_in_previous_space_when_no_west_window_exists()
+     {
         let calls = Rc::new(RefCell::new(Vec::new()));
         let topology = RawTopologySnapshot {
             spaces: vec![
@@ -6293,17 +6386,19 @@ mod tests {
             active_space_ids: HashSet::from([2]),
             active_space_windows: HashMap::from([(
                 2,
-                vec![raw_window(20)
-                    .with_visible_index(0)
-                    .with_pid(2020)
-                    .with_app_id("com.example.center")
-                    .with_title("center")
-                    .with_frame(crate::engine::topology::Rect {
-                        x: 120,
-                        y: 0,
-                        w: 100,
-                        h: 100,
-                    })],
+                vec![
+                    raw_window(20)
+                        .with_visible_index(0)
+                        .with_pid(2020)
+                        .with_app_id("com.example.center")
+                        .with_title("center")
+                        .with_frame(crate::engine::topology::Rect {
+                            x: 120,
+                            y: 0,
+                            w: 100,
+                            h: 100,
+                        }),
+                ],
             )]),
             inactive_space_window_ids: HashMap::from([(1, vec![10]), (3, vec![30])]),
             focused_window_id: Some(20),
@@ -6312,17 +6407,19 @@ mod tests {
             topology,
             switched_space_windows: HashMap::from([(
                 1,
-                vec![raw_window(10)
-                    .with_visible_index(0)
-                    .with_pid(1010)
-                    .with_app_id("com.example.left")
-                    .with_title("left")
-                    .with_frame(Rect {
-                        x: 0,
-                        y: 0,
-                        w: 100,
-                        h: 100,
-                    })],
+                vec![
+                    raw_window(10)
+                        .with_visible_index(0)
+                        .with_pid(1010)
+                        .with_app_id("com.example.left")
+                        .with_title("left")
+                        .with_frame(Rect {
+                            x: 0,
+                            y: 0,
+                            w: 100,
+                            h: 100,
+                        }),
+                ],
             )]),
             current_space_id: Rc::new(RefCell::new(2)),
             calls: calls.clone(),
@@ -6352,30 +6449,34 @@ mod tests {
             active_space_windows: HashMap::from([
                 (
                     2,
-                    vec![raw_window(200)
-                        .with_pid(2200)
-                        .with_app_id("com.example.left-display")
-                        .with_title("left display")
-                        .with_frame(crate::engine::topology::Rect {
-                            x: 0,
-                            y: 0,
-                            w: 100,
-                            h: 100,
-                        })],
+                    vec![
+                        raw_window(200)
+                            .with_pid(2200)
+                            .with_app_id("com.example.left-display")
+                            .with_title("left display")
+                            .with_frame(crate::engine::topology::Rect {
+                                x: 0,
+                                y: 0,
+                                w: 100,
+                                h: 100,
+                            }),
+                    ],
                 ),
                 (
                     11,
-                    vec![raw_window(1100)
-                        .with_visible_index(0)
-                        .with_pid(1111)
-                        .with_app_id("com.example.right-display")
-                        .with_title("right display")
-                        .with_frame(crate::engine::topology::Rect {
-                            x: 120,
-                            y: 0,
-                            w: 100,
-                            h: 100,
-                        })],
+                    vec![
+                        raw_window(1100)
+                            .with_visible_index(0)
+                            .with_pid(1111)
+                            .with_app_id("com.example.right-display")
+                            .with_title("right display")
+                            .with_frame(crate::engine::topology::Rect {
+                                x: 120,
+                                y: 0,
+                                w: 100,
+                                h: 100,
+                            }),
+                    ],
                 ),
             ]),
             inactive_space_window_ids: HashMap::from([(1, vec![100]), (10, vec![1000])]),
@@ -6385,17 +6486,19 @@ mod tests {
             topology,
             switched_space_windows: HashMap::from([(
                 10,
-                vec![raw_window(1000)
-                    .with_visible_index(0)
-                    .with_pid(1001)
-                    .with_app_id("com.example.other-display")
-                    .with_title("other display")
-                    .with_frame(Rect {
-                        x: 0,
-                        y: 0,
-                        w: 100,
-                        h: 100,
-                    })],
+                vec![
+                    raw_window(1000)
+                        .with_visible_index(0)
+                        .with_pid(1001)
+                        .with_app_id("com.example.other-display")
+                        .with_title("other display")
+                        .with_frame(Rect {
+                            x: 0,
+                            y: 0,
+                            w: 100,
+                            h: 100,
+                        }),
+                ],
             )]),
             current_space_id: Rc::new(RefCell::new(11)),
             calls: calls.clone(),
@@ -6411,25 +6514,27 @@ mod tests {
     }
 
     #[test]
-    fn backend_focus_direction_switches_then_focuses_rightmost_window_in_next_space_when_no_east_window_exists(
-    ) {
+    fn backend_focus_direction_switches_then_focuses_rightmost_window_in_next_space_when_no_east_window_exists()
+     {
         let calls = Rc::new(RefCell::new(Vec::new()));
         let topology = RawTopologySnapshot {
             spaces: vec![raw_desktop_space(1), raw_desktop_space(2)],
             active_space_ids: HashSet::from([1]),
             active_space_windows: HashMap::from([(
                 1,
-                vec![raw_window(10)
-                    .with_visible_index(0)
-                    .with_pid(1010)
-                    .with_app_id("com.example.source")
-                    .with_title("source")
-                    .with_frame(Rect {
-                        x: 0,
-                        y: 0,
-                        w: 100,
-                        h: 100,
-                    })],
+                vec![
+                    raw_window(10)
+                        .with_visible_index(0)
+                        .with_pid(1010)
+                        .with_app_id("com.example.source")
+                        .with_title("source")
+                        .with_frame(Rect {
+                            x: 0,
+                            y: 0,
+                            w: 100,
+                            h: 100,
+                        }),
+                ],
             )]),
             inactive_space_window_ids: HashMap::from([(2, vec![21, 22])]),
             focused_window_id: Some(10),
@@ -6482,17 +6587,19 @@ mod tests {
             active_space_ids: HashSet::from([1]),
             active_space_windows: HashMap::from([(
                 1,
-                vec![raw_window(10)
-                    .with_visible_index(0)
-                    .with_pid(1010)
-                    .with_app_id("com.example.source")
-                    .with_title("source")
-                    .with_frame(Rect {
-                        x: 0,
-                        y: 0,
-                        w: 100,
-                        h: 100,
-                    })],
+                vec![
+                    raw_window(10)
+                        .with_visible_index(0)
+                        .with_pid(1010)
+                        .with_app_id("com.example.source")
+                        .with_title("source")
+                        .with_frame(Rect {
+                            x: 0,
+                            y: 0,
+                            w: 100,
+                            h: 100,
+                        }),
+                ],
             )]),
             inactive_space_window_ids: HashMap::from([(2, vec![21, 22])]),
             focused_window_id: Some(10),
@@ -6546,17 +6653,19 @@ mod tests {
             active_space_ids: HashSet::from([1]),
             active_space_windows: HashMap::from([(
                 1,
-                vec![raw_window(10)
-                    .with_visible_index(0)
-                    .with_pid(1010)
-                    .with_app_id("com.example.source")
-                    .with_title("source")
-                    .with_frame(Rect {
-                        x: 0,
-                        y: 0,
-                        w: 100,
-                        h: 100,
-                    })],
+                vec![
+                    raw_window(10)
+                        .with_visible_index(0)
+                        .with_pid(1010)
+                        .with_app_id("com.example.source")
+                        .with_title("source")
+                        .with_frame(Rect {
+                            x: 0,
+                            y: 0,
+                            w: 100,
+                            h: 100,
+                        }),
+                ],
             )]),
             inactive_space_window_ids: HashMap::from([(2, vec![21, 22])]),
             focused_window_id: Some(10),
@@ -6611,17 +6720,19 @@ mod tests {
             active_space_ids: HashSet::from([1]),
             active_space_windows: HashMap::from([(
                 1,
-                vec![raw_window(10)
-                    .with_visible_index(0)
-                    .with_pid(1010)
-                    .with_app_id("com.example.source")
-                    .with_title("source")
-                    .with_frame(Rect {
-                        x: 0,
-                        y: 0,
-                        w: 100,
-                        h: 100,
-                    })],
+                vec![
+                    raw_window(10)
+                        .with_visible_index(0)
+                        .with_pid(1010)
+                        .with_app_id("com.example.source")
+                        .with_title("source")
+                        .with_frame(Rect {
+                            x: 0,
+                            y: 0,
+                            w: 100,
+                            h: 100,
+                        }),
+                ],
             )]),
             inactive_space_window_ids: HashMap::from([(2, vec![21, 22])]),
             focused_window_id: Some(10),
@@ -6673,17 +6784,19 @@ mod tests {
             active_space_ids: HashSet::from([2]),
             active_space_windows: HashMap::from([(
                 2,
-                vec![raw_window(20)
-                    .with_visible_index(0)
-                    .with_pid(2020)
-                    .with_app_id("com.example.center")
-                    .with_title("center")
-                    .with_frame(crate::engine::topology::Rect {
-                        x: 120,
-                        y: 0,
-                        w: 100,
-                        h: 100,
-                    })],
+                vec![
+                    raw_window(20)
+                        .with_visible_index(0)
+                        .with_pid(2020)
+                        .with_app_id("com.example.center")
+                        .with_title("center")
+                        .with_frame(crate::engine::topology::Rect {
+                            x: 120,
+                            y: 0,
+                            w: 100,
+                            h: 100,
+                        }),
+                ],
             )]),
             inactive_space_window_ids: HashMap::from([(1, vec![])]),
             focused_window_id: Some(20),
@@ -6889,17 +7002,19 @@ mod tests {
 
         assert_eq!(
             parsed,
-            vec![raw_window(11)
-                .with_pid(101)
-                .with_title("alpha")
-                .with_level(5)
-                .with_visible_index(0)
-                .with_frame(Rect {
-                    x: 10,
-                    y: 20,
-                    w: 300,
-                    h: 400,
-                }),]
+            vec![
+                raw_window(11)
+                    .with_pid(101)
+                    .with_title("alpha")
+                    .with_level(5)
+                    .with_visible_index(0)
+                    .with_frame(Rect {
+                        x: 10,
+                        y: 20,
+                        w: 300,
+                        h: 400,
+                    }),
+            ]
         );
     }
 

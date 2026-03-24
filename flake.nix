@@ -128,16 +128,89 @@
             else
               value;
 
-          wmConfigModule = {
-            options.enabled_integration = optionalEnumOption [
-              "niri"
-              "i3"
-              "hyprland"
-              "macos_native"
-              "paneru"
-              "yabai"
-            ] "Window-manager backend. Rust defaults to niri on Linux and yabai on macOS.";
-          };
+          wmConfigModule =
+            let
+              enabledWmBackendModule = backendName: {
+                options.enabled = mkOption {
+                  type = types.bool;
+                  description = "Whether to enable the ${backendName} backend.";
+                };
+              };
+
+              missionControlShortcutConfigModule = {
+                options = {
+                  keycode = mkOption {
+                    type = types.str;
+                    description = "0x-prefixed macOS virtual keycode for the shortcut.";
+                  };
+
+                  shift = mkOption {
+                    type = types.bool;
+                    default = false;
+                    description = "Whether Shift is held for the shortcut.";
+                  };
+
+                  ctrl = mkOption {
+                    type = types.bool;
+                    default = false;
+                    description = "Whether Control is held for the shortcut.";
+                  };
+
+                  option = mkOption {
+                    type = types.bool;
+                    default = false;
+                    description = "Whether Option is held for the shortcut.";
+                  };
+
+                  command = mkOption {
+                    type = types.bool;
+                    default = false;
+                    description = "Whether Command is held for the shortcut.";
+                  };
+
+                  fn = mkOption {
+                    type = types.bool;
+                    default = false;
+                    description = "Whether Fn is held for the shortcut.";
+                  };
+                };
+              };
+
+              macosNativeWmConfigModule = {
+                options = {
+                  enabled = mkOption {
+                    type = types.bool;
+                    description = "Whether to enable the macOS-native Spaces-aware backend.";
+                  };
+
+                  mission_control_keyboard_shortcuts = mkOption {
+                    type = types.submodule {
+                      options = {
+                        move_left_a_space = mkOption {
+                          type = types.submodule missionControlShortcutConfigModule;
+                          description = "Shortcut that macOS Mission Control uses to move left one space.";
+                        };
+
+                        move_right_a_space = mkOption {
+                          type = types.submodule missionControlShortcutConfigModule;
+                          description = "Shortcut that macOS Mission Control uses to move right one space.";
+                        };
+                      };
+                    };
+                    description = "Mission Control space-navigation shortcuts used by the macOS-native WM backend.";
+                  };
+                };
+              };
+            in {
+              options = {
+                macos_native = optionalSubmoduleOption macosNativeWmConfigModule "macOS-native Spaces-aware backend config.";
+                niri = optionalSubmoduleOption (enabledWmBackendModule "niri") "niri backend config.";
+                i3 = optionalSubmoduleOption (enabledWmBackendModule "i3") "i3 backend config.";
+                hyprland = optionalSubmoduleOption (enabledWmBackendModule "hyprland") "Hyprland backend config.";
+                paneru = optionalSubmoduleOption (enabledWmBackendModule "paneru") "Paneru backend config.";
+                yabai = optionalSubmoduleOption (enabledWmBackendModule "yabai") "yabai backend config.";
+              };
+            };
 
           loggingRuntimeConfigModule = {
             options.debug = optionalBoolOption "Enable debug logging.";
