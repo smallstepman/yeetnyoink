@@ -1054,11 +1054,74 @@ where
             target_window_ids.len()
         ));
         if let Some(direction) = adjacent_direction {
+            if target_window_ids.is_empty() {
+                logging::debug(format!(
+                    "macos_native: using exact space switch for empty adjacent space {space_id}"
+                ));
+                self.api.switch_space(space_id)?;
+                return self.wait_for_space_presentation(
+                    space_id,
+                    source_focus_window_id,
+                    &target_window_ids,
+                );
+            }
+
             self.api.switch_adjacent_space(direction, space_id)?;
+            match self.wait_for_space_presentation(
+                space_id,
+                source_focus_window_id,
+                &target_window_ids,
+            ) {
+                Ok(()) => Ok(()),
+                Err(err) => {
+                    let target_still_inactive = match self.api.active_space_ids() {
+                        Ok(active_space_ids) => !active_space_ids.contains(&space_id),
+                        Err(probe_err) => {
+                            logging::debug(format!(
+                                "macos_native: failed to re-check active spaces after adjacent hotkey switch failure for space {space_id} ({probe_err}); retrying exact space switch"
+                            ));
+                            true
+                        }
+                    };
+
+                    if !target_still_inactive {
+                        return Err(err);
+                    }
+
+                    let retry_target_window_ids = match self.api.onscreen_window_ids() {
+                        Ok(onscreen_window_ids)
+                            if !target_window_ids.is_empty()
+                                && !target_window_ids.is_disjoint(&onscreen_window_ids) =>
+                        {
+                            logging::debug(format!(
+                                "macos_native: adjacent hotkey left target-space window ids visible while target space {space_id} is still inactive; treating target ids as unreliable for exact-switch retry"
+                            ));
+                            HashSet::new()
+                        }
+                        Ok(_) => target_window_ids.clone(),
+                        Err(probe_err) => {
+                            logging::debug(format!(
+                                "macos_native: failed to inspect onscreen windows after adjacent hotkey switch failure for space {space_id} ({probe_err}); preserving target ids for exact-switch retry"
+                            ));
+                            target_window_ids.clone()
+                        }
+                    };
+
+                    logging::debug(format!(
+                        "macos_native: adjacent hotkey did not activate target space {space_id}; retrying exact space switch"
+                    ));
+                    self.api.switch_space(space_id)?;
+                    self.wait_for_space_presentation(
+                        space_id,
+                        source_focus_window_id,
+                        &retry_target_window_ids,
+                    )
+                }
+            }
         } else {
             self.api.switch_space(space_id)?;
+            self.wait_for_space_presentation(space_id, source_focus_window_id, &target_window_ids)
         }
-        self.wait_for_space_presentation(space_id, source_focus_window_id, &target_window_ids)
     }
 
     fn wait_for_space_presentation(
@@ -4838,6 +4901,120 @@ mod tests {
         }
     }
 
+    #[derive(Debug, Clone)]
+    struct EmptySpaceSkippingAdjacentHotkeyApi {
+        topology: RawTopologySnapshot,
+        switched_space_windows: HashMap<u64, Vec<RawWindow>>,
+        current_space_id: Rc<RefCell<u64>>,
+        adjacent_hotkey_skip_target_space_id: u64,
+        calls: Rc<RefCell<Vec<String>>>,
+    }
+
+    impl MacosNativeApi for EmptySpaceSkippingAdjacentHotkeyApi {
+        fn has_symbol(&self, _symbol: &'static str) -> bool {
+            true
+        }
+
+        fn ax_is_trusted(&self) -> bool {
+            true
+        }
+
+        fn minimal_topology_ready(&self) -> bool {
+            true
+        }
+
+        fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
+            Ok(self.topology.spaces.clone())
+        }
+
+        fn active_space_ids(&self) -> Result<HashSet<u64>, MacosNativeProbeError> {
+            Ok(HashSet::from([*self.current_space_id.borrow()]))
+        }
+
+        fn active_space_windows(
+            &self,
+            space_id: u64,
+        ) -> Result<Vec<RawWindow>, MacosNativeProbeError> {
+            if *self.current_space_id.borrow() == space_id {
+                if let Some(windows) = self.switched_space_windows.get(&space_id) {
+                    return Ok(windows.clone());
+                }
+            }
+            Ok(self
+                .topology
+                .active_space_windows
+                .get(&space_id)
+                .cloned()
+                .unwrap_or_default())
+        }
+
+        fn inactive_space_window_ids(
+            &self,
+        ) -> Result<HashMap<u64, Vec<u64>>, MacosNativeProbeError> {
+            Ok(self.topology.inactive_space_window_ids.clone())
+        }
+
+        fn focused_window_id(&self) -> Result<Option<u64>, MacosNativeProbeError> {
+            Ok(self
+                .active_space_windows(*self.current_space_id.borrow())?
+                .first()
+                .map(|window| window.id))
+        }
+
+        fn onscreen_window_ids(&self) -> Result<HashSet<u64>, MacosNativeProbeError> {
+            Ok(self
+                .active_space_windows(*self.current_space_id.borrow())?
+                .into_iter()
+                .map(|window| window.id)
+                .collect())
+        }
+
+        fn switch_space(&self, space_id: u64) -> Result<(), MacosNativeOperationError> {
+            self.calls
+                .borrow_mut()
+                .push(format!("switch_space:{space_id}"));
+            *self.current_space_id.borrow_mut() = space_id;
+            Ok(())
+        }
+
+        fn switch_adjacent_space(
+            &self,
+            direction: Direction,
+            space_id: u64,
+        ) -> Result<(), MacosNativeOperationError> {
+            self.calls
+                .borrow_mut()
+                .push(format!("switch_adjacent_space:{direction}:{space_id}"));
+            *self.current_space_id.borrow_mut() = self.adjacent_hotkey_skip_target_space_id;
+            Ok(())
+        }
+
+        fn focus_window(&self, window_id: u64) -> Result<(), MacosNativeOperationError> {
+            self.calls
+                .borrow_mut()
+                .push(format!("focus_window:{window_id}"));
+            Ok(())
+        }
+
+        fn move_window_to_space(
+            &self,
+            _window_id: u64,
+            _space_id: u64,
+        ) -> Result<(), MacosNativeOperationError> {
+            Ok(())
+        }
+
+        fn swap_window_frames(
+            &self,
+            _source_window_id: u64,
+            _source_frame: Rect,
+            _target_window_id: u64,
+            _target_frame: Rect,
+        ) -> Result<(), MacosNativeOperationError> {
+            Ok(())
+        }
+    }
+
     struct FocusedWindowFastPathApi;
 
     impl MacosNativeApi for FocusedWindowFastPathApi {
@@ -6777,39 +6954,133 @@ command = true
     }
 
     #[test]
-    fn backend_focus_direction_switches_to_empty_previous_space_when_no_window_exists() {
+    fn backend_focus_direction_uses_exact_switch_for_empty_adjacent_space_when_hotkey_would_skip_it()
+     {
         let calls = Rc::new(RefCell::new(Vec::new()));
         let topology = RawTopologySnapshot {
-            spaces: vec![raw_desktop_space(1), raw_desktop_space(2)],
-            active_space_ids: HashSet::from([2]),
+            spaces: vec![
+                raw_desktop_space(1),
+                raw_desktop_space(2),
+                raw_desktop_space(3),
+            ],
+            active_space_ids: HashSet::from([3]),
             active_space_windows: HashMap::from([(
-                2,
+                3,
                 vec![
-                    raw_window(20)
+                    raw_window(30)
                         .with_visible_index(0)
-                        .with_pid(2020)
+                        .with_pid(3030)
                         .with_app_id("com.example.center")
                         .with_title("center")
                         .with_frame(crate::engine::topology::Rect {
-                            x: 120,
+                            x: 240,
                             y: 0,
                             w: 100,
                             h: 100,
                         }),
                 ],
             )]),
-            inactive_space_window_ids: HashMap::from([(1, vec![])]),
-            focused_window_id: Some(20),
+            inactive_space_window_ids: HashMap::from([(1, vec![10]), (2, vec![])]),
+            focused_window_id: Some(30),
         };
-        let api = SpaceSettlingApi::new(topology, calls.clone(), 0);
+        let api = EmptySpaceSkippingAdjacentHotkeyApi {
+            topology,
+            switched_space_windows: HashMap::from([(
+                1,
+                vec![
+                    raw_window(10)
+                        .with_visible_index(0)
+                        .with_pid(1010)
+                        .with_app_id("com.example.left")
+                        .with_title("left")
+                        .with_frame(crate::engine::topology::Rect {
+                            x: 0,
+                            y: 0,
+                            w: 100,
+                            h: 100,
+                        }),
+                ],
+            )]),
+            current_space_id: Rc::new(RefCell::new(3)),
+            adjacent_hotkey_skip_target_space_id: 1,
+            calls: calls.clone(),
+        };
         let adapter = MacosNativeAdapter::connect_with_api(api).unwrap();
 
         adapter.focus_direction_inner(Direction::West).unwrap();
 
-        let calls = take_calls(&calls);
-        assert!(
-            calls.iter().any(|call| call == "switch_space:1"),
-            "empty adjacent spaces should still use a plain space switch"
+        assert_eq!(take_calls(&calls), vec!["switch_space:2"]);
+    }
+
+    #[test]
+    fn backend_focus_direction_ignores_ghost_inactive_window_ids_for_empty_adjacent_space() {
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let topology = RawTopologySnapshot {
+            spaces: vec![
+                raw_desktop_space(1),
+                raw_desktop_space(2),
+                raw_desktop_space(3),
+            ],
+            active_space_ids: HashSet::from([1]),
+            active_space_windows: HashMap::from([(
+                1,
+                vec![
+                    raw_window(10)
+                        .with_visible_index(0)
+                        .with_pid(1010)
+                        .with_app_id("com.example.source")
+                        .with_title("source")
+                        .with_frame(crate::engine::topology::Rect {
+                            x: 0,
+                            y: 0,
+                            w: 100,
+                            h: 100,
+                        }),
+                ],
+            )]),
+            inactive_space_window_ids: HashMap::from([(2, vec![31, 32]), (3, vec![])]),
+            focused_window_id: Some(10),
+        };
+        let api = EmptySpaceSkippingAdjacentHotkeyApi {
+            topology,
+            switched_space_windows: HashMap::from([(
+                3,
+                vec![
+                    raw_window(31)
+                        .with_visible_index(1)
+                        .with_pid(3131)
+                        .with_app_id("com.example.skip-left")
+                        .with_title("skip-left")
+                        .with_frame(crate::engine::topology::Rect {
+                            x: 240,
+                            y: 0,
+                            w: 100,
+                            h: 100,
+                        }),
+                    raw_window(32)
+                        .with_visible_index(0)
+                        .with_pid(3232)
+                        .with_app_id("com.example.skip-right")
+                        .with_title("skip-right")
+                        .with_frame(crate::engine::topology::Rect {
+                            x: 360,
+                            y: 0,
+                            w: 100,
+                            h: 100,
+                        }),
+                ],
+            )]),
+            current_space_id: Rc::new(RefCell::new(1)),
+            adjacent_hotkey_skip_target_space_id: 3,
+            calls: calls.clone(),
+        };
+        let adapter = MacosNativeAdapter::connect_with_api(api).unwrap();
+
+        adapter.focus_direction_inner(Direction::East).unwrap();
+
+        assert_eq!(
+            take_calls(&calls),
+            vec!["switch_adjacent_space:east:2", "switch_space:2"]
         );
     }
 
