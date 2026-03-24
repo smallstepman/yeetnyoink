@@ -16,6 +16,8 @@ pub mod hyprland;
 #[cfg(target_os = "linux")]
 pub mod i3;
 #[cfg(any(test, target_os = "linux"))]
+pub mod mangowc;
+#[cfg(any(test, target_os = "linux"))]
 pub mod niri;
 #[cfg(target_os = "macos")]
 pub mod paneru;
@@ -30,6 +32,8 @@ use crate::adapters::window_managers::hyprland::HYPRLAND_SPEC;
 #[cfg(target_os = "linux")]
 use crate::adapters::window_managers::i3::I3_SPEC;
 #[cfg(target_os = "linux")]
+use crate::adapters::window_managers::mangowc::MANGOWC_SPEC;
+#[cfg(target_os = "linux")]
 use crate::adapters::window_managers::niri::NIRI_SPEC;
 #[cfg(target_os = "macos")]
 use crate::adapters::window_managers::paneru::PANERU_SPEC;
@@ -41,6 +45,8 @@ use crate::engine::wm::configured::WindowManagerSpec;
 pub(crate) use crate::engine::wm::configured::UNSUPPORTED_HYPRLAND_SPEC;
 #[cfg(not(target_os = "linux"))]
 pub(crate) use crate::engine::wm::configured::UNSUPPORTED_I3_SPEC;
+#[cfg(not(target_os = "linux"))]
+pub(crate) use crate::engine::wm::configured::UNSUPPORTED_MANGOWC_SPEC;
 #[cfg(not(target_os = "linux"))]
 pub(crate) use crate::engine::wm::configured::UNSUPPORTED_NIRI_SPEC;
 #[cfg(not(target_os = "macos"))]
@@ -78,6 +84,16 @@ pub fn spec_for_backend(backend: WmBackend) -> &'static dyn WindowManagerSpec {
             #[cfg(not(target_os = "linux"))]
             {
                 &UNSUPPORTED_HYPRLAND_SPEC
+            }
+        }
+        WmBackend::Mangowc => {
+            #[cfg(target_os = "linux")]
+            {
+                &MANGOWC_SPEC
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                &UNSUPPORTED_MANGOWC_SPEC
             }
         }
         WmBackend::Paneru => {
@@ -119,8 +135,15 @@ mod tests {
         assert_spec(super::spec_for_backend(WmBackend::Niri));
         assert_spec(super::spec_for_backend(WmBackend::I3));
         assert_spec(super::spec_for_backend(WmBackend::Hyprland));
+        assert_spec(super::spec_for_backend(WmBackend::Mangowc));
         assert_spec(super::spec_for_backend(WmBackend::Paneru));
         assert_spec(super::spec_for_backend(WmBackend::Yabai));
+    }
+
+    #[test]
+    fn mangowc_wm_backend_spec_is_registered() {
+        fn assert_spec(_spec: &'static dyn WindowManagerSpec) {}
+        assert_spec(super::spec_for_backend(WmBackend::Mangowc));
     }
 
     #[test]

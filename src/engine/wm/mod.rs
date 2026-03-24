@@ -184,9 +184,38 @@ mod tests {
         assert_spec(spec_for_backend(WmBackend::Niri));
         assert_spec(spec_for_backend(WmBackend::I3));
         assert_spec(spec_for_backend(WmBackend::Hyprland));
+        assert_spec(spec_for_backend(WmBackend::Mangowc));
         assert_spec(spec_for_backend(WmBackend::Paneru));
         assert_spec(spec_for_backend(WmBackend::Yabai));
         let _ = super::connect_selected as fn() -> Result<ConfiguredWindowManager>;
+    }
+
+    #[test]
+    fn mangowc_wm_backend_spec_is_registered() {
+        fn assert_spec(_spec: &'static dyn WindowManagerSpec) {}
+        assert_spec(spec_for_backend(WmBackend::Mangowc));
+    }
+
+    #[test]
+    fn mangowc_wm_backend_runtime_support_matches_platform() {
+        #[cfg(target_os = "linux")]
+        {
+            if let Err(err) = spec_for_backend(WmBackend::Mangowc).connect() {
+                assert!(
+                    !err.to_string()
+                        .contains("wm backend 'mangowc' is not yet supported at runtime"),
+                    "linux mangowc backend should now fail only for real runtime causes: {err}"
+                );
+            }
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        {
+            let err = spec_for_backend(WmBackend::Mangowc)
+                .connect()
+                .expect_err("non-linux mangowc backend should stay unsupported");
+            assert!(err.to_string().contains("not supported"));
+        }
     }
 
     #[test]

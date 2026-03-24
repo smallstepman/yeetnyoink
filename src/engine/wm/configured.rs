@@ -230,6 +230,12 @@ pub(crate) static UNSUPPORTED_HYPRLAND_SPEC: UnsupportedWindowManagerSpec =
         backend: WmBackend::Hyprland,
         name: "hyprland",
     };
+#[cfg(not(target_os = "linux"))]
+pub(crate) static UNSUPPORTED_MANGOWC_SPEC: UnsupportedWindowManagerSpec =
+    UnsupportedWindowManagerSpec {
+        backend: WmBackend::Mangowc,
+        name: "mangowc",
+    };
 #[cfg(not(target_os = "macos"))]
 pub(crate) static UNSUPPORTED_PANERU_SPEC: UnsupportedWindowManagerSpec =
     UnsupportedWindowManagerSpec {
