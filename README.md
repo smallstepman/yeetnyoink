@@ -71,8 +71,8 @@ enabled = true
 tab_axis = "vertical"
 ```
 
-Enable exactly one built-in WM table with `enabled = true`. If you choose `wm.macos_native`, that
-table must set `wm.macos_native.floating_focus_strategy`
+Your config must contain exactly one `wm.<backend>` table, and that table must set `enabled = true`.
+If you choose `wm.macos_native`, that table must set `wm.macos_native.floating_focus_strategy`
 (`radial_center`, `trailing_edge_parallel`, `leading_edge_parallel`, `cross_edge_gap`,
 `overlap_then_gap`, or `ray_angle`) and configure both
 `wm.macos_native.mission_control_keyboard_shortcuts.move_left_a_space` and
@@ -181,4 +181,6 @@ Current built-in WM adapters:
 - `paneru`
 - `yabai`
 
-Adapter selection is driven by the single `wm.<backend>` table whose `enabled` field is `true`. No runtime probing occurs; selection is explicit and must be set in your config or via the CLI.
+Adapter selection is driven by the one `wm.<backend>` table present in config, and that table must
+set `enabled = true`. No runtime probing occurs; selection is explicit and must be set in your
+config or via the CLI.

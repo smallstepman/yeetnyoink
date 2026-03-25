@@ -20,6 +20,7 @@
 enabled = true
 
 # Example macOS-native config (choose this instead of another wm.* table):
+# Keep exactly one wm.* table in your real config; do not leave extra disabled wm.* tables around.
 # [wm.macos_native]
 # enabled = true
 # floating_focus_strategy = "overlap_then_gap" # radial_center | trailing_edge_parallel | leading_edge_parallel | cross_edge_gap | overlap_then_gap | ray_angle

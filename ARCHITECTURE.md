@@ -106,8 +106,8 @@ app = "wezterm"
 mux_backend = "inherit"
 ```
 
-Exactly one `wm.<backend>` table should be live (`enabled = true`) at a time. `wm.macos_native`
-uses the same per-backend table shape, but it additionally requires
+Your config must contain exactly one `wm.<backend>` table, and that table must set `enabled =
+true`. `wm.macos_native` uses the same per-backend table shape, but it additionally requires
 `floating_focus_strategy` plus the Mission Control `move_left_a_space` /
 `move_right_a_space` shortcut blocks because adjacent-Space transitions are driven through the
 configured macOS keyboard shortcuts. Current built-in tiling-only backends must not set
@@ -169,7 +169,7 @@ Key mux operations:
 ### Window Managers (`src/adapters/window_managers/`)
 
 WM selection is config-driven rather than probe-driven:
-- `config.toml` selects one built-in backend by setting `enabled = true` in exactly one `[wm.<backend>]` table
+- `config.toml` must contain exactly one `[wm.<backend>]` table, and that table must set `enabled = true`
 - `connect_selected()` resolves that enum to a built-in `WindowManagerSpec`
 - There is **no runtime WM probing/detection or fallback chain**
 
