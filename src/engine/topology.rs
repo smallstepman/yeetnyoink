@@ -433,6 +433,48 @@ where
     best.map(|(id, _)| id)
 }
 
+fn select_closest_in_direction_legacy<T>(
+    rects: &[DirectedRect<T>],
+    source_id: T,
+    dir: Direction,
+) -> Option<T>
+where
+    T: Copy + Eq,
+{
+    let source = rects.iter().find(|rect| rect.id == source_id)?;
+    let mut best: Option<(T, i32, i32)> = None;
+
+    for candidate in rects.iter().copied().filter(|rect| rect.id != source_id) {
+        let distance = match dir {
+            Direction::West if candidate.rect.x + candidate.rect.w <= source.rect.x => {
+                source.rect.x - (candidate.rect.x + candidate.rect.w)
+            }
+            Direction::East if candidate.rect.x >= source.rect.x + source.rect.w => {
+                candidate.rect.x - (source.rect.x + source.rect.w)
+            }
+            Direction::North if candidate.rect.y + candidate.rect.h <= source.rect.y => {
+                source.rect.y - (candidate.rect.y + candidate.rect.h)
+            }
+            Direction::South if candidate.rect.y >= source.rect.y + source.rect.h => {
+                candidate.rect.y - (source.rect.y + source.rect.h)
+            }
+            _ => continue,
+        };
+        let overlap = source.rect.perp_overlap_len(candidate.rect, dir);
+        if overlap <= 0 {
+            continue;
+        }
+        match best {
+            Some((_, best_distance, best_overlap))
+                if best_distance < distance
+                    || (best_distance == distance && best_overlap >= overlap) => {}
+            _ => best = Some((candidate.id, distance, overlap)),
+        }
+    }
+
+    best.map(|(id, _, _)| id)
+}
+
 pub fn select_closest_in_direction<T>(
     rects: &[DirectedRect<T>],
     source_id: T,
@@ -441,12 +483,7 @@ pub fn select_closest_in_direction<T>(
 where
     T: Copy + Eq,
 {
-    select_closest_in_direction_with_strategy(
-        rects,
-        source_id,
-        dir,
-        FloatingFocusStrategy::OverlapThenGap,
-    )
+    select_closest_in_direction_legacy(rects, source_id, dir)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -696,6 +733,120 @@ mod tests {
         assert_eq!(
             select_closest_in_direction(&rects, 1, Direction::West),
             None
+        );
+    }
+
+    #[test]
+    fn select_closest_in_direction_preserves_legacy_tie_break_order() {
+        let rects = vec![
+            DirectedRect {
+                id: 1_u64,
+                rect: Rect {
+                    x: 100,
+                    y: 100,
+                    w: 100,
+                    h: 100,
+                },
+            },
+            DirectedRect {
+                id: 2_u64,
+                rect: Rect {
+                    x: 0,
+                    y: 80,
+                    w: 100,
+                    h: 70,
+                },
+            },
+            DirectedRect {
+                id: 3_u64,
+                rect: Rect {
+                    x: 0,
+                    y: 100,
+                    w: 100,
+                    h: 50,
+                },
+            },
+        ];
+
+        assert_eq!(
+            select_closest_in_direction(&rects, 1, Direction::West),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn select_closest_in_direction_excludes_partially_overlapping_east_candidates() {
+        let rects = vec![
+            DirectedRect {
+                id: 1_u64,
+                rect: Rect {
+                    x: 100,
+                    y: 100,
+                    w: 100,
+                    h: 100,
+                },
+            },
+            DirectedRect {
+                id: 2_u64,
+                rect: Rect {
+                    x: 180,
+                    y: 120,
+                    w: 80,
+                    h: 60,
+                },
+            },
+            DirectedRect {
+                id: 3_u64,
+                rect: Rect {
+                    x: 210,
+                    y: 120,
+                    w: 80,
+                    h: 60,
+                },
+            },
+        ];
+
+        assert_eq!(
+            select_closest_in_direction(&rects, 1, Direction::East),
+            Some(3)
+        );
+    }
+
+    #[test]
+    fn select_closest_in_direction_excludes_partially_overlapping_south_candidates() {
+        let rects = vec![
+            DirectedRect {
+                id: 1_u64,
+                rect: Rect {
+                    x: 100,
+                    y: 100,
+                    w: 100,
+                    h: 100,
+                },
+            },
+            DirectedRect {
+                id: 2_u64,
+                rect: Rect {
+                    x: 120,
+                    y: 180,
+                    w: 60,
+                    h: 80,
+                },
+            },
+            DirectedRect {
+                id: 3_u64,
+                rect: Rect {
+                    x: 120,
+                    y: 210,
+                    w: 60,
+                    h: 80,
+                },
+            },
+        ];
+
+        assert_eq!(
+            select_closest_in_direction(&rects, 1, Direction::South),
+            Some(3)
         );
     }
 
