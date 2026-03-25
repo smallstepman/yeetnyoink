@@ -161,23 +161,18 @@ impl Clone for CfOwned {
     }
 }
 
+#[cfg(test)]
 fn focused_window_id_via_ax<App, Window, FocusedApplication, FocusedWindow, WindowId>(
-    mut focused_application: FocusedApplication,
-    mut focused_window: FocusedWindow,
-    mut window_id: WindowId,
+    focused_application: FocusedApplication,
+    focused_window: FocusedWindow,
+    window_id: WindowId,
 ) -> Result<Option<u64>, MacosNativeProbeError>
 where
     FocusedApplication: FnMut() -> Result<Option<App>, MacosNativeProbeError>,
     FocusedWindow: FnMut(&App) -> Result<Option<Window>, MacosNativeProbeError>,
     WindowId: FnMut(&Window) -> Result<u64, MacosNativeProbeError>,
 {
-    let Some(application) = focused_application()? else {
-        return Ok(None);
-    };
-    let Some(window) = focused_window(&application)? else {
-        return Ok(None);
-    };
-    window_id(&window).map(Some)
+    ax::focused_window_id(focused_application, focused_window, window_id)
 }
 
 fn focus_window_via_process_and_raise<
@@ -1154,9 +1149,1464 @@ where
 
 #[derive(Debug)]
 pub(crate) struct RealNativeApi {
-    skylight: Option<DylibHandle>,
-    hiservices: Option<DylibHandle>,
+    skylight: Option<private_api::foundation::DylibHandle>,
+    hiservices: Option<private_api::foundation::DylibHandle>,
 }
+
+mod private_api {
+    pub(super) mod foundation {
+        use super::super::*;
+
+        #[derive(Debug)]
+        pub(crate) struct DylibHandle {
+            raw: *mut c_void,
+        }
+
+        // The handle is only used behind immutable method calls and closed on drop.
+        // We do not share aliasing Rust references into the loaded dylib state itself.
+        unsafe impl Send for DylibHandle {}
+
+        impl DylibHandle {
+            pub(crate) fn open(path: &CStr) -> Option<Self> {
+                let raw = unsafe { dlopen(path.as_ptr(), RTLD_LAZY) };
+                if raw.is_null() {
+                    None
+                } else {
+                    Some(Self { raw })
+                }
+            }
+
+            pub(crate) fn resolve(&self, symbol: &CStr) -> Option<*mut c_void> {
+                let raw = unsafe { dlsym(self.raw, symbol.as_ptr()) };
+                if raw.is_null() {
+                    None
+                } else {
+                    Some(raw)
+                }
+            }
+        }
+
+        impl Drop for DylibHandle {
+            fn drop(&mut self) {
+                if !self.raw.is_null() {
+                    unsafe {
+                        let _ = dlclose(self.raw);
+                    }
+                }
+            }
+        }
+
+        pub(crate) mod servo_cf {
+            use super::super::super::{
+                CFArrayRef, CFDictionaryRef, CFTypeRef, MacosNativeProbeError,
+            };
+            use core_foundation::{
+                array::CFArray,
+                base::{CFType, TCFType},
+                dictionary::CFDictionary,
+                number::CFNumber,
+                string::CFString,
+            };
+
+            type UntypedCFArray = CFArray;
+            type UntypedCFDictionary = CFDictionary;
+
+            pub(crate) struct ArrayIter {
+                array: Option<CFArray<CFType>>,
+                index: usize,
+            }
+
+            impl Iterator for ArrayIter {
+                type Item = CFTypeRef;
+
+                fn next(&mut self) -> Option<Self::Item> {
+                    let array = self.array.as_ref()?;
+                    let value = array.get(self.index as _)?;
+                    self.index += 1;
+                    Some(value.as_CFTypeRef())
+                }
+            }
+
+            fn cf_type(value: CFTypeRef) -> Option<CFType> {
+                (!value.is_null()).then(|| unsafe { CFType::wrap_under_get_rule(value) })
+            }
+
+            fn typed_array(array: CFArrayRef) -> Option<CFArray<CFType>> {
+                let cf_type = cf_type(array as CFTypeRef)?;
+                cf_type.instance_of::<UntypedCFArray>().then(|| unsafe {
+                    CFArray::<CFType>::wrap_under_get_rule(
+                        array as core_foundation::array::CFArrayRef,
+                    )
+                })
+            }
+
+            fn typed_dictionary(
+                dictionary: CFDictionaryRef,
+            ) -> Option<CFDictionary<CFType, CFType>> {
+                let cf_type = cf_type(dictionary as CFTypeRef)?;
+                cf_type
+                    .instance_of::<UntypedCFDictionary>()
+                    .then(|| unsafe {
+                        CFDictionary::<CFType, CFType>::wrap_under_get_rule(
+                            dictionary as core_foundation::dictionary::CFDictionaryRef,
+                        )
+                    })
+            }
+
+            pub(crate) fn array_len(array: CFArrayRef) -> usize {
+                typed_array(array)
+                    .map(|array| array.len() as usize)
+                    .unwrap_or_default()
+            }
+
+            pub(crate) fn array_iter(array: CFArrayRef) -> ArrayIter {
+                ArrayIter {
+                    array: typed_array(array),
+                    index: 0,
+                }
+            }
+
+            pub(crate) fn as_dictionary(value: CFTypeRef) -> Option<CFDictionaryRef> {
+                let cf_type = cf_type(value)?;
+                cf_type
+                    .instance_of::<UntypedCFDictionary>()
+                    .then_some(value as CFDictionaryRef)
+            }
+
+            pub(crate) fn string(value: &str) -> CFString {
+                CFString::new(value)
+            }
+
+            pub(crate) fn number_from_u64(value: u64) -> Result<CFNumber, MacosNativeProbeError> {
+                let value = i64::try_from(value).map_err(|_| {
+                    MacosNativeProbeError::MissingTopology("SLSCopyWindowsWithOptionsAndTags")
+                })?;
+                Ok(CFNumber::from(value))
+            }
+
+            pub(crate) fn array_from_u64s(
+                values: &[u64],
+            ) -> Result<CFArray<CFNumber>, MacosNativeProbeError> {
+                let numbers = values
+                    .iter()
+                    .map(|value| number_from_u64(*value))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(CFArray::from_CFTypes(&numbers))
+            }
+
+            pub(crate) fn array_from_type_refs(values: &[CFTypeRef]) -> CFArray<CFType> {
+                let values = values
+                    .iter()
+                    .map(|value| {
+                        cf_type(*value)
+                            .expect("servo_cf::array_from_type_refs expects non-null CFTypeRef")
+                    })
+                    .collect::<Vec<_>>();
+                CFArray::from_CFTypes(&values)
+            }
+
+            #[cfg(test)]
+            pub(crate) fn dictionary_from_type_refs(
+                entries: &[(CFTypeRef, CFTypeRef)],
+            ) -> CFDictionary<CFType, CFType> {
+                let entries = entries
+                    .iter()
+                    .map(|(key, value)| {
+                        (
+                            cf_type(*key).expect(
+                                "servo_cf::dictionary_from_type_refs expects non-null keys",
+                            ),
+                            cf_type(*value).expect(
+                                "servo_cf::dictionary_from_type_refs expects non-null values",
+                            ),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                CFDictionary::from_CFType_pairs(&entries)
+            }
+
+            pub(crate) fn number_to_i64(value: CFTypeRef) -> Option<i64> {
+                cf_type(value)?
+                    .downcast::<CFNumber>()
+                    .and_then(|number| number.to_i64())
+            }
+
+            fn dictionary_value(dictionary: CFDictionaryRef, key: &CFString) -> Option<CFType> {
+                let dictionary = typed_dictionary(dictionary)?;
+                dictionary
+                    .find(key.as_CFTypeRef())
+                    .map(|value| value.clone())
+            }
+
+            pub(crate) fn dictionary_string(
+                dictionary: CFDictionaryRef,
+                key: &CFString,
+            ) -> Option<String> {
+                dictionary_value(dictionary, key)?
+                    .downcast::<CFString>()
+                    .map(|value| value.to_string())
+            }
+
+            pub(crate) fn dictionary_u64(
+                dictionary: CFDictionaryRef,
+                key: &CFString,
+            ) -> Option<u64> {
+                dictionary_value(dictionary, key)?
+                    .downcast::<CFNumber>()
+                    .and_then(|number| number.to_i64())
+                    .and_then(|value| u64::try_from(value).ok())
+            }
+
+            pub(crate) fn dictionary_u32(
+                dictionary: CFDictionaryRef,
+                key: &CFString,
+            ) -> Option<u32> {
+                dictionary_value(dictionary, key)?
+                    .downcast::<CFNumber>()
+                    .and_then(|number| number.to_i64())
+                    .and_then(|value| u32::try_from(value).ok())
+            }
+
+            pub(crate) fn dictionary_i32(
+                dictionary: CFDictionaryRef,
+                key: &CFString,
+            ) -> Option<i32> {
+                dictionary_value(dictionary, key)?
+                    .downcast::<CFNumber>()
+                    .and_then(|number| number.to_i64())
+                    .and_then(|value| i32::try_from(value).ok())
+            }
+
+            pub(crate) fn dictionary_array(
+                dictionary: CFDictionaryRef,
+                key: &CFString,
+            ) -> Option<CFArrayRef> {
+                let value = dictionary_value(dictionary, key)?;
+                value
+                    .instance_of::<UntypedCFArray>()
+                    .then_some(value.as_CFTypeRef() as CFArrayRef)
+            }
+
+            pub(crate) fn dictionary_dictionary(
+                dictionary: CFDictionaryRef,
+                key: &CFString,
+            ) -> Option<CFDictionaryRef> {
+                let value = dictionary_value(dictionary, key)?;
+                value
+                    .instance_of::<UntypedCFDictionary>()
+                    .then_some(value.as_CFTypeRef() as CFDictionaryRef)
+            }
+        }
+
+        pub(crate) fn cf_array_count(array: CFArrayRef) -> usize {
+            servo_cf::array_len(array)
+        }
+
+        pub(crate) fn cf_array_iter(array: CFArrayRef) -> impl Iterator<Item = CFTypeRef> {
+            servo_cf::array_iter(array)
+        }
+
+        pub(crate) fn cf_as_dictionary(value: CFTypeRef) -> Option<CFDictionaryRef> {
+            servo_cf::as_dictionary(value)
+        }
+
+        pub(crate) fn cf_string(value: &str) -> Result<CfOwned, MacosNativeProbeError> {
+            if value.as_bytes().contains(&0) {
+                return Err(MacosNativeProbeError::MissingTopology(
+                    "CFStringCreateWithCString",
+                ));
+            }
+
+            Ok(CfOwned::from_servo(servo_cf::string(value)))
+        }
+
+        pub(crate) fn cf_number_from_u64(value: u64) -> Result<CfOwned, MacosNativeProbeError> {
+            servo_cf::number_from_u64(value).map(CfOwned::from_servo)
+        }
+
+        pub(crate) fn cf_array_from_u64s(values: &[u64]) -> Result<CfOwned, MacosNativeProbeError> {
+            servo_cf::array_from_u64s(values).map(CfOwned::from_servo)
+        }
+
+        pub(crate) fn cf_number_to_i64(number: CFTypeRef) -> Option<i64> {
+            servo_cf::number_to_i64(number)
+        }
+
+        pub(crate) fn cf_number_to_u64(number: CFTypeRef) -> Option<u64> {
+            cf_number_to_i64(number).and_then(|value| u64::try_from(value).ok())
+        }
+
+        pub(crate) fn cf_dictionary_string(
+            dictionary: CFDictionaryRef,
+            key: CFStringRef,
+        ) -> Option<String> {
+            let key = unsafe {
+                core_foundation::string::CFString::wrap_under_get_rule(
+                    key as core_foundation::string::CFStringRef,
+                )
+            };
+            servo_cf::dictionary_string(dictionary, &key)
+        }
+
+        pub(crate) fn cf_dictionary_u64(
+            dictionary: CFDictionaryRef,
+            key: CFStringRef,
+        ) -> Option<u64> {
+            let key = unsafe {
+                core_foundation::string::CFString::wrap_under_get_rule(
+                    key as core_foundation::string::CFStringRef,
+                )
+            };
+            servo_cf::dictionary_u64(dictionary, &key)
+        }
+
+        pub(crate) fn cf_dictionary_u32(
+            dictionary: CFDictionaryRef,
+            key: CFStringRef,
+        ) -> Option<u32> {
+            let key = unsafe {
+                core_foundation::string::CFString::wrap_under_get_rule(
+                    key as core_foundation::string::CFStringRef,
+                )
+            };
+            servo_cf::dictionary_u32(dictionary, &key)
+        }
+
+        pub(crate) fn cf_dictionary_i32(
+            dictionary: CFDictionaryRef,
+            key: CFStringRef,
+        ) -> Option<i32> {
+            let key = unsafe {
+                core_foundation::string::CFString::wrap_under_get_rule(
+                    key as core_foundation::string::CFStringRef,
+                )
+            };
+            servo_cf::dictionary_i32(dictionary, &key)
+        }
+
+        pub(crate) fn cf_dictionary_array(
+            dictionary: CFDictionaryRef,
+            key: CFStringRef,
+        ) -> Option<CFArrayRef> {
+            let key = unsafe {
+                core_foundation::string::CFString::wrap_under_get_rule(
+                    key as core_foundation::string::CFStringRef,
+                )
+            };
+            servo_cf::dictionary_array(dictionary, &key)
+        }
+
+        pub(crate) fn cf_dictionary_dictionary(
+            dictionary: CFDictionaryRef,
+            key: CFStringRef,
+        ) -> Option<CFDictionaryRef> {
+            let key = unsafe {
+                core_foundation::string::CFString::wrap_under_get_rule(
+                    key as core_foundation::string::CFStringRef,
+                )
+            };
+            servo_cf::dictionary_dictionary(dictionary, &key)
+        }
+    }
+
+    pub(super) mod skylight {
+        use super::super::*;
+
+        pub(crate) fn main_connection_id(
+            api: &RealNativeApi,
+        ) -> Result<u32, MacosNativeProbeError> {
+            let Some(symbol) = api.resolve_symbol("SLSMainConnectionID") else {
+                return Err(MacosNativeProbeError::MissingTopology(
+                    "SLSMainConnectionID",
+                ));
+            };
+
+            let main_connection_id: SlsMainConnectionIdFn = unsafe { std::mem::transmute(symbol) };
+            let connection_id = unsafe { main_connection_id() };
+
+            (connection_id != 0).then_some(connection_id).ok_or(
+                MacosNativeProbeError::MissingTopology("SLSMainConnectionID"),
+            )
+        }
+
+        pub(crate) fn copy_managed_display_spaces_raw(
+            api: &RealNativeApi,
+        ) -> Result<CfOwned, MacosNativeProbeError> {
+            let Some(symbol) = api.resolve_symbol("SLSCopyManagedDisplaySpaces") else {
+                return Err(MacosNativeProbeError::MissingTopology(
+                    "SLSCopyManagedDisplaySpaces",
+                ));
+            };
+
+            let copy_managed_display_spaces: SlsCopyManagedDisplaySpacesFn =
+                unsafe { std::mem::transmute(symbol) };
+            let connection_id = main_connection_id(api)?;
+            let payload =
+                unsafe { CfOwned::from_create_rule(copy_managed_display_spaces(connection_id)) }
+                    .ok_or(MacosNativeProbeError::MissingTopology(
+                        "SLSCopyManagedDisplaySpaces",
+                    ))?;
+
+            Ok(payload)
+        }
+
+        pub(crate) fn current_space_for_display(
+            api: &RealNativeApi,
+            display_identifier: &str,
+        ) -> Result<u64, MacosNativeProbeError> {
+            let Some(symbol) = api.resolve_symbol("SLSManagedDisplayGetCurrentSpace") else {
+                return Err(MacosNativeProbeError::MissingTopology(
+                    "SLSManagedDisplayGetCurrentSpace",
+                ));
+            };
+
+            let current_space_for_display: SlsManagedDisplayGetCurrentSpaceFn =
+                unsafe { std::mem::transmute(symbol) };
+            let connection_id = main_connection_id(api)?;
+            let display_identifier = cf_string(display_identifier)?;
+            let space_id = unsafe {
+                current_space_for_display(connection_id, display_identifier.as_type_ref())
+            };
+
+            (space_id != 0)
+                .then_some(space_id)
+                .ok_or(MacosNativeProbeError::MissingTopology(
+                    "SLSManagedDisplayGetCurrentSpace",
+                ))
+        }
+
+        pub(crate) fn copy_windows_for_space_raw(
+            api: &RealNativeApi,
+            space_id: u64,
+        ) -> Result<CfOwned, MacosNativeProbeError> {
+            let Some(symbol) = api.resolve_symbol("SLSCopyWindowsWithOptionsAndTags") else {
+                return Err(MacosNativeProbeError::MissingTopology(
+                    "SLSCopyWindowsWithOptionsAndTags",
+                ));
+            };
+
+            let copy_windows_with_options_and_tags: SlsCopyWindowsWithOptionsAndTagsFn =
+                unsafe { std::mem::transmute(symbol) };
+            let connection_id = main_connection_id(api)?;
+            let space_number = cf_number_from_u64(space_id)?;
+            let space_list =
+                CfOwned::from_servo(servo_cf::array_from_type_refs(
+                    &[space_number.as_type_ref()],
+                ));
+            let mut set_tags = 0i64;
+            let mut clear_tags = 0i64;
+            let payload = unsafe {
+                copy_windows_with_options_and_tags(
+                    connection_id,
+                    0,
+                    space_list.as_type_ref() as CFArrayRef,
+                    0x2,
+                    &mut set_tags,
+                    &mut clear_tags,
+                )
+            };
+            let payload = unsafe { CfOwned::from_create_rule(payload) }.ok_or(
+                MacosNativeProbeError::MissingTopology("SLSCopyWindowsWithOptionsAndTags"),
+            )?;
+
+            Ok(payload)
+        }
+
+        pub(crate) fn copy_managed_display_for_space_raw(
+            api: &RealNativeApi,
+            space_id: u64,
+        ) -> Result<CfOwned, MacosNativeOperationError> {
+            let Some(symbol) = api.resolve_symbol("SLSCopyManagedDisplayForSpace") else {
+                return Err(MacosNativeOperationError::CallFailed(
+                    "SLSCopyManagedDisplayForSpace",
+                ));
+            };
+
+            let copy_managed_display_for_space: SlsCopyManagedDisplayForSpaceFn =
+                unsafe { std::mem::transmute(symbol) };
+            let connection_id = main_connection_id(api)?;
+            let payload = unsafe {
+                CfOwned::from_create_rule(copy_managed_display_for_space(connection_id, space_id))
+            }
+            .ok_or(MacosNativeOperationError::CallFailed(
+                "SLSCopyManagedDisplayForSpace",
+            ))?;
+
+            Ok(payload)
+        }
+
+        pub(crate) fn modify_windows_in_spaces(
+            api: &RealNativeApi,
+            window_ids: &[u64],
+            space_ids: &[u64],
+            add: bool,
+        ) -> Result<bool, MacosNativeProbeError> {
+            let symbol_name = if add {
+                ["SLSAddWindowsToSpaces", "CGSAddWindowsToSpaces"]
+            } else {
+                ["SLSRemoveWindowsFromSpaces", "CGSRemoveWindowsFromSpaces"]
+            };
+            let Some(symbol) = symbol_name
+                .into_iter()
+                .find_map(|name| api.resolve_symbol(name))
+            else {
+                return Ok(false);
+            };
+            let connection_id = main_connection_id(api)?;
+            let window_list = cf_array_from_u64s(window_ids)?;
+            let space_list = cf_array_from_u64s(space_ids)?;
+            let status = if add {
+                let add_windows_to_spaces: SlsAddWindowsToSpacesFn =
+                    unsafe { std::mem::transmute(symbol) };
+                unsafe {
+                    add_windows_to_spaces(
+                        connection_id,
+                        window_list.as_type_ref() as CFArrayRef,
+                        space_list.as_type_ref() as CFArrayRef,
+                    )
+                }
+            } else {
+                let remove_windows_from_spaces: SlsRemoveWindowsFromSpacesFn =
+                    unsafe { std::mem::transmute(symbol) };
+                unsafe {
+                    remove_windows_from_spaces(
+                        connection_id,
+                        window_list.as_type_ref() as CFArrayRef,
+                        space_list.as_type_ref() as CFArrayRef,
+                    )
+                }
+            };
+
+            (status == 0)
+                .then_some(true)
+                .ok_or(MacosNativeProbeError::MissingTopology(if add {
+                    "SLSAddWindowsToSpaces"
+                } else {
+                    "SLSRemoveWindowsFromSpaces"
+                }))
+        }
+
+        pub(crate) fn switch_space(
+            api: &RealNativeApi,
+            space_id: u64,
+        ) -> Result<(), MacosNativeOperationError> {
+            let Some(symbol) = api.resolve_symbol("SLSManagedDisplaySetCurrentSpace") else {
+                return Err(MacosNativeOperationError::CallFailed(
+                    "SLSManagedDisplaySetCurrentSpace",
+                ));
+            };
+
+            let set_current_space: SlsManagedDisplaySetCurrentSpaceFn =
+                unsafe { std::mem::transmute(symbol) };
+            let connection_id = main_connection_id(api)?;
+            let display_identifier = copy_managed_display_for_space_raw(api, space_id)?;
+
+            unsafe {
+                set_current_space(
+                    connection_id,
+                    display_identifier.as_type_ref() as CFStringRef,
+                    space_id,
+                );
+            }
+
+            Ok(())
+        }
+
+        #[cfg(test)]
+        pub(crate) fn move_window_to_space(
+            api: &RealNativeApi,
+            window_id: u64,
+            space_id: u64,
+        ) -> Result<(), MacosNativeOperationError> {
+            let Some(symbol) = api.resolve_symbol("SLSMoveWindowsToManagedSpace") else {
+                return Err(MacosNativeOperationError::CallFailed(
+                    "SLSMoveWindowsToManagedSpace",
+                ));
+            };
+
+            let move_windows_to_managed_space: SlsMoveWindowsToManagedSpaceFn =
+                unsafe { std::mem::transmute(symbol) };
+            let connection_id = main_connection_id(api)?;
+            let window_number =
+                cf_number_from_u64(window_id).map_err(MacosNativeOperationError::from)?;
+            let window_list = CfOwned::from_servo(servo_cf::array_from_type_refs(&[
+                window_number.as_type_ref()
+            ]));
+
+            unsafe {
+                move_windows_to_managed_space(
+                    connection_id,
+                    window_list.as_type_ref() as CFArrayRef,
+                    space_id,
+                );
+            }
+
+            Ok(())
+        }
+
+        pub(crate) fn parse_display_identifiers(
+            payload: CFArrayRef,
+        ) -> Result<Vec<String>, MacosNativeProbeError> {
+            let display_identifier_key = cf_string("Display Identifier")?;
+
+            cf_array_iter(payload)
+                .map(|display| {
+                    let display = cf_as_dictionary(display).ok_or(
+                        MacosNativeProbeError::MissingTopology("SLSCopyManagedDisplaySpaces"),
+                    )?;
+                    cf_dictionary_string(display, display_identifier_key.as_type_ref()).ok_or(
+                        MacosNativeProbeError::MissingTopology("SLSCopyManagedDisplaySpaces"),
+                    )
+                })
+                .collect()
+        }
+
+        pub(crate) fn parse_active_space_ids(
+            payload: CFArrayRef,
+        ) -> Result<HashSet<u64>, MacosNativeProbeError> {
+            let current_space_key = cf_string("Current Space")?;
+            let current_space_id_key = cf_string("Current Space ID")?;
+            let current_managed_space_id_key = cf_string("CurrentManagedSpaceID")?;
+            let managed_space_id_key = cf_string("ManagedSpaceID")?;
+            let id64_key = cf_string("id64")?;
+            let active_space_ids = cf_array_iter(payload)
+                .map(|display| {
+                    let display = cf_as_dictionary(display).ok_or(
+                        MacosNativeProbeError::MissingTopology("SLSCopyManagedDisplaySpaces"),
+                    )?;
+
+                    cf_dictionary_u64(display, current_space_id_key.as_type_ref())
+                        .or_else(|| {
+                            cf_dictionary_u64(display, current_managed_space_id_key.as_type_ref())
+                        })
+                        .or_else(|| {
+                            cf_dictionary_dictionary(display, current_space_key.as_type_ref())
+                                .and_then(|current_space| {
+                                    cf_dictionary_u64(
+                                        current_space,
+                                        managed_space_id_key.as_type_ref(),
+                                    )
+                                    .or_else(|| {
+                                        cf_dictionary_u64(current_space, id64_key.as_type_ref())
+                                    })
+                                })
+                        })
+                        .ok_or(MacosNativeProbeError::MissingTopology(
+                            "SLSCopyManagedDisplaySpaces",
+                        ))
+                })
+                .collect::<Result<HashSet<_>, _>>()?;
+
+            (!active_space_ids.is_empty())
+                .then_some(active_space_ids)
+                .ok_or(MacosNativeProbeError::MissingTopology(
+                    "SLSCopyManagedDisplaySpaces",
+                ))
+        }
+
+        pub(crate) fn parse_managed_spaces(
+            payload: CFArrayRef,
+        ) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
+            let spaces_key = cf_string("Spaces")?;
+            let mut spaces = Vec::new();
+
+            for (display_index, display) in cf_array_iter(payload).enumerate() {
+                let display = cf_as_dictionary(display).ok_or(
+                    MacosNativeProbeError::MissingTopology("SLSCopyManagedDisplaySpaces"),
+                )?;
+                let display_spaces =
+                    cf_dictionary_array(display, spaces_key.as_type_ref() as CFStringRef).ok_or(
+                        MacosNativeProbeError::MissingTopology("SLSCopyManagedDisplaySpaces"),
+                    )?;
+
+                for space in cf_array_iter(display_spaces) {
+                    let space = cf_as_dictionary(space).ok_or(
+                        MacosNativeProbeError::MissingTopology("SLSCopyManagedDisplaySpaces"),
+                    )?;
+                    spaces.push(parse_raw_space_record(space, display_index)?);
+                }
+            }
+
+            Ok(spaces)
+        }
+
+        fn parse_raw_space_record(
+            space: CFDictionaryRef,
+            display_index: usize,
+        ) -> Result<RawSpaceRecord, MacosNativeProbeError> {
+            let managed_space_id_key = cf_string("ManagedSpaceID")?;
+            let space_type_key = cf_string("type")?;
+            let tile_layout_manager_key = cf_string("TileLayoutManager")?;
+            let tile_spaces_key = cf_string("TileSpaces")?;
+            let id64_key = cf_string("id64")?;
+
+            let managed_space_id = cf_dictionary_u64(space, managed_space_id_key.as_type_ref())
+                .ok_or(MacosNativeProbeError::MissingTopology(
+                    "SLSCopyManagedDisplaySpaces",
+                ))?;
+            let space_type = cf_dictionary_i32(space, space_type_key.as_type_ref()).ok_or(
+                MacosNativeProbeError::MissingTopology("SLSCopyManagedDisplaySpaces"),
+            )?;
+            let tile_layout_manager =
+                cf_dictionary_dictionary(space, tile_layout_manager_key.as_type_ref());
+            let has_tile_layout_manager = tile_layout_manager.is_some();
+            let tile_spaces = tile_layout_manager
+                .and_then(|manager| cf_dictionary_array(manager, tile_spaces_key.as_type_ref()))
+                .map(|tile_spaces| {
+                    cf_array_iter(tile_spaces)
+                        .filter_map(|tile_space| {
+                            cf_as_dictionary(tile_space).and_then(|tile_space| {
+                                cf_dictionary_u64(tile_space, managed_space_id_key.as_type_ref())
+                                    .or_else(|| {
+                                        cf_dictionary_u64(tile_space, id64_key.as_type_ref())
+                                    })
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+
+            Ok(RawSpaceRecord {
+                managed_space_id,
+                display_index,
+                space_type,
+                tile_spaces,
+                has_tile_layout_manager,
+                stage_manager_managed: stage_manager_managed(space),
+            })
+        }
+
+        fn stage_manager_managed(dictionary: CFDictionaryRef) -> bool {
+            [
+                "StageManagerManaged",
+                "StageManagerSpace",
+                "isStageManager",
+                "StageManager",
+            ]
+            .into_iter()
+            .any(|key| {
+                cf_string(key)
+                    .ok()
+                    .and_then(|key| cf_dictionary_u64(dictionary, key.as_type_ref() as CFStringRef))
+                    .is_some()
+            })
+        }
+
+        pub(crate) fn parse_window_ids(
+            payload: CFArrayRef,
+        ) -> Result<Vec<u64>, MacosNativeProbeError> {
+            cf_array_iter(payload)
+                .map(|window_id| {
+                    cf_number_to_u64(window_id).ok_or(MacosNativeProbeError::MissingTopology(
+                        "SLSCopyWindowsWithOptionsAndTags",
+                    ))
+                })
+                .collect()
+        }
+
+        pub(crate) fn borrowed_active_space_for_display(
+            api: &RealNativeApi,
+            target_space_id: u64,
+        ) -> Result<Option<u64>, MacosNativeProbeError> {
+            let spaces = MacosNativeApi::managed_spaces(api)?;
+            let active_space_ids = MacosNativeApi::active_space_ids(api)?;
+            let Some(display_index) = spaces
+                .iter()
+                .find(|space| space.managed_space_id == target_space_id)
+                .map(|space| space.display_index)
+            else {
+                return Ok(None);
+            };
+            Ok(active_space_ids.into_iter().find(|space_id| {
+                spaces
+                    .iter()
+                    .find(|space| space.managed_space_id == *space_id)
+                    .map(|space| space.display_index)
+                    == Some(display_index)
+                    && *space_id != target_space_id
+            }))
+        }
+    }
+
+    pub(super) mod ax {
+        use super::super::*;
+        use super::window_server;
+
+        pub(crate) fn focused_window_id<App, Window, FocusedApplication, FocusedWindow, WindowId>(
+            mut focused_application: FocusedApplication,
+            mut focused_window: FocusedWindow,
+            mut window_id: WindowId,
+        ) -> Result<Option<u64>, MacosNativeProbeError>
+        where
+            FocusedApplication: FnMut() -> Result<Option<App>, MacosNativeProbeError>,
+            FocusedWindow: FnMut(&App) -> Result<Option<Window>, MacosNativeProbeError>,
+            WindowId: FnMut(&Window) -> Result<u64, MacosNativeProbeError>,
+        {
+            let Some(application) = focused_application()? else {
+                return Ok(None);
+            };
+            let Some(window) = focused_window(&application)? else {
+                return Ok(None);
+            };
+            window_id(&window).map(Some)
+        }
+
+        pub(crate) fn copy_system_wide_ax_element(
+            _api: &RealNativeApi,
+        ) -> Result<CfOwned, MacosNativeProbeError> {
+            unsafe { CfOwned::from_create_rule(AXUIElementCreateSystemWide() as CFTypeRef) }.ok_or(
+                MacosNativeProbeError::MissingTopology("AXUIElementCreateSystemWide"),
+            )
+        }
+
+        pub(crate) fn copy_ax_attribute_value(
+            _api: &RealNativeApi,
+            element: AXUIElementRef,
+            attribute_name: &str,
+        ) -> Result<Option<CfOwned>, MacosNativeProbeError> {
+            let attribute = cf_string(attribute_name)?;
+            let mut value = ptr::null();
+            let status = unsafe {
+                AXUIElementCopyAttributeValue(element, attribute.as_type_ref(), &mut value)
+            };
+
+            if status != 0 {
+                return Ok(None);
+            }
+
+            Ok(unsafe { CfOwned::from_create_rule(value) })
+        }
+
+        pub(crate) fn copy_focused_application_ax(
+            api: &RealNativeApi,
+        ) -> Result<Option<CfOwned>, MacosNativeProbeError> {
+            let system = copy_system_wide_ax_element(api)?;
+            copy_ax_attribute_value(
+                api,
+                system.as_type_ref() as AXUIElementRef,
+                "AXFocusedApplication",
+            )
+        }
+
+        pub(crate) fn copy_focused_window_ax(
+            api: &RealNativeApi,
+            application: &CfOwned,
+        ) -> Result<Option<CfOwned>, MacosNativeProbeError> {
+            copy_ax_attribute_value(
+                api,
+                application.as_type_ref() as AXUIElementRef,
+                "AXFocusedWindow",
+            )
+        }
+
+        pub(crate) fn ax_pid(
+            _api: &RealNativeApi,
+            element: &CfOwned,
+        ) -> Result<u32, MacosNativeProbeError> {
+            let mut pid = 0;
+            let status =
+                unsafe { AXUIElementGetPid(element.as_type_ref() as AXUIElementRef, &mut pid) };
+            if status != 0 || pid <= 0 {
+                return Err(MacosNativeProbeError::MissingFocusedWindow);
+            }
+            Ok(pid as u32)
+        }
+
+        pub(crate) fn ax_window_id(
+            api: &RealNativeApi,
+            element: &CfOwned,
+        ) -> Result<u64, MacosNativeProbeError> {
+            let Some(symbol) = api.resolve_symbol("_AXUIElementGetWindow") else {
+                return Err(MacosNativeProbeError::MissingTopology(
+                    "_AXUIElementGetWindow",
+                ));
+            };
+            let ax_ui_element_get_window: unsafe extern "C" fn(
+                AXUIElementRef,
+                *mut u32,
+            ) -> OSStatus = unsafe { std::mem::transmute(symbol) };
+            let mut window_id = 0u32;
+            let status = unsafe {
+                ax_ui_element_get_window(element.as_type_ref() as AXUIElementRef, &mut window_id)
+            };
+
+            if status != 0 || window_id == 0 {
+                return Err(MacosNativeProbeError::MissingFocusedWindow);
+            }
+
+            Ok(window_id as u64)
+        }
+
+        pub(crate) fn probe_focused_window_id(
+            api: &RealNativeApi,
+        ) -> Result<Option<u64>, MacosNativeProbeError> {
+            focused_window_id(
+                || {
+                    let _span =
+                        tracing::debug_span!("macos_native.ax.focused_application").entered();
+                    copy_focused_application_ax(api)
+                },
+                |application| {
+                    let _span = tracing::debug_span!("macos_native.ax.focused_window").entered();
+                    copy_focused_window_ax(api, application)
+                },
+                |window| {
+                    let _span = tracing::debug_span!("macos_native.ax.window_id").entered();
+                    ax_window_id(api, window)
+                },
+            )
+        }
+
+        pub(crate) fn copy_application_ax_element(
+            _api: &RealNativeApi,
+            pid: u32,
+        ) -> Result<CfOwned, MacosNativeOperationError> {
+            unsafe {
+                CfOwned::from_create_rule(AXUIElementCreateApplication(pid as c_int) as CFTypeRef)
+            }
+            .ok_or(MacosNativeOperationError::CallFailed(
+                "AXUIElementCreateApplication",
+            ))
+        }
+
+        pub(crate) fn copy_window_ax_for_id(
+            api: &RealNativeApi,
+            pid: u32,
+            window_id: u64,
+        ) -> Result<CfOwned, MacosNativeOperationError> {
+            let application = copy_application_ax_element(api, pid)?;
+            let windows = copy_ax_attribute_value(
+                api,
+                application.as_type_ref() as AXUIElementRef,
+                "AXWindows",
+            )
+            .map_err(MacosNativeOperationError::from)?
+            .ok_or(MacosNativeOperationError::MissingWindow(window_id))?;
+            let windows = windows.as_type_ref() as CFArrayRef;
+
+            for candidate in cf_array_iter(windows) {
+                let Some(candidate) = (unsafe { CfOwned::from_create_rule(CFRetain(candidate)) })
+                else {
+                    continue;
+                };
+                if ax_window_id(api, &candidate).ok() == Some(window_id) {
+                    return Ok(candidate);
+                }
+            }
+
+            let ax_window_ids = cf_array_iter(windows)
+                .filter_map(|candidate| {
+                    let candidate = unsafe { CfOwned::from_create_rule(CFRetain(candidate)) }?;
+                    ax_window_id(api, &candidate).ok()
+                })
+                .collect::<Vec<_>>();
+            logging::debug(format!(
+                "macos_native: target window {window_id} missing from AXWindows for pid {pid}; ax_window_ids={ax_window_ids:?} focused_window_id={:?}",
+                MacosNativeApi::focused_window_id(api).ok().flatten()
+            ));
+            Err(MacosNativeOperationError::MissingWindow(window_id))
+        }
+
+        pub(crate) fn raise_window_via_ax(
+            api: &RealNativeApi,
+            window_id: u64,
+            pid: u32,
+        ) -> Result<(), MacosNativeOperationError> {
+            let window = copy_window_ax_for_id(api, pid, window_id)?;
+            let action = cf_string("AXRaise").map_err(MacosNativeOperationError::from)?;
+            let status = unsafe {
+                AXUIElementPerformAction(
+                    window.as_type_ref() as AXUIElementRef,
+                    action.as_type_ref(),
+                )
+            };
+
+            (status == 0)
+                .then_some(())
+                .ok_or(MacosNativeOperationError::CallFailed(
+                    "AXUIElementPerformAction",
+                ))
+        }
+
+        pub(crate) fn set_window_frame_via_ax(
+            api: &RealNativeApi,
+            window_id: u64,
+            pid: u32,
+            frame: Rect,
+        ) -> Result<(), MacosNativeOperationError> {
+            let window = copy_window_ax_for_id(api, pid, window_id)?;
+            let position_attr = cf_string("AXPosition").map_err(MacosNativeOperationError::from)?;
+            let size_attr = cf_string("AXSize").map_err(MacosNativeOperationError::from)?;
+            let position = CGPoint {
+                x: f64::from(frame.x),
+                y: f64::from(frame.y),
+            };
+            let position_value = unsafe {
+                CfOwned::from_create_rule(AXValueCreate(
+                    K_AX_VALUE_TYPE_CGPOINT,
+                    (&raw const position).cast(),
+                ))
+            }
+            .ok_or(MacosNativeOperationError::CallFailed("AXValueCreate"))?;
+            let position_status = unsafe {
+                AXUIElementSetAttributeValue(
+                    window.as_type_ref() as AXUIElementRef,
+                    position_attr.as_type_ref(),
+                    position_value.as_type_ref(),
+                )
+            };
+
+            if position_status != 0 {
+                return Err(MacosNativeOperationError::CallFailed(
+                    "AXUIElementSetAttributeValue",
+                ));
+            }
+
+            let size = CGSize {
+                width: f64::from(frame.w),
+                height: f64::from(frame.h),
+            };
+            let size_value = unsafe {
+                CfOwned::from_create_rule(AXValueCreate(
+                    K_AX_VALUE_TYPE_CGSIZE,
+                    (&raw const size).cast(),
+                ))
+            }
+            .ok_or(MacosNativeOperationError::CallFailed("AXValueCreate"))?;
+            let size_status = unsafe {
+                AXUIElementSetAttributeValue(
+                    window.as_type_ref() as AXUIElementRef,
+                    size_attr.as_type_ref(),
+                    size_value.as_type_ref(),
+                )
+            };
+
+            (size_status == 0)
+                .then_some(())
+                .ok_or(MacosNativeOperationError::CallFailed(
+                    "AXUIElementSetAttributeValue",
+                ))
+        }
+
+        pub(crate) fn swap_window_frames(
+            api: &RealNativeApi,
+            source_window_id: u64,
+            source_frame: Rect,
+            target_window_id: u64,
+            target_frame: Rect,
+        ) -> Result<(), MacosNativeOperationError> {
+            let source = window_server::window_description(api, source_window_id)?;
+            let source_pid = source
+                .pid
+                .ok_or(MacosNativeOperationError::MissingWindowPid(
+                    source_window_id,
+                ))?;
+            let target = window_server::window_description(api, target_window_id)?;
+            let target_pid = target
+                .pid
+                .ok_or(MacosNativeOperationError::MissingWindowPid(
+                    target_window_id,
+                ))?;
+
+            set_window_frame_via_ax(api, source_window_id, source_pid, target_frame)?;
+            set_window_frame_via_ax(api, target_window_id, target_pid, source_frame)
+        }
+    }
+
+    pub(super) mod window_server {
+        use super::super::*;
+        use super::ax;
+        use super::skylight;
+
+        pub(crate) fn process_serial_number_for_pid(
+            api: &RealNativeApi,
+            pid: u32,
+        ) -> Result<ProcessSerialNumber, MacosNativeOperationError> {
+            let Some(get_process_for_pid_symbol) = api.resolve_symbol("GetProcessForPID") else {
+                return Err(MacosNativeOperationError::CallFailed("GetProcessForPID"));
+            };
+            let get_process_for_pid: GetProcessForPidFn =
+                unsafe { std::mem::transmute(get_process_for_pid_symbol) };
+            let mut psn = ProcessSerialNumber::default();
+            let status = unsafe { get_process_for_pid(pid as c_int, &mut psn) };
+
+            (status == 0)
+                .then_some(psn)
+                .ok_or(MacosNativeOperationError::CallFailed("GetProcessForPID"))
+        }
+
+        pub(crate) fn front_process_window(
+            api: &RealNativeApi,
+            psn: &ProcessSerialNumber,
+            window_id: u64,
+        ) -> Result<(), MacosNativeOperationError> {
+            let Some(front_process_symbol) = api.resolve_symbol("_SLPSSetFrontProcessWithOptions")
+            else {
+                return Err(MacosNativeOperationError::CallFailed(
+                    "_SLPSSetFrontProcessWithOptions",
+                ));
+            };
+            let front_process_with_options: SlpsSetFrontProcessWithOptionsFn =
+                unsafe { std::mem::transmute(front_process_symbol) };
+            let status = unsafe {
+                front_process_with_options(psn, window_id as CGWindowID, CPS_USER_GENERATED)
+            };
+
+            (status == 0)
+                .then_some(())
+                .ok_or(MacosNativeOperationError::CallFailed(
+                    "_SLPSSetFrontProcessWithOptions",
+                ))
+        }
+
+        pub(crate) fn make_key_window(
+            api: &RealNativeApi,
+            psn: &ProcessSerialNumber,
+            window_id: u64,
+        ) -> Result<(), MacosNativeOperationError> {
+            let Some(post_event_symbol) = api.resolve_symbol("SLPSPostEventRecordTo") else {
+                return Err(MacosNativeOperationError::CallFailed(
+                    "SLPSPostEventRecordTo",
+                ));
+            };
+            let post_event_record_to: SlpsPostEventRecordToFn =
+                unsafe { std::mem::transmute(post_event_symbol) };
+            let window_id = u32::try_from(window_id)
+                .map_err(|_| MacosNativeOperationError::MissingWindow(window_id))?;
+            let mut event_bytes = [0u8; 0xf8];
+            event_bytes[0x04] = 0xf8;
+            event_bytes[0x3a] = 0x10;
+            event_bytes[0x3c..0x40].copy_from_slice(&window_id.to_ne_bytes());
+            event_bytes[0x20..0x30].fill(0xff);
+
+            event_bytes[0x08] = 0x01;
+            let press_status =
+                unsafe { post_event_record_to(psn, event_bytes.as_ptr().cast::<c_void>()) };
+            if press_status != 0 {
+                return Err(MacosNativeOperationError::CallFailed(
+                    "SLPSPostEventRecordTo",
+                ));
+            }
+
+            event_bytes[0x08] = 0x02;
+            let release_status =
+                unsafe { post_event_record_to(psn, event_bytes.as_ptr().cast::<c_void>()) };
+            if release_status != 0 {
+                return Err(MacosNativeOperationError::CallFailed(
+                    "SLPSPostEventRecordTo",
+                ));
+            }
+
+            Ok(())
+        }
+
+        pub(crate) fn post_keyboard_event(
+            _api: &RealNativeApi,
+            key_code: CGKeyCode,
+            key_down: bool,
+            flags: CGEventFlags,
+        ) -> Result<(), MacosNativeOperationError> {
+            let event = unsafe {
+                CfOwned::from_create_rule(CGEventCreateKeyboardEvent(
+                    ptr::null(),
+                    key_code,
+                    if key_down { 1 } else { 0 },
+                ))
+            }
+            .ok_or(MacosNativeOperationError::CallFailed(
+                "CGEventCreateKeyboardEvent",
+            ))?;
+
+            unsafe {
+                CGEventSetFlags(event.as_type_ref(), flags);
+                CGEventPost(K_CG_HID_EVENT_TAP, event.as_type_ref());
+            }
+
+            Ok(())
+        }
+
+        pub(crate) fn copy_window_descriptions_raw(
+            _api: &RealNativeApi,
+            window_ids: CFArrayRef,
+        ) -> Result<CfOwned, MacosNativeProbeError> {
+            // Keep this raw for now: current callers build CFNumber-object arrays for this flow,
+            // while Servo models create_description_from_array as CFArray<CGWindowID> copyables.
+            let descriptions = unsafe {
+                CfOwned::from_create_rule(CGWindowListCreateDescriptionFromArray(window_ids))
+            }
+            .ok_or(MacosNativeProbeError::MissingTopology(
+                "CGWindowListCreateDescriptionFromArray",
+            ))?;
+
+            if cf_array_count(descriptions.as_type_ref() as CFArrayRef) > 0 {
+                return Ok(descriptions);
+            }
+
+            let target_window_ids = skylight::parse_window_ids(window_ids)?;
+            let fallback = copy_matching_onscreen_window_descriptions_raw(&target_window_ids)?;
+            crate::logging::debug(format!(
+                "macos_native: falling back to onscreen descriptions requested_ids={} fallback_descriptions={}",
+                target_window_ids.len(),
+                cf_array_count(fallback.as_type_ref() as CFArrayRef)
+            ));
+            Ok(fallback)
+        }
+
+        pub(crate) fn active_space_windows_without_app_ids(
+            api: &RealNativeApi,
+            space_id: u64,
+        ) -> Result<Vec<RawWindow>, MacosNativeProbeError> {
+            let payload = skylight::copy_windows_for_space_raw(api, space_id)?;
+            let raw_window_ids = skylight::parse_window_ids(payload.as_type_ref() as CFArrayRef)?;
+            let visible_order = query_visible_window_order(&raw_window_ids)?;
+            let descriptions =
+                copy_window_descriptions_raw(api, payload.as_type_ref() as CFArrayRef)?;
+            parse_window_descriptions(descriptions.as_type_ref() as CFArrayRef, &visible_order)
+        }
+
+        pub(crate) fn window_descriptions_for_space_without_visible_order(
+            api: &RealNativeApi,
+            space_id: u64,
+        ) -> Result<Vec<RawWindow>, MacosNativeProbeError> {
+            let payload = skylight::copy_windows_for_space_raw(api, space_id)?;
+            let descriptions =
+                copy_window_descriptions_raw(api, payload.as_type_ref() as CFArrayRef)?;
+            parse_window_descriptions(descriptions.as_type_ref() as CFArrayRef, &HashMap::new())
+                .map(enrich_real_window_app_ids)
+        }
+
+        pub(crate) fn focus_window(
+            api: &RealNativeApi,
+            window_id: u64,
+        ) -> Result<(), MacosNativeOperationError> {
+            focus_window_via_process_and_raise(
+                window_id,
+                |target_window_id| {
+                    let window = window_description(api, target_window_id)?;
+                    window
+                        .pid
+                        .ok_or(MacosNativeOperationError::MissingWindowPid(
+                            target_window_id,
+                        ))
+                },
+                |pid| process_serial_number_for_pid(api, pid),
+                |psn, target_window_id| front_process_window(api, psn, target_window_id),
+                |psn, target_window_id| make_key_window(api, psn, target_window_id),
+                |target_window_id, pid| ax::raise_window_via_ax(api, target_window_id, pid),
+            )
+        }
+
+        pub(crate) fn window_description(
+            api: &RealNativeApi,
+            window_id: u64,
+        ) -> Result<RawWindow, MacosNativeOperationError> {
+            let window_number =
+                cf_number_from_u64(window_id).map_err(MacosNativeOperationError::from)?;
+            let window_list = CfOwned::from_servo(servo_cf::array_from_type_refs(&[
+                window_number.as_type_ref()
+            ]));
+            let descriptions =
+                copy_window_descriptions_raw(api, window_list.as_type_ref() as CFArrayRef)?;
+            let visible_order = HashMap::new();
+
+            parse_window_descriptions(descriptions.as_type_ref() as CFArrayRef, &visible_order)?
+                .into_iter()
+                .find(|window| window.id == window_id)
+                .ok_or(MacosNativeOperationError::MissingWindow(window_id))
+        }
+
+        pub(crate) fn query_visible_window_order(
+            target_window_ids: &[u64],
+        ) -> Result<HashMap<u64, usize>, MacosNativeProbeError> {
+            let onscreen_descriptions = copy_onscreen_window_descriptions_raw()?;
+            let target_window_ids = target_window_ids.iter().copied().collect::<HashSet<_>>();
+            let mut visible_order = HashMap::new();
+            let window_number_key = cg_window_number_key();
+
+            for (index, window) in
+                cf_array_iter(onscreen_descriptions.as_type_ref() as CFArrayRef).enumerate()
+            {
+                let Some(window) = cf_as_dictionary(window) else {
+                    continue;
+                };
+                let Some(window_id) = cf_dictionary_u64(window, window_number_key) else {
+                    continue;
+                };
+
+                if target_window_ids.contains(&window_id) {
+                    visible_order.insert(window_id, index);
+                }
+            }
+
+            Ok(visible_order)
+        }
+
+        pub(crate) fn copy_onscreen_window_descriptions_raw(
+        ) -> Result<CfOwned, MacosNativeProbeError> {
+            core_graphics::window::copy_window_info(
+                K_CG_WINDOW_LIST_OPTION_ON_SCREEN_ONLY | K_CG_WINDOW_LIST_EXCLUDE_DESKTOP_ELEMENTS,
+                K_CG_NULL_WINDOW_ID,
+            )
+            .map(CfOwned::from_servo)
+            .ok_or(MacosNativeProbeError::MissingTopology(
+                "CGWindowListCopyWindowInfo",
+            ))
+        }
+
+        pub(crate) fn onscreen_window_ids_from_descriptions(
+            payload: CFArrayRef,
+        ) -> Result<HashSet<u64>, MacosNativeProbeError> {
+            let window_number_key = cg_window_number_key();
+            Ok(cf_array_iter(payload)
+                .filter_map(|description| {
+                    let description = cf_as_dictionary(description)?;
+                    cf_dictionary_u64(description, window_number_key)
+                })
+                .collect())
+        }
+
+        fn filter_window_descriptions_raw(
+            payload: CFArrayRef,
+            target_window_ids: &[u64],
+        ) -> Result<CfOwned, MacosNativeProbeError> {
+            let target_window_ids = target_window_ids.iter().copied().collect::<HashSet<_>>();
+            let window_number_key = cg_window_number_key();
+            let matching = cf_array_iter(payload)
+                .filter(|description| {
+                    cf_as_dictionary(*description)
+                        .and_then(|description| cf_dictionary_u64(description, window_number_key))
+                        .is_some_and(|window_id| target_window_ids.contains(&window_id))
+                })
+                .collect::<Vec<_>>();
+
+            Ok(CfOwned::from_servo(servo_cf::array_from_type_refs(
+                &matching,
+            )))
+        }
+
+        fn copy_matching_onscreen_window_descriptions_raw(
+            target_window_ids: &[u64],
+        ) -> Result<CfOwned, MacosNativeProbeError> {
+            let onscreen_descriptions = copy_onscreen_window_descriptions_raw()?;
+            filter_window_descriptions_raw(
+                onscreen_descriptions.as_type_ref() as CFArrayRef,
+                target_window_ids,
+            )
+        }
+
+        pub(crate) fn focused_window_record_from_onscreen_descriptions(
+            payload: CFArrayRef,
+            focused_window_id: u64,
+        ) -> Result<Option<FocusedWindowRecord>, MacosNativeProbeError> {
+            let window_number_key = cg_window_number_key();
+            let window_owner_pid_key = cg_window_owner_pid_key();
+            let window_name_key = cg_window_name_key();
+
+            for (index, description) in cf_array_iter(payload).enumerate() {
+                let Some(description) = cf_as_dictionary(description) else {
+                    continue;
+                };
+                let Some(window_id) = cf_dictionary_u64(description, window_number_key) else {
+                    continue;
+                };
+                if window_id != focused_window_id {
+                    continue;
+                }
+
+                let pid = cf_dictionary_u32(description, window_owner_pid_key);
+                return Ok(Some(FocusedWindowRecord {
+                    id: window_id,
+                    app_id: stable_app_id_from_real_window(pid, None),
+                    title: cf_dictionary_string(description, window_name_key),
+                    pid: pid.and_then(ProcessId::new),
+                    original_tile_index: index,
+                }));
+            }
+
+            Ok(None)
+        }
+
+        pub(crate) fn parse_window_descriptions(
+            payload: CFArrayRef,
+            visible_order: &HashMap<u64, usize>,
+        ) -> Result<Vec<RawWindow>, MacosNativeProbeError> {
+            let mut windows = Vec::new();
+            let window_number_key = cg_window_number_key();
+            let window_owner_pid_key = cg_window_owner_pid_key();
+            let window_name_key = cg_window_name_key();
+            let window_layer_key = cg_window_layer_key();
+
+            for description in cf_array_iter(payload) {
+                let description =
+                    cf_as_dictionary(description).ok_or(MacosNativeProbeError::MissingTopology(
+                        "CGWindowListCreateDescriptionFromArray",
+                    ))?;
+                let id = cf_dictionary_u64(description, window_number_key).ok_or(
+                    MacosNativeProbeError::MissingTopology(
+                        "CGWindowListCreateDescriptionFromArray",
+                    ),
+                )?;
+                let pid = cf_dictionary_u32(description, window_owner_pid_key);
+
+                windows.push(RawWindow {
+                    id,
+                    pid,
+                    app_id: None,
+                    title: cf_dictionary_string(description, window_name_key),
+                    level: cf_dictionary_i32(description, window_layer_key).unwrap_or_default(),
+                    visible_index: visible_order.get(&id).copied(),
+                    frame: cg_window_bounds(description),
+                });
+            }
+
+            Ok(windows)
+        }
+
+        pub(crate) fn assemble_real_active_space_windows(
+            payload: CFArrayRef,
+            visible_order: &HashMap<u64, usize>,
+        ) -> Result<Vec<RawWindow>, MacosNativeProbeError> {
+            parse_window_descriptions(payload, visible_order).map(enrich_real_window_app_ids)
+        }
+
+        pub(crate) fn cg_window_number_key() -> CFStringRef {
+            unsafe { core_graphics::window::kCGWindowNumber as CFStringRef }
+        }
+
+        pub(crate) fn cg_window_owner_pid_key() -> CFStringRef {
+            unsafe { core_graphics::window::kCGWindowOwnerPID as CFStringRef }
+        }
+
+        pub(crate) fn cg_window_name_key() -> CFStringRef {
+            unsafe { core_graphics::window::kCGWindowName as CFStringRef }
+        }
+
+        pub(crate) fn cg_window_layer_key() -> CFStringRef {
+            unsafe { core_graphics::window::kCGWindowLayer as CFStringRef }
+        }
+
+        pub(crate) fn cg_window_bounds_key() -> CFStringRef {
+            unsafe { core_graphics::window::kCGWindowBounds as CFStringRef }
+        }
+
+        fn cg_window_bounds(description: CFDictionaryRef) -> Option<Rect> {
+            let bounds = cf_dictionary_dictionary(description, cg_window_bounds_key())?;
+            let x_key = cf_string("X").ok()?;
+            let y_key = cf_string("Y").ok()?;
+            let width_key = cf_string("Width").ok()?;
+            let height_key = cf_string("Height").ok()?;
+
+            Some(Rect {
+                x: cf_dictionary_i32(bounds, x_key.as_type_ref() as CFStringRef)?,
+                y: cf_dictionary_i32(bounds, y_key.as_type_ref() as CFStringRef)?,
+                w: cf_dictionary_i32(bounds, width_key.as_type_ref() as CFStringRef)?,
+                h: cf_dictionary_i32(bounds, height_key.as_type_ref() as CFStringRef)?,
+            })
+        }
+    }
+}
+
+use private_api::{ax, foundation::DylibHandle, skylight, window_server};
 
 impl RealNativeApi {
     fn new() -> Self {
@@ -1177,1100 +2627,6 @@ impl RealNativeApi {
                     .as_ref()
                     .and_then(|handle| handle.resolve(symbol.as_c_str()))
             })
-    }
-
-    fn main_connection_id(&self) -> Result<u32, MacosNativeProbeError> {
-        let Some(symbol) = self.resolve_symbol("SLSMainConnectionID") else {
-            return Err(MacosNativeProbeError::MissingTopology(
-                "SLSMainConnectionID",
-            ));
-        };
-
-        let main_connection_id: SlsMainConnectionIdFn = unsafe { std::mem::transmute(symbol) };
-        let connection_id = unsafe { main_connection_id() };
-
-        (connection_id != 0)
-            .then_some(connection_id)
-            .ok_or(MacosNativeProbeError::MissingTopology(
-                "SLSMainConnectionID",
-            ))
-    }
-
-    fn copy_managed_display_spaces_raw(&self) -> Result<CfOwned, MacosNativeProbeError> {
-        let Some(symbol) = self.resolve_symbol("SLSCopyManagedDisplaySpaces") else {
-            return Err(MacosNativeProbeError::MissingTopology(
-                "SLSCopyManagedDisplaySpaces",
-            ));
-        };
-
-        let copy_managed_display_spaces: SlsCopyManagedDisplaySpacesFn =
-            unsafe { std::mem::transmute(symbol) };
-        let connection_id = self.main_connection_id()?;
-        let payload =
-            unsafe { CfOwned::from_create_rule(copy_managed_display_spaces(connection_id)) }
-                .ok_or(MacosNativeProbeError::MissingTopology(
-                    "SLSCopyManagedDisplaySpaces",
-                ))?;
-
-        Ok(payload)
-    }
-
-    fn current_space_for_display(
-        &self,
-        display_identifier: &str,
-    ) -> Result<u64, MacosNativeProbeError> {
-        let Some(symbol) = self.resolve_symbol("SLSManagedDisplayGetCurrentSpace") else {
-            return Err(MacosNativeProbeError::MissingTopology(
-                "SLSManagedDisplayGetCurrentSpace",
-            ));
-        };
-
-        let current_space_for_display: SlsManagedDisplayGetCurrentSpaceFn =
-            unsafe { std::mem::transmute(symbol) };
-        let connection_id = self.main_connection_id()?;
-        let display_identifier = cf_string(display_identifier)?;
-        let space_id =
-            unsafe { current_space_for_display(connection_id, display_identifier.as_type_ref()) };
-
-        (space_id != 0)
-            .then_some(space_id)
-            .ok_or(MacosNativeProbeError::MissingTopology(
-                "SLSManagedDisplayGetCurrentSpace",
-            ))
-    }
-
-    fn copy_windows_for_space_raw(&self, space_id: u64) -> Result<CfOwned, MacosNativeProbeError> {
-        let Some(symbol) = self.resolve_symbol("SLSCopyWindowsWithOptionsAndTags") else {
-            return Err(MacosNativeProbeError::MissingTopology(
-                "SLSCopyWindowsWithOptionsAndTags",
-            ));
-        };
-
-        let copy_windows_with_options_and_tags: SlsCopyWindowsWithOptionsAndTagsFn =
-            unsafe { std::mem::transmute(symbol) };
-        let connection_id = self.main_connection_id()?;
-        let space_number = cf_number_from_u64(space_id)?;
-        let space_list =
-            CfOwned::from_servo(servo_cf::array_from_type_refs(
-                &[space_number.as_type_ref()],
-            ));
-        let mut set_tags = 0i64;
-        let mut clear_tags = 0i64;
-        let payload = unsafe {
-            copy_windows_with_options_and_tags(
-                connection_id,
-                0,
-                space_list.as_type_ref() as CFArrayRef,
-                0x2,
-                &mut set_tags,
-                &mut clear_tags,
-            )
-        };
-        let payload = unsafe { CfOwned::from_create_rule(payload) }.ok_or(
-            MacosNativeProbeError::MissingTopology("SLSCopyWindowsWithOptionsAndTags"),
-        )?;
-
-        Ok(payload)
-    }
-
-    fn copy_system_wide_ax_element(&self) -> Result<CfOwned, MacosNativeProbeError> {
-        unsafe { CfOwned::from_create_rule(AXUIElementCreateSystemWide() as CFTypeRef) }.ok_or(
-            MacosNativeProbeError::MissingTopology("AXUIElementCreateSystemWide"),
-        )
-    }
-
-    fn copy_ax_attribute_value(
-        &self,
-        element: AXUIElementRef,
-        attribute_name: &str,
-    ) -> Result<Option<CfOwned>, MacosNativeProbeError> {
-        let attribute = cf_string(attribute_name)?;
-        let mut value = ptr::null();
-        let status =
-            unsafe { AXUIElementCopyAttributeValue(element, attribute.as_type_ref(), &mut value) };
-
-        if status != 0 {
-            return Ok(None);
-        }
-
-        Ok(unsafe { CfOwned::from_create_rule(value) })
-    }
-
-    fn copy_focused_application_ax(&self) -> Result<Option<CfOwned>, MacosNativeProbeError> {
-        let system = self.copy_system_wide_ax_element()?;
-        self.copy_ax_attribute_value(
-            system.as_type_ref() as AXUIElementRef,
-            "AXFocusedApplication",
-        )
-    }
-
-    fn copy_focused_window_ax(
-        &self,
-        application: &CfOwned,
-    ) -> Result<Option<CfOwned>, MacosNativeProbeError> {
-        self.copy_ax_attribute_value(
-            application.as_type_ref() as AXUIElementRef,
-            "AXFocusedWindow",
-        )
-    }
-
-    fn ax_pid(&self, element: &CfOwned) -> Result<u32, MacosNativeProbeError> {
-        let mut pid = 0;
-        let status =
-            unsafe { AXUIElementGetPid(element.as_type_ref() as AXUIElementRef, &mut pid) };
-        if status != 0 || pid <= 0 {
-            return Err(MacosNativeProbeError::MissingFocusedWindow);
-        }
-        Ok(pid as u32)
-    }
-
-    fn ax_window_id(&self, element: &CfOwned) -> Result<u64, MacosNativeProbeError> {
-        let Some(symbol) = self.resolve_symbol("_AXUIElementGetWindow") else {
-            return Err(MacosNativeProbeError::MissingTopology(
-                "_AXUIElementGetWindow",
-            ));
-        };
-        let ax_ui_element_get_window: unsafe extern "C" fn(AXUIElementRef, *mut u32) -> OSStatus =
-            unsafe { std::mem::transmute(symbol) };
-        let mut window_id = 0u32;
-        let status = unsafe {
-            ax_ui_element_get_window(element.as_type_ref() as AXUIElementRef, &mut window_id)
-        };
-
-        if status != 0 || window_id == 0 {
-            return Err(MacosNativeProbeError::MissingFocusedWindow);
-        }
-
-        Ok(window_id as u64)
-    }
-
-    fn probe_focused_window_id(&self) -> Result<Option<u64>, MacosNativeProbeError> {
-        focused_window_id_via_ax(
-            || {
-                let _span = tracing::debug_span!("macos_native.ax.focused_application").entered();
-                self.copy_focused_application_ax()
-            },
-            |application| {
-                let _span = tracing::debug_span!("macos_native.ax.focused_window").entered();
-                self.copy_focused_window_ax(application)
-            },
-            |window| {
-                let _span = tracing::debug_span!("macos_native.ax.window_id").entered();
-                self.ax_window_id(window)
-            },
-        )
-    }
-
-    fn process_serial_number_for_pid(
-        &self,
-        pid: u32,
-    ) -> Result<ProcessSerialNumber, MacosNativeOperationError> {
-        let Some(get_process_for_pid_symbol) = self.resolve_symbol("GetProcessForPID") else {
-            return Err(MacosNativeOperationError::CallFailed("GetProcessForPID"));
-        };
-        let get_process_for_pid: GetProcessForPidFn =
-            unsafe { std::mem::transmute(get_process_for_pid_symbol) };
-        let mut psn = ProcessSerialNumber::default();
-        let status = unsafe { get_process_for_pid(pid as c_int, &mut psn) };
-
-        (status == 0)
-            .then_some(psn)
-            .ok_or(MacosNativeOperationError::CallFailed("GetProcessForPID"))
-    }
-
-    fn front_process_window(
-        &self,
-        psn: &ProcessSerialNumber,
-        window_id: u64,
-    ) -> Result<(), MacosNativeOperationError> {
-        let Some(front_process_symbol) = self.resolve_symbol("_SLPSSetFrontProcessWithOptions")
-        else {
-            return Err(MacosNativeOperationError::CallFailed(
-                "_SLPSSetFrontProcessWithOptions",
-            ));
-        };
-        let front_process_with_options: SlpsSetFrontProcessWithOptionsFn =
-            unsafe { std::mem::transmute(front_process_symbol) };
-        let status =
-            unsafe { front_process_with_options(psn, window_id as CGWindowID, CPS_USER_GENERATED) };
-
-        (status == 0)
-            .then_some(())
-            .ok_or(MacosNativeOperationError::CallFailed(
-                "_SLPSSetFrontProcessWithOptions",
-            ))
-    }
-
-    fn copy_application_ax_element(&self, pid: u32) -> Result<CfOwned, MacosNativeOperationError> {
-        unsafe {
-            CfOwned::from_create_rule(AXUIElementCreateApplication(pid as c_int) as CFTypeRef)
-        }
-        .ok_or(MacosNativeOperationError::CallFailed(
-            "AXUIElementCreateApplication",
-        ))
-    }
-
-    fn copy_window_ax_for_id(
-        &self,
-        pid: u32,
-        window_id: u64,
-    ) -> Result<CfOwned, MacosNativeOperationError> {
-        let application = self.copy_application_ax_element(pid)?;
-        let windows = self
-            .copy_ax_attribute_value(application.as_type_ref() as AXUIElementRef, "AXWindows")
-            .map_err(MacosNativeOperationError::from)?
-            .ok_or(MacosNativeOperationError::MissingWindow(window_id))?;
-        let windows = windows.as_type_ref() as CFArrayRef;
-
-        for candidate in cf_array_iter(windows) {
-            let Some(candidate) = (unsafe { CfOwned::from_create_rule(CFRetain(candidate)) })
-            else {
-                continue;
-            };
-            if self.ax_window_id(&candidate).ok() == Some(window_id) {
-                return Ok(candidate);
-            }
-        }
-
-        let ax_window_ids = cf_array_iter(windows)
-            .filter_map(|candidate| {
-                let candidate = unsafe { CfOwned::from_create_rule(CFRetain(candidate)) }?;
-                self.ax_window_id(&candidate).ok()
-            })
-            .collect::<Vec<_>>();
-        logging::debug(format!(
-            "macos_native: target window {window_id} missing from AXWindows for pid {pid}; ax_window_ids={ax_window_ids:?} focused_window_id={:?}",
-            self.focused_window_id().ok().flatten()
-        ));
-        Err(MacosNativeOperationError::MissingWindow(window_id))
-    }
-
-    fn make_key_window(
-        &self,
-        psn: &ProcessSerialNumber,
-        window_id: u64,
-    ) -> Result<(), MacosNativeOperationError> {
-        let Some(post_event_symbol) = self.resolve_symbol("SLPSPostEventRecordTo") else {
-            return Err(MacosNativeOperationError::CallFailed(
-                "SLPSPostEventRecordTo",
-            ));
-        };
-        let post_event_record_to: SlpsPostEventRecordToFn =
-            unsafe { std::mem::transmute(post_event_symbol) };
-        let window_id = u32::try_from(window_id)
-            .map_err(|_| MacosNativeOperationError::MissingWindow(window_id))?;
-        let mut event_bytes = [0u8; 0xf8];
-        event_bytes[0x04] = 0xf8;
-        event_bytes[0x3a] = 0x10;
-        event_bytes[0x3c..0x40].copy_from_slice(&window_id.to_ne_bytes());
-        event_bytes[0x20..0x30].fill(0xff);
-
-        event_bytes[0x08] = 0x01;
-        let press_status =
-            unsafe { post_event_record_to(psn, event_bytes.as_ptr().cast::<c_void>()) };
-        if press_status != 0 {
-            return Err(MacosNativeOperationError::CallFailed(
-                "SLPSPostEventRecordTo",
-            ));
-        }
-
-        event_bytes[0x08] = 0x02;
-        let release_status =
-            unsafe { post_event_record_to(psn, event_bytes.as_ptr().cast::<c_void>()) };
-        if release_status != 0 {
-            return Err(MacosNativeOperationError::CallFailed(
-                "SLPSPostEventRecordTo",
-            ));
-        }
-
-        Ok(())
-    }
-
-    fn raise_window_via_ax(
-        &self,
-        window_id: u64,
-        pid: u32,
-    ) -> Result<(), MacosNativeOperationError> {
-        let window = self.copy_window_ax_for_id(pid, window_id)?;
-        let action = cf_string("AXRaise").map_err(MacosNativeOperationError::from)?;
-        let status = unsafe {
-            AXUIElementPerformAction(window.as_type_ref() as AXUIElementRef, action.as_type_ref())
-        };
-
-        (status == 0)
-            .then_some(())
-            .ok_or(MacosNativeOperationError::CallFailed(
-                "AXUIElementPerformAction",
-            ))
-    }
-
-    fn set_window_frame_via_ax(
-        &self,
-        window_id: u64,
-        pid: u32,
-        frame: Rect,
-    ) -> Result<(), MacosNativeOperationError> {
-        let window = self.copy_window_ax_for_id(pid, window_id)?;
-        let position_attr = cf_string("AXPosition").map_err(MacosNativeOperationError::from)?;
-        let size_attr = cf_string("AXSize").map_err(MacosNativeOperationError::from)?;
-        let position = CGPoint {
-            x: f64::from(frame.x),
-            y: f64::from(frame.y),
-        };
-        let position_value = unsafe {
-            CfOwned::from_create_rule(AXValueCreate(
-                K_AX_VALUE_TYPE_CGPOINT,
-                (&raw const position).cast(),
-            ))
-        }
-        .ok_or(MacosNativeOperationError::CallFailed("AXValueCreate"))?;
-        let position_status = unsafe {
-            AXUIElementSetAttributeValue(
-                window.as_type_ref() as AXUIElementRef,
-                position_attr.as_type_ref(),
-                position_value.as_type_ref(),
-            )
-        };
-
-        if position_status != 0 {
-            return Err(MacosNativeOperationError::CallFailed(
-                "AXUIElementSetAttributeValue",
-            ));
-        }
-
-        let size = CGSize {
-            width: f64::from(frame.w),
-            height: f64::from(frame.h),
-        };
-        let size_value = unsafe {
-            CfOwned::from_create_rule(AXValueCreate(
-                K_AX_VALUE_TYPE_CGSIZE,
-                (&raw const size).cast(),
-            ))
-        }
-        .ok_or(MacosNativeOperationError::CallFailed("AXValueCreate"))?;
-        let size_status = unsafe {
-            AXUIElementSetAttributeValue(
-                window.as_type_ref() as AXUIElementRef,
-                size_attr.as_type_ref(),
-                size_value.as_type_ref(),
-            )
-        };
-
-        (size_status == 0)
-            .then_some(())
-            .ok_or(MacosNativeOperationError::CallFailed(
-                "AXUIElementSetAttributeValue",
-            ))
-    }
-
-    fn swap_window_frames_via_ax(
-        &self,
-        source_window_id: u64,
-        source_frame: Rect,
-        target_window_id: u64,
-        target_frame: Rect,
-    ) -> Result<(), MacosNativeOperationError> {
-        let source = self.window_description(source_window_id)?;
-        let source_pid = source
-            .pid
-            .ok_or(MacosNativeOperationError::MissingWindowPid(
-                source_window_id,
-            ))?;
-        let target = self.window_description(target_window_id)?;
-        let target_pid = target
-            .pid
-            .ok_or(MacosNativeOperationError::MissingWindowPid(
-                target_window_id,
-            ))?;
-
-        self.set_window_frame_via_ax(source_window_id, source_pid, target_frame)?;
-        self.set_window_frame_via_ax(target_window_id, target_pid, source_frame)
-    }
-
-    fn copy_window_descriptions_raw(
-        &self,
-        window_ids: CFArrayRef,
-    ) -> Result<CfOwned, MacosNativeProbeError> {
-        // Keep this raw for now: current callers build CFNumber-object arrays for this flow,
-        // while Servo models create_description_from_array as CFArray<CGWindowID> copyables.
-        let descriptions = unsafe {
-            CfOwned::from_create_rule(CGWindowListCreateDescriptionFromArray(window_ids))
-        }
-        .ok_or(MacosNativeProbeError::MissingTopology(
-            "CGWindowListCreateDescriptionFromArray",
-        ))?;
-
-        if cf_array_count(descriptions.as_type_ref() as CFArrayRef) > 0 {
-            return Ok(descriptions);
-        }
-
-        let target_window_ids = parse_window_ids(window_ids)?;
-        let fallback = copy_matching_onscreen_window_descriptions_raw(&target_window_ids)?;
-        crate::logging::debug(format!(
-            "macos_native: falling back to onscreen descriptions requested_ids={} fallback_descriptions={}",
-            target_window_ids.len(),
-            cf_array_count(fallback.as_type_ref() as CFArrayRef)
-        ));
-        Ok(fallback)
-    }
-
-    fn active_space_windows_without_app_ids(
-        &self,
-        space_id: u64,
-    ) -> Result<Vec<RawWindow>, MacosNativeProbeError> {
-        let payload = self.copy_windows_for_space_raw(space_id)?;
-        let raw_window_ids = parse_window_ids(payload.as_type_ref() as CFArrayRef)?;
-        let visible_order = query_visible_window_order(&raw_window_ids)?;
-        let descriptions = self.copy_window_descriptions_raw(payload.as_type_ref() as CFArrayRef)?;
-        parse_window_descriptions(descriptions.as_type_ref() as CFArrayRef, &visible_order)
-    }
-
-    fn copy_managed_display_for_space_raw(
-        &self,
-        space_id: u64,
-    ) -> Result<CfOwned, MacosNativeOperationError> {
-        let Some(symbol) = self.resolve_symbol("SLSCopyManagedDisplayForSpace") else {
-            return Err(MacosNativeOperationError::CallFailed(
-                "SLSCopyManagedDisplayForSpace",
-            ));
-        };
-
-        let copy_managed_display_for_space: SlsCopyManagedDisplayForSpaceFn =
-            unsafe { std::mem::transmute(symbol) };
-        let connection_id = self.main_connection_id()?;
-        let payload = unsafe {
-            CfOwned::from_create_rule(copy_managed_display_for_space(connection_id, space_id))
-        }
-        .ok_or(MacosNativeOperationError::CallFailed(
-            "SLSCopyManagedDisplayForSpace",
-        ))?;
-
-        Ok(payload)
-    }
-
-    fn modify_windows_in_spaces(
-        &self,
-        window_ids: &[u64],
-        space_ids: &[u64],
-        add: bool,
-    ) -> Result<bool, MacosNativeProbeError> {
-        let symbol_name = if add {
-            ["SLSAddWindowsToSpaces", "CGSAddWindowsToSpaces"]
-        } else {
-            ["SLSRemoveWindowsFromSpaces", "CGSRemoveWindowsFromSpaces"]
-        };
-        let Some(symbol) = symbol_name
-            .into_iter()
-            .find_map(|name| self.resolve_symbol(name))
-        else {
-            return Ok(false);
-        };
-        let connection_id = self.main_connection_id()?;
-        let window_list = cf_array_from_u64s(window_ids)?;
-        let space_list = cf_array_from_u64s(space_ids)?;
-        let status = if add {
-            let add_windows_to_spaces: SlsAddWindowsToSpacesFn =
-                unsafe { std::mem::transmute(symbol) };
-            unsafe {
-                add_windows_to_spaces(
-                    connection_id,
-                    window_list.as_type_ref() as CFArrayRef,
-                    space_list.as_type_ref() as CFArrayRef,
-                )
-            }
-        } else {
-            let remove_windows_from_spaces: SlsRemoveWindowsFromSpacesFn =
-                unsafe { std::mem::transmute(symbol) };
-            unsafe {
-                remove_windows_from_spaces(
-                    connection_id,
-                    window_list.as_type_ref() as CFArrayRef,
-                    space_list.as_type_ref() as CFArrayRef,
-                )
-            }
-        };
-
-        (status == 0)
-            .then_some(true)
-            .ok_or(MacosNativeProbeError::MissingTopology(if add {
-                "SLSAddWindowsToSpaces"
-            } else {
-                "SLSRemoveWindowsFromSpaces"
-            }))
-    }
-
-    fn window_descriptions_for_space_without_visible_order(
-        &self,
-        space_id: u64,
-    ) -> Result<Vec<RawWindow>, MacosNativeProbeError> {
-        let payload = self.copy_windows_for_space_raw(space_id)?;
-        let descriptions = self.copy_window_descriptions_raw(payload.as_type_ref() as CFArrayRef)?;
-        parse_window_descriptions(descriptions.as_type_ref() as CFArrayRef, &HashMap::new())
-            .map(enrich_real_window_app_ids)
-    }
-
-    fn borrowed_active_space_for_display(
-        &self,
-        target_space_id: u64,
-    ) -> Result<Option<u64>, MacosNativeProbeError> {
-        let spaces = self.managed_spaces()?;
-        let active_space_ids = self.active_space_ids()?;
-        let Some(display_index) = spaces
-            .iter()
-            .find(|space| space.managed_space_id == target_space_id)
-            .map(|space| space.display_index)
-        else {
-            return Ok(None);
-        };
-        Ok(active_space_ids.into_iter().find(|space_id| {
-            spaces
-                .iter()
-                .find(|space| space.managed_space_id == *space_id)
-                .map(|space| space.display_index)
-                == Some(display_index)
-                && *space_id != target_space_id
-        }))
-    }
-
-    fn switch_space(&self, space_id: u64) -> Result<(), MacosNativeOperationError> {
-        let Some(symbol) = self.resolve_symbol("SLSManagedDisplaySetCurrentSpace") else {
-            return Err(MacosNativeOperationError::CallFailed(
-                "SLSManagedDisplaySetCurrentSpace",
-            ));
-        };
-
-        let set_current_space: SlsManagedDisplaySetCurrentSpaceFn =
-            unsafe { std::mem::transmute(symbol) };
-        let connection_id = self.main_connection_id()?;
-        let display_identifier = self.copy_managed_display_for_space_raw(space_id)?;
-
-        unsafe {
-            set_current_space(
-                connection_id,
-                display_identifier.as_type_ref() as CFStringRef,
-                space_id,
-            );
-        }
-
-        Ok(())
-    }
-
-    fn post_keyboard_event(
-        &self,
-        key_code: CGKeyCode,
-        key_down: bool,
-        flags: CGEventFlags,
-    ) -> Result<(), MacosNativeOperationError> {
-        let event = unsafe {
-            CfOwned::from_create_rule(CGEventCreateKeyboardEvent(
-                ptr::null(),
-                key_code,
-                if key_down { 1 } else { 0 },
-            ))
-        }
-        .ok_or(MacosNativeOperationError::CallFailed(
-            "CGEventCreateKeyboardEvent",
-        ))?;
-
-        unsafe {
-            CGEventSetFlags(event.as_type_ref(), flags);
-            CGEventPost(K_CG_HID_EVENT_TAP, event.as_type_ref());
-        }
-
-        Ok(())
-    }
-
-    fn focus_window(&self, window_id: u64) -> Result<(), MacosNativeOperationError> {
-        focus_window_via_process_and_raise(
-            window_id,
-            |target_window_id| {
-                let window = self.window_description(target_window_id)?;
-                window
-                    .pid
-                    .ok_or(MacosNativeOperationError::MissingWindowPid(
-                        target_window_id,
-                    ))
-            },
-            |pid| self.process_serial_number_for_pid(pid),
-            |psn, target_window_id| self.front_process_window(psn, target_window_id),
-            |psn, target_window_id| self.make_key_window(psn, target_window_id),
-            |target_window_id, pid| self.raise_window_via_ax(target_window_id, pid),
-        )
-    }
-
-    fn window_description(&self, window_id: u64) -> Result<RawWindow, MacosNativeOperationError> {
-        let window_number =
-            cf_number_from_u64(window_id).map_err(MacosNativeOperationError::from)?;
-        let window_list = CfOwned::from_servo(servo_cf::array_from_type_refs(&[
-            window_number.as_type_ref()
-        ]));
-        let descriptions =
-            self.copy_window_descriptions_raw(window_list.as_type_ref() as CFArrayRef)?;
-        let visible_order = HashMap::new();
-
-        parse_window_descriptions(descriptions.as_type_ref() as CFArrayRef, &visible_order)?
-            .into_iter()
-            .find(|window| window.id == window_id)
-            .ok_or(MacosNativeOperationError::MissingWindow(window_id))
-    }
-
-    #[cfg(test)]
-    fn move_window_to_space(
-        &self,
-        window_id: u64,
-        space_id: u64,
-    ) -> Result<(), MacosNativeOperationError> {
-        let Some(symbol) = self.resolve_symbol("SLSMoveWindowsToManagedSpace") else {
-            return Err(MacosNativeOperationError::CallFailed(
-                "SLSMoveWindowsToManagedSpace",
-            ));
-        };
-
-        let move_windows_to_managed_space: SlsMoveWindowsToManagedSpaceFn =
-            unsafe { std::mem::transmute(symbol) };
-        let connection_id = self.main_connection_id()?;
-        let window_number =
-            cf_number_from_u64(window_id).map_err(MacosNativeOperationError::from)?;
-        let window_list = CfOwned::from_servo(servo_cf::array_from_type_refs(&[
-            window_number.as_type_ref()
-        ]));
-
-        unsafe {
-            move_windows_to_managed_space(
-                connection_id,
-                window_list.as_type_ref() as CFArrayRef,
-                space_id,
-            );
-        }
-
-        Ok(())
-    }
-}
-
-impl MacosNativeApi for RealNativeApi {
-    fn has_symbol(&self, symbol: &'static str) -> bool {
-        self.resolve_symbol(symbol).is_some()
-    }
-
-    fn ax_is_trusted(&self) -> bool {
-        let Some(symbol) = self.resolve_symbol("AXIsProcessTrusted") else {
-            return false;
-        };
-
-        let ax_is_process_trusted: AxIsProcessTrustedFn = unsafe { std::mem::transmute(symbol) };
-        unsafe { ax_is_process_trusted() != 0 }
-    }
-
-    fn minimal_topology_ready(&self) -> bool {
-        let Some(symbol) = self.resolve_symbol("SLSMainConnectionID") else {
-            return false;
-        };
-
-        let main_connection_id: SlsMainConnectionIdFn = unsafe { std::mem::transmute(symbol) };
-        unsafe { main_connection_id() != 0 }
-    }
-
-    fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
-        let payload = self.copy_managed_display_spaces_raw()?;
-        parse_managed_spaces(payload.as_type_ref() as CFArrayRef)
-    }
-
-    fn active_space_ids(&self) -> Result<HashSet<u64>, MacosNativeProbeError> {
-        let payload = self.copy_managed_display_spaces_raw()?;
-        let display_identifiers = parse_display_identifiers(payload.as_type_ref() as CFArrayRef)?;
-        let active_space_ids = display_identifiers
-            .into_iter()
-            .map(|display_identifier| self.current_space_for_display(&display_identifier))
-            .collect::<Result<HashSet<_>, _>>()?;
-
-        (!active_space_ids.is_empty())
-            .then_some(active_space_ids)
-            .ok_or(MacosNativeProbeError::MissingTopology(
-                "SLSManagedDisplayGetCurrentSpace",
-            ))
-    }
-
-    fn active_space_windows(&self, space_id: u64) -> Result<Vec<RawWindow>, MacosNativeProbeError> {
-        let payload = self.copy_windows_for_space_raw(space_id)?;
-        let visible_order =
-            query_visible_window_order(&parse_window_ids(payload.as_type_ref() as CFArrayRef)?)?;
-        let descriptions = self.copy_window_descriptions_raw(payload.as_type_ref() as CFArrayRef)?;
-
-        assemble_real_active_space_windows(descriptions.as_type_ref() as CFArrayRef, &visible_order)
-    }
-
-    fn windows_in_space(&self, space_id: u64) -> Result<Vec<RawWindow>, MacosNativeProbeError> {
-        if self.active_space_ids()?.contains(&space_id) {
-            return self.active_space_windows(space_id);
-        }
-
-        let window_ids = parse_window_ids(
-            self.copy_windows_for_space_raw(space_id)?.as_type_ref() as CFArrayRef,
-        )?;
-        let mut windows = self.window_descriptions_for_space_without_visible_order(space_id)?;
-        if !windows.is_empty() || window_ids.is_empty() {
-            return Ok(windows);
-        }
-
-        let Some(active_space_id) = self.borrowed_active_space_for_display(space_id)? else {
-            debug!(
-                "macos_native: no active same-display space available to describe inactive-space windows target_space={space_id}"
-            );
-            return Ok(windows);
-        };
-        debug!(
-            "macos_native: temporarily adding inactive-space windows to active space for description target_space={} active_space={} window_ids={:?}",
-            space_id, active_space_id, window_ids
-        );
-        match self.modify_windows_in_spaces(&window_ids, &[active_space_id], true) {
-            Ok(true) => {
-                windows = self.window_descriptions_for_space_without_visible_order(space_id)?;
-                if let Err(error) =
-                    self.modify_windows_in_spaces(&window_ids, &[active_space_id], false)
-                {
-                    debug!(
-                        "macos_native: failed to remove temporarily borrowed windows from active space active_space={} window_ids={:?}: {}",
-                        active_space_id, window_ids, error
-                    );
-                }
-                debug!(
-                    "macos_native: borrowed inactive-space descriptions target_space={} active_space={} described_windows={}",
-                    space_id,
-                    active_space_id,
-                    windows.len()
-                );
-                Ok(windows)
-            }
-            Ok(false) => Ok(windows),
-            Err(error) => {
-                debug!(
-                    "macos_native: add-windows-to-spaces fallback failed target_space={} active_space={} window_ids={:?}: {}",
-                    space_id, active_space_id, window_ids, error
-                );
-                Ok(windows)
-            }
-        }
-    }
-
-    fn inactive_space_window_ids(&self) -> Result<HashMap<u64, Vec<u64>>, MacosNativeProbeError> {
-        let spaces = self.managed_spaces()?;
-        let active_space_ids = self.active_space_ids()?;
-        let mut inactive_space_window_ids = HashMap::new();
-
-        for space in spaces {
-            if active_space_ids.contains(&space.managed_space_id) {
-                continue;
-            }
-
-            let payload = self.copy_windows_for_space_raw(space.managed_space_id)?;
-            inactive_space_window_ids.insert(
-                space.managed_space_id,
-                parse_window_ids(payload.as_type_ref() as CFArrayRef)?,
-            );
-        }
-
-        Ok(inactive_space_window_ids)
-    }
-
-    fn onscreen_window_ids(&self) -> Result<HashSet<u64>, MacosNativeProbeError> {
-        let descriptions = copy_onscreen_window_descriptions_raw()?;
-        onscreen_window_ids_from_descriptions(descriptions.as_type_ref() as CFArrayRef)
-    }
-
-    fn switch_space(&self, space_id: u64) -> Result<(), MacosNativeOperationError> {
-        Self::switch_space(self, space_id)
-    }
-
-    fn switch_adjacent_space(
-        &self,
-        direction: Direction,
-        _space_id: u64,
-    ) -> Result<(), MacosNativeOperationError> {
-        logging::debug(format!(
-            "macos_native: switching adjacent space via mission-control hotkey direction={direction}"
-        ));
-        switch_adjacent_space_via_hotkey(direction, |key_code, key_down, flags| {
-            self.post_keyboard_event(key_code, key_down, flags)
-        })
-    }
-
-    fn focus_window(&self, window_id: u64) -> Result<(), MacosNativeOperationError> {
-        Self::focus_window(self, window_id)
-    }
-
-    fn focus_window_with_known_pid(
-        &self,
-        window_id: u64,
-        pid: u32,
-    ) -> Result<(), MacosNativeOperationError> {
-        match focus_window_via_process_and_raise(
-            window_id,
-            |_| Ok(pid),
-            |resolved_pid| self.process_serial_number_for_pid(resolved_pid),
-            |psn, target_window_id| self.front_process_window(psn, target_window_id),
-            |psn, target_window_id| self.make_key_window(psn, target_window_id),
-            |target_window_id, resolved_pid| {
-                self.raise_window_via_ax(target_window_id, resolved_pid)
-            },
-        ) {
-            Err(MacosNativeOperationError::MissingWindow(missing_window_id))
-                if missing_window_id == window_id =>
-            {
-                let deadline = Instant::now() + AX_RAISE_SETTLE_TIMEOUT;
-                loop {
-                    if self.focused_window_id().ok() == Some(Some(window_id)) {
-                        logging::debug(format!(
-                            "macos_native: treating missing AX raise target {window_id} as success after focus confirmation"
-                        ));
-                        return Ok(());
-                    }
-                    if Instant::now() >= deadline {
-                        break;
-                    }
-                    std::thread::sleep(AX_RAISE_RETRY_INTERVAL);
-                }
-                logging::debug(format!(
-                    "macos_native: AX raise still missing target {window_id} after retries; focused_window_id={:?}",
-                    self.focused_window_id().ok().flatten()
-                ));
-                Err(MacosNativeOperationError::MissingWindow(window_id))
-            }
-            other => other,
-        }
-    }
-
-    fn focus_window_in_active_space_with_known_pid(
-        &self,
-        window_id: u64,
-        pid: u32,
-    ) -> Result<(), MacosNativeOperationError> {
-        match focus_window_via_make_key_and_raise(
-            window_id,
-            |_| Ok(pid),
-            |resolved_pid| self.process_serial_number_for_pid(resolved_pid),
-            |psn, target_window_id| self.make_key_window(psn, target_window_id),
-            |target_window_id, resolved_pid| {
-                self.raise_window_via_ax(target_window_id, resolved_pid)
-            },
-        ) {
-            Err(MacosNativeOperationError::MissingWindow(missing_window_id))
-                if missing_window_id == window_id =>
-            {
-                let deadline = Instant::now() + AX_RAISE_SETTLE_TIMEOUT;
-                loop {
-                    if self.focused_window_id().ok() == Some(Some(window_id)) {
-                        logging::debug(format!(
-                            "macos_native: treating missing active-space AX raise target {window_id} as success after focus confirmation"
-                        ));
-                        return Ok(());
-                    }
-                    if Instant::now() >= deadline {
-                        break;
-                    }
-                    std::thread::sleep(AX_RAISE_RETRY_INTERVAL);
-                }
-                logging::debug(format!(
-                    "macos_native: active-space AX raise still missing target {window_id} after retries; focused_window_id={:?}",
-                    self.focused_window_id().ok().flatten()
-                ));
-                Err(MacosNativeOperationError::MissingWindow(window_id))
-            }
-            other => other,
-        }
-    }
-
-    #[cfg(test)]
-    fn move_window_to_space(
-        &self,
-        window_id: u64,
-        space_id: u64,
-    ) -> Result<(), MacosNativeOperationError> {
-        Self::move_window_to_space(self, window_id, space_id)
-    }
-
-    fn swap_window_frames(
-        &self,
-        source_window_id: u64,
-        source_frame: Rect,
-        target_window_id: u64,
-        target_frame: Rect,
-    ) -> Result<(), MacosNativeOperationError> {
-        Self::swap_window_frames_via_ax(
-            self,
-            source_window_id,
-            source_frame,
-            target_window_id,
-            target_frame,
-        )
-    }
-
-    fn focused_window_id(&self) -> Result<Option<u64>, MacosNativeProbeError> {
-        Self::probe_focused_window_id(self)
-    }
-
-    fn focused_window_snapshot(&self) -> Result<WindowSnapshot, MacosNativeProbeError> {
-        let focused_window_id = Self::probe_focused_window_id(self)?;
-        let active_space_ids = self.active_space_ids()?;
-        let mut active_space_windows = HashMap::new();
-
-        for space_id in active_space_ids {
-            let windows = self.active_space_windows_without_app_ids(space_id)?;
-            if let Some(target_window_id) = focused_window_id {
-                if let Some(mut snapshot) =
-                    active_window_snapshot(space_id, &windows, target_window_id)
-                {
-                    snapshot.app_id = snapshot
-                        .app_id
-                        .or_else(|| stable_app_id_from_real_window(snapshot.pid, None));
-                    return Ok(snapshot);
-                }
-            }
-            active_space_windows.insert(space_id, windows);
-        }
-
-        let mut snapshot =
-            focused_window_from_active_space_windows(&active_space_windows, focused_window_id)?;
-        snapshot.app_id = snapshot
-            .app_id
-            .or_else(|| stable_app_id_from_real_window(snapshot.pid, None));
-        Ok(snapshot)
-    }
-
-    fn focused_window_record(&self) -> Result<FocusedWindowRecord, MacosNativeProbeError> {
-        let focused_window_id = {
-            let _span = tracing::debug_span!("macos_native.focused_window_id").entered();
-            Self::probe_focused_window_id(self)?
-                .ok_or(MacosNativeProbeError::MissingFocusedWindow)?
-        };
-        let onscreen_descriptions = {
-            let _span = tracing::debug_span!("macos_native.onscreen_descriptions").entered();
-            copy_onscreen_window_descriptions_raw()?
-        };
-        if let Some(focused) = focused_window_record_from_onscreen_descriptions(
-            onscreen_descriptions.as_type_ref() as CFArrayRef,
-            focused_window_id,
-        )? {
-            return Ok(focused);
-        }
-        let window_number = {
-            let _span = tracing::debug_span!("macos_native.focused_window_cf_number").entered();
-            cf_number_from_u64(focused_window_id)?
-        };
-        let window_list = CfOwned::from_servo(servo_cf::array_from_type_refs(&[
-            window_number.as_type_ref()
-        ]));
-        let descriptions = {
-            let _span = tracing::debug_span!("macos_native.focused_window_descriptions").entered();
-            self.copy_window_descriptions_raw(window_list.as_type_ref() as CFArrayRef)?
-        };
-        let focused =
-            parse_window_descriptions(descriptions.as_type_ref() as CFArrayRef, &HashMap::new())?
-                .into_iter()
-                .find(|window| window.id == focused_window_id)
-                .ok_or(MacosNativeProbeError::MissingFocusedWindow)?;
-
-        Ok(FocusedWindowRecord {
-            id: focused.id,
-            app_id: focused
-                .app_id
-                .or_else(|| stable_app_id_from_real_window(focused.pid, None)),
-            title: focused.title,
-            pid: focused.pid.and_then(ProcessId::new),
-            original_tile_index: focused.visible_index.unwrap_or(0),
-        })
-    }
-
-    fn focused_app_record(&self) -> Result<FocusedAppRecord, MacosNativeProbeError> {
-        let application = {
-            let _span = tracing::debug_span!("macos_native.ax.focused_application").entered();
-            self.copy_focused_application_ax()?
-                .ok_or(MacosNativeProbeError::MissingFocusedWindow)?
-        };
-        let pid = {
-            let _span = tracing::debug_span!("macos_native.ax.application_pid").entered();
-            self.ax_pid(&application)?
-        };
-        Ok(FocusedAppRecord {
-            app_id: stable_app_id_from_pid(pid).unwrap_or_default(),
-            title: String::new(),
-            pid: ProcessId::new(pid).ok_or(MacosNativeProbeError::MissingFocusedWindow)?,
-        })
-    }
-
-    fn topology_snapshot(&self) -> Result<RawTopologySnapshot, MacosNativeProbeError> {
-        let payload = self.copy_managed_display_spaces_raw()?;
-        let payload = payload.as_type_ref() as CFArrayRef;
-        let spaces = parse_managed_spaces(payload)?;
-        let active_space_ids = parse_active_space_ids(payload)?;
-        let mut active_space_windows = HashMap::new();
-        let mut inactive_space_window_ids = HashMap::new();
-
-        for space in &spaces {
-            let payload = self.copy_windows_for_space_raw(space.managed_space_id)?;
-            let raw_window_ids = parse_window_ids(payload.as_type_ref() as CFArrayRef)?;
-
-            if active_space_ids.contains(&space.managed_space_id) {
-                let visible_order = query_visible_window_order(&raw_window_ids)?;
-                let descriptions =
-                    self.copy_window_descriptions_raw(payload.as_type_ref() as CFArrayRef)?;
-                let windows = assemble_real_active_space_windows(
-                    descriptions.as_type_ref() as CFArrayRef,
-                    &visible_order,
-                )?;
-
-                active_space_windows.insert(space.managed_space_id, windows);
-            } else {
-                inactive_space_window_ids.insert(space.managed_space_id, raw_window_ids);
-            }
-        }
-
-        Ok(RawTopologySnapshot {
-            spaces,
-            active_space_ids,
-            active_space_windows,
-            inactive_space_window_ids,
-            focused_window_id: self.focused_window_id()?,
-        })
-    }
-}
-
-#[derive(Debug)]
-struct DylibHandle {
-    raw: *mut c_void,
-}
-
-// The handle is only used behind immutable method calls and closed on drop.
-// We do not share aliasing Rust references into the loaded dylib state itself.
-unsafe impl Send for DylibHandle {}
-
-impl DylibHandle {
-    fn open(path: &CStr) -> Option<Self> {
-        let raw = unsafe { dlopen(path.as_ptr(), RTLD_LAZY) };
-        if raw.is_null() {
-            None
-        } else {
-            Some(Self { raw })
-        }
-    }
-
-    fn resolve(&self, symbol: &CStr) -> Option<*mut c_void> {
-        let raw = unsafe { dlsym(self.raw, symbol.as_ptr()) };
-        if raw.is_null() {
-            None
-        } else {
-            Some(raw)
-        }
-    }
-}
-
-impl Drop for DylibHandle {
-    fn drop(&mut self) {
-        if !self.raw.is_null() {
-            unsafe {
-                let _ = dlclose(self.raw);
-            }
-        }
     }
 }
 
@@ -2876,16 +3232,6 @@ fn filter_window_descriptions_raw(
     )))
 }
 
-fn copy_matching_onscreen_window_descriptions_raw(
-    target_window_ids: &[u64],
-) -> Result<CfOwned, MacosNativeProbeError> {
-    let onscreen_descriptions = copy_onscreen_window_descriptions_raw()?;
-    filter_window_descriptions_raw(
-        onscreen_descriptions.as_type_ref() as CFArrayRef,
-        target_window_ids,
-    )
-}
-
 fn focused_window_record_from_onscreen_descriptions(
     payload: CFArrayRef,
     focused_window_id: u64,
@@ -3448,6 +3794,406 @@ fn map_probe_error(err: MacosNativeProbeError) -> anyhow::Error {
 
 fn map_operation_error(err: MacosNativeOperationError) -> anyhow::Error {
     anyhow::Error::new(err)
+}
+
+impl MacosNativeApi for RealNativeApi {
+    fn has_symbol(&self, symbol: &'static str) -> bool {
+        self.resolve_symbol(symbol).is_some()
+    }
+
+    fn ax_is_trusted(&self) -> bool {
+        let Some(symbol) = self.resolve_symbol("AXIsProcessTrusted") else {
+            return false;
+        };
+
+        let ax_is_process_trusted: AxIsProcessTrustedFn = unsafe { std::mem::transmute(symbol) };
+        unsafe { ax_is_process_trusted() != 0 }
+    }
+
+    fn minimal_topology_ready(&self) -> bool {
+        let Some(symbol) = self.resolve_symbol("SLSMainConnectionID") else {
+            return false;
+        };
+
+        let main_connection_id: SlsMainConnectionIdFn = unsafe { std::mem::transmute(symbol) };
+        unsafe { main_connection_id() != 0 }
+    }
+
+    fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
+        let payload = skylight::copy_managed_display_spaces_raw(self)?;
+        parse_managed_spaces(payload.as_type_ref() as CFArrayRef)
+    }
+
+    fn active_space_ids(&self) -> Result<HashSet<u64>, MacosNativeProbeError> {
+        let payload = skylight::copy_managed_display_spaces_raw(self)?;
+        let display_identifiers = parse_display_identifiers(payload.as_type_ref() as CFArrayRef)?;
+        let active_space_ids = display_identifiers
+            .into_iter()
+            .map(|display_identifier| {
+                skylight::current_space_for_display(self, &display_identifier)
+            })
+            .collect::<Result<HashSet<_>, _>>()?;
+
+        (!active_space_ids.is_empty())
+            .then_some(active_space_ids)
+            .ok_or(MacosNativeProbeError::MissingTopology(
+                "SLSManagedDisplayGetCurrentSpace",
+            ))
+    }
+
+    fn active_space_windows(&self, space_id: u64) -> Result<Vec<RawWindow>, MacosNativeProbeError> {
+        let payload = skylight::copy_windows_for_space_raw(self, space_id)?;
+        let visible_order =
+            query_visible_window_order(&parse_window_ids(payload.as_type_ref() as CFArrayRef)?)?;
+        let descriptions =
+            window_server::copy_window_descriptions_raw(self, payload.as_type_ref() as CFArrayRef)?;
+
+        assemble_real_active_space_windows(descriptions.as_type_ref() as CFArrayRef, &visible_order)
+    }
+
+    fn windows_in_space(&self, space_id: u64) -> Result<Vec<RawWindow>, MacosNativeProbeError> {
+        if self.active_space_ids()?.contains(&space_id) {
+            return self.active_space_windows(space_id);
+        }
+
+        let window_ids = parse_window_ids(
+            skylight::copy_windows_for_space_raw(self, space_id)?.as_type_ref() as CFArrayRef,
+        )?;
+        let mut windows =
+            window_server::window_descriptions_for_space_without_visible_order(self, space_id)?;
+        if !windows.is_empty() || window_ids.is_empty() {
+            return Ok(windows);
+        }
+
+        let Some(active_space_id) = skylight::borrowed_active_space_for_display(self, space_id)?
+        else {
+            debug!(
+                "macos_native: no active same-display space available to describe inactive-space windows target_space={space_id}"
+            );
+            return Ok(windows);
+        };
+        debug!(
+            "macos_native: temporarily adding inactive-space windows to active space for description target_space={} active_space={} window_ids={:?}",
+            space_id, active_space_id, window_ids
+        );
+        match skylight::modify_windows_in_spaces(self, &window_ids, &[active_space_id], true) {
+            Ok(true) => {
+                windows = window_server::window_descriptions_for_space_without_visible_order(
+                    self, space_id,
+                )?;
+                if let Err(error) =
+                    skylight::modify_windows_in_spaces(self, &window_ids, &[active_space_id], false)
+                {
+                    debug!(
+                        "macos_native: failed to remove temporarily borrowed windows from active space active_space={} window_ids={:?}: {}",
+                        active_space_id, window_ids, error
+                    );
+                }
+                debug!(
+                    "macos_native: borrowed inactive-space descriptions target_space={} active_space={} described_windows={}",
+                    space_id,
+                    active_space_id,
+                    windows.len()
+                );
+                Ok(windows)
+            }
+            Ok(false) => Ok(windows),
+            Err(error) => {
+                debug!(
+                    "macos_native: add-windows-to-spaces fallback failed target_space={} active_space={} window_ids={:?}: {}",
+                    space_id, active_space_id, window_ids, error
+                );
+                Ok(windows)
+            }
+        }
+    }
+
+    fn inactive_space_window_ids(&self) -> Result<HashMap<u64, Vec<u64>>, MacosNativeProbeError> {
+        let spaces = self.managed_spaces()?;
+        let active_space_ids = self.active_space_ids()?;
+        let mut inactive_space_window_ids = HashMap::new();
+
+        for space in spaces {
+            if active_space_ids.contains(&space.managed_space_id) {
+                continue;
+            }
+
+            let payload = skylight::copy_windows_for_space_raw(self, space.managed_space_id)?;
+            inactive_space_window_ids.insert(
+                space.managed_space_id,
+                parse_window_ids(payload.as_type_ref() as CFArrayRef)?,
+            );
+        }
+
+        Ok(inactive_space_window_ids)
+    }
+
+    fn onscreen_window_ids(&self) -> Result<HashSet<u64>, MacosNativeProbeError> {
+        let descriptions = copy_onscreen_window_descriptions_raw()?;
+        onscreen_window_ids_from_descriptions(descriptions.as_type_ref() as CFArrayRef)
+    }
+
+    fn switch_space(&self, space_id: u64) -> Result<(), MacosNativeOperationError> {
+        skylight::switch_space(self, space_id)
+    }
+
+    fn switch_adjacent_space(
+        &self,
+        direction: Direction,
+        _space_id: u64,
+    ) -> Result<(), MacosNativeOperationError> {
+        logging::debug(format!(
+            "macos_native: switching adjacent space via mission-control hotkey direction={direction}"
+        ));
+        switch_adjacent_space_via_hotkey(direction, |key_code, key_down, flags| {
+            window_server::post_keyboard_event(self, key_code, key_down, flags)
+        })
+    }
+
+    fn focus_window(&self, window_id: u64) -> Result<(), MacosNativeOperationError> {
+        window_server::focus_window(self, window_id)
+    }
+
+    fn focus_window_with_known_pid(
+        &self,
+        window_id: u64,
+        pid: u32,
+    ) -> Result<(), MacosNativeOperationError> {
+        match focus_window_via_process_and_raise(
+            window_id,
+            |_| Ok(pid),
+            |resolved_pid| window_server::process_serial_number_for_pid(self, resolved_pid),
+            |psn, target_window_id| {
+                window_server::front_process_window(self, psn, target_window_id)
+            },
+            |psn, target_window_id| window_server::make_key_window(self, psn, target_window_id),
+            |target_window_id, resolved_pid| {
+                ax::raise_window_via_ax(self, target_window_id, resolved_pid)
+            },
+        ) {
+            Err(MacosNativeOperationError::MissingWindow(missing_window_id))
+                if missing_window_id == window_id =>
+            {
+                let deadline = Instant::now() + AX_RAISE_SETTLE_TIMEOUT;
+                loop {
+                    if self.focused_window_id().ok() == Some(Some(window_id)) {
+                        logging::debug(format!(
+                            "macos_native: treating missing AX raise target {window_id} as success after focus confirmation"
+                        ));
+                        return Ok(());
+                    }
+                    if Instant::now() >= deadline {
+                        break;
+                    }
+                    std::thread::sleep(AX_RAISE_RETRY_INTERVAL);
+                }
+                logging::debug(format!(
+                    "macos_native: AX raise still missing target {window_id} after retries; focused_window_id={:?}",
+                    self.focused_window_id().ok().flatten()
+                ));
+                Err(MacosNativeOperationError::MissingWindow(window_id))
+            }
+            other => other,
+        }
+    }
+
+    fn focus_window_in_active_space_with_known_pid(
+        &self,
+        window_id: u64,
+        pid: u32,
+    ) -> Result<(), MacosNativeOperationError> {
+        match focus_window_via_make_key_and_raise(
+            window_id,
+            |_| Ok(pid),
+            |resolved_pid| window_server::process_serial_number_for_pid(self, resolved_pid),
+            |psn, target_window_id| window_server::make_key_window(self, psn, target_window_id),
+            |target_window_id, resolved_pid| {
+                ax::raise_window_via_ax(self, target_window_id, resolved_pid)
+            },
+        ) {
+            Err(MacosNativeOperationError::MissingWindow(missing_window_id))
+                if missing_window_id == window_id =>
+            {
+                let deadline = Instant::now() + AX_RAISE_SETTLE_TIMEOUT;
+                loop {
+                    if self.focused_window_id().ok() == Some(Some(window_id)) {
+                        logging::debug(format!(
+                            "macos_native: treating missing active-space AX raise target {window_id} as success after focus confirmation"
+                        ));
+                        return Ok(());
+                    }
+                    if Instant::now() >= deadline {
+                        break;
+                    }
+                    std::thread::sleep(AX_RAISE_RETRY_INTERVAL);
+                }
+                logging::debug(format!(
+                    "macos_native: active-space AX raise still missing target {window_id} after retries; focused_window_id={:?}",
+                    self.focused_window_id().ok().flatten()
+                ));
+                Err(MacosNativeOperationError::MissingWindow(window_id))
+            }
+            other => other,
+        }
+    }
+
+    #[cfg(test)]
+    fn move_window_to_space(
+        &self,
+        window_id: u64,
+        space_id: u64,
+    ) -> Result<(), MacosNativeOperationError> {
+        skylight::move_window_to_space(self, window_id, space_id)
+    }
+
+    fn swap_window_frames(
+        &self,
+        source_window_id: u64,
+        source_frame: Rect,
+        target_window_id: u64,
+        target_frame: Rect,
+    ) -> Result<(), MacosNativeOperationError> {
+        ax::swap_window_frames(
+            self,
+            source_window_id,
+            source_frame,
+            target_window_id,
+            target_frame,
+        )
+    }
+
+    fn focused_window_id(&self) -> Result<Option<u64>, MacosNativeProbeError> {
+        ax::probe_focused_window_id(self)
+    }
+
+    fn focused_window_snapshot(&self) -> Result<WindowSnapshot, MacosNativeProbeError> {
+        let focused_window_id = ax::probe_focused_window_id(self)?;
+        let active_space_ids = self.active_space_ids()?;
+        let mut active_space_windows = HashMap::new();
+
+        for space_id in active_space_ids {
+            let windows = window_server::active_space_windows_without_app_ids(self, space_id)?;
+            if let Some(target_window_id) = focused_window_id {
+                if let Some(mut snapshot) =
+                    active_window_snapshot(space_id, &windows, target_window_id)
+                {
+                    snapshot.app_id = snapshot
+                        .app_id
+                        .or_else(|| stable_app_id_from_real_window(snapshot.pid, None));
+                    return Ok(snapshot);
+                }
+            }
+            active_space_windows.insert(space_id, windows);
+        }
+
+        let mut snapshot =
+            focused_window_from_active_space_windows(&active_space_windows, focused_window_id)?;
+        snapshot.app_id = snapshot
+            .app_id
+            .or_else(|| stable_app_id_from_real_window(snapshot.pid, None));
+        Ok(snapshot)
+    }
+
+    fn focused_window_record(&self) -> Result<FocusedWindowRecord, MacosNativeProbeError> {
+        let focused_window_id = {
+            let _span = tracing::debug_span!("macos_native.focused_window_id").entered();
+            ax::probe_focused_window_id(self)?.ok_or(MacosNativeProbeError::MissingFocusedWindow)?
+        };
+        let onscreen_descriptions = {
+            let _span = tracing::debug_span!("macos_native.onscreen_descriptions").entered();
+            copy_onscreen_window_descriptions_raw()?
+        };
+        if let Some(focused) = focused_window_record_from_onscreen_descriptions(
+            onscreen_descriptions.as_type_ref() as CFArrayRef,
+            focused_window_id,
+        )? {
+            return Ok(focused);
+        }
+        let window_number = {
+            let _span = tracing::debug_span!("macos_native.focused_window_cf_number").entered();
+            cf_number_from_u64(focused_window_id)?
+        };
+        let window_list = CfOwned::from_servo(servo_cf::array_from_type_refs(&[
+            window_number.as_type_ref()
+        ]));
+        let descriptions = {
+            let _span = tracing::debug_span!("macos_native.focused_window_descriptions").entered();
+            window_server::copy_window_descriptions_raw(
+                self,
+                window_list.as_type_ref() as CFArrayRef,
+            )?
+        };
+        let focused =
+            parse_window_descriptions(descriptions.as_type_ref() as CFArrayRef, &HashMap::new())?
+                .into_iter()
+                .find(|window| window.id == focused_window_id)
+                .ok_or(MacosNativeProbeError::MissingFocusedWindow)?;
+
+        Ok(FocusedWindowRecord {
+            id: focused.id,
+            app_id: focused
+                .app_id
+                .or_else(|| stable_app_id_from_real_window(focused.pid, None)),
+            title: focused.title,
+            pid: focused.pid.and_then(ProcessId::new),
+            original_tile_index: focused.visible_index.unwrap_or(0),
+        })
+    }
+
+    fn focused_app_record(&self) -> Result<FocusedAppRecord, MacosNativeProbeError> {
+        let application = {
+            let _span = tracing::debug_span!("macos_native.ax.focused_application").entered();
+            ax::copy_focused_application_ax(self)?
+                .ok_or(MacosNativeProbeError::MissingFocusedWindow)?
+        };
+        let pid = {
+            let _span = tracing::debug_span!("macos_native.ax.application_pid").entered();
+            ax::ax_pid(self, &application)?
+        };
+        Ok(FocusedAppRecord {
+            app_id: stable_app_id_from_pid(pid).unwrap_or_default(),
+            title: String::new(),
+            pid: ProcessId::new(pid).ok_or(MacosNativeProbeError::MissingFocusedWindow)?,
+        })
+    }
+
+    fn topology_snapshot(&self) -> Result<RawTopologySnapshot, MacosNativeProbeError> {
+        let payload = skylight::copy_managed_display_spaces_raw(self)?;
+        let payload = payload.as_type_ref() as CFArrayRef;
+        let spaces = parse_managed_spaces(payload)?;
+        let active_space_ids = parse_active_space_ids(payload)?;
+        let mut active_space_windows = HashMap::new();
+        let mut inactive_space_window_ids = HashMap::new();
+
+        for space in &spaces {
+            let payload = skylight::copy_windows_for_space_raw(self, space.managed_space_id)?;
+            let raw_window_ids = parse_window_ids(payload.as_type_ref() as CFArrayRef)?;
+
+            if active_space_ids.contains(&space.managed_space_id) {
+                let visible_order = query_visible_window_order(&raw_window_ids)?;
+                let descriptions = window_server::copy_window_descriptions_raw(
+                    self,
+                    payload.as_type_ref() as CFArrayRef,
+                )?;
+                let windows = assemble_real_active_space_windows(
+                    descriptions.as_type_ref() as CFArrayRef,
+                    &visible_order,
+                )?;
+
+                active_space_windows.insert(space.managed_space_id, windows);
+            } else {
+                inactive_space_window_ids.insert(space.managed_space_id, raw_window_ids);
+            }
+        }
+
+        Ok(RawTopologySnapshot {
+            spaces,
+            active_space_ids,
+            active_space_windows,
+            inactive_space_window_ids,
+            focused_window_id: self.focused_window_id()?,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -5423,6 +6169,50 @@ command = false
 
     fn cf_test_dictionary(entries: &[(CFTypeRef, CFTypeRef)]) -> CfOwned {
         CfOwned::from_servo(servo_cf::dictionary_from_type_refs(entries))
+    }
+
+    #[test]
+    fn source_groups_private_api_modules_between_engine_types_and_engine_impls() {
+        let source = include_str!("macos_native.rs");
+        let implementation = source
+            .rsplit_once("#[cfg(test)]\nmod tests {")
+            .map(|(implementation, _)| implementation)
+            .expect("macos_native.rs source should include a test module");
+
+        let context_idx = implementation
+            .find("pub(crate) struct MacosNativeContext")
+            .expect("implementation should define MacosNativeContext");
+        let private_api_idx = implementation
+            .find("mod private_api {")
+            .expect("implementation should define mod private_api");
+        let api_impl_idx = implementation
+            .find("impl MacosNativeApi for RealNativeApi")
+            .expect("implementation should define the RealNativeApi adapter seam");
+
+        assert!(
+            implementation.contains("pub(super) mod foundation {"),
+            "private_api should expose a foundation module"
+        );
+        assert!(
+            implementation.contains("pub(super) mod skylight {"),
+            "private_api should expose a skylight module"
+        );
+        assert!(
+            implementation.contains("pub(super) mod ax {"),
+            "private_api should expose an ax module"
+        );
+        assert!(
+            implementation.contains("pub(super) mod window_server {"),
+            "private_api should expose a window_server module"
+        );
+        assert!(
+            context_idx < private_api_idx,
+            "private_api should live below the engine-facing context/types"
+        );
+        assert!(
+            private_api_idx < api_impl_idx,
+            "private_api should live above the long engine-facing impl blocks"
+        );
     }
 
     #[test]
