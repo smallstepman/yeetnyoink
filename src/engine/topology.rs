@@ -45,6 +45,17 @@ pub enum Direction {
     South,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, ValueEnum, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FloatingFocusStrategy {
+    RadialCenter,
+    TrailingEdgeParallel,
+    LeadingEdgeParallel,
+    CrossEdgeGap,
+    OverlapThenGap,
+    RayAngle,
+}
+
 impl Direction {
     pub const ALL: [Self; 4] = [Self::West, Self::East, Self::North, Self::South];
 
@@ -242,6 +253,186 @@ pub struct DirectedRect<T> {
     pub rect: Rect,
 }
 
+fn center_point(rect: Rect) -> (i64, i64) {
+    (
+        i64::from(rect.x) * 2 + i64::from(rect.w),
+        i64::from(rect.y) * 2 + i64::from(rect.h),
+    )
+}
+
+fn directional_half_plane(source: Rect, candidate: Rect, dir: Direction) -> bool {
+    let (source_x, source_y) = center_point(source);
+    let (candidate_x, candidate_y) = center_point(candidate);
+    match dir {
+        Direction::West => candidate_x < source_x,
+        Direction::East => candidate_x > source_x,
+        Direction::North => candidate_y < source_y,
+        Direction::South => candidate_y > source_y,
+    }
+}
+
+fn directional_gap(dir: Direction, source_edge: i32, candidate_edge: i32) -> i32 {
+    match dir {
+        Direction::West | Direction::North => source_edge - candidate_edge,
+        Direction::East | Direction::South => candidate_edge - source_edge,
+    }
+}
+
+fn edge_for(dir: Direction, rect: Rect, leading: bool) -> i32 {
+    rect.leading_edge(if leading { dir } else { dir.opposite() })
+}
+
+fn angular_deviation_from_ray(source: Rect, candidate: Rect, dir: Direction) -> f64 {
+    let (source_x, source_y) = center_point(source);
+    let (candidate_x, candidate_y) = center_point(candidate);
+    let (anchor_x, anchor_y) = match dir.axis() {
+        SplitAxis::Horizontal => (i64::from(candidate.receiving_edge(dir)) * 2, candidate_y),
+        SplitAxis::Vertical => (candidate_x, i64::from(candidate.receiving_edge(dir)) * 2),
+    };
+    let dx = anchor_x - source_x;
+    let dy = anchor_y - source_y;
+    let (parallel, perpendicular) = match dir {
+        Direction::West => (-dx, dy.abs()),
+        Direction::East => (dx, dy.abs()),
+        Direction::North => (-dy, dx.abs()),
+        Direction::South => (dy, dx.abs()),
+    };
+    if parallel <= 0 {
+        f64::INFINITY
+    } else {
+        (perpendicular as f64).atan2(parallel as f64)
+    }
+}
+
+fn perpendicular_offset(source: Rect, candidate: Rect, dir: Direction) -> i64 {
+    let (source_x, source_y) = center_point(source);
+    let (candidate_x, candidate_y) = center_point(candidate);
+    match dir.axis() {
+        SplitAxis::Horizontal => (candidate_y - source_y).abs(),
+        SplitAxis::Vertical => (candidate_x - source_x).abs(),
+    }
+}
+
+fn ray_anchor_distance_squared(source: Rect, candidate: Rect, dir: Direction) -> i64 {
+    let (source_x, source_y) = center_point(source);
+    let (candidate_x, candidate_y) = center_point(candidate);
+    let (anchor_x, anchor_y) = match dir.axis() {
+        SplitAxis::Horizontal => (i64::from(candidate.receiving_edge(dir)) * 2, candidate_y),
+        SplitAxis::Vertical => (candidate_x, i64::from(candidate.receiving_edge(dir)) * 2),
+    };
+    let dx = anchor_x - source_x;
+    let dy = anchor_y - source_y;
+    dx * dx + dy * dy
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CandidateScore {
+    primary: f64,
+    secondary: f64,
+    perpendicular_offset: i64,
+}
+
+impl CandidateScore {
+    fn is_better_than(self, other: Self) -> bool {
+        self.primary.total_cmp(&other.primary).is_lt()
+            || (self.primary == other.primary
+                && (self.secondary.total_cmp(&other.secondary).is_lt()
+                    || (self.secondary == other.secondary
+                        && self.perpendicular_offset < other.perpendicular_offset)))
+    }
+}
+
+pub fn select_closest_in_direction_with_strategy<T>(
+    rects: &[DirectedRect<T>],
+    source_id: T,
+    dir: Direction,
+    strategy: FloatingFocusStrategy,
+) -> Option<T>
+where
+    T: Copy + Eq,
+{
+    let source = rects.iter().find(|rect| rect.id == source_id)?;
+    let (source_center_x, source_center_y) = center_point(source.rect);
+    let mut best: Option<(T, CandidateScore)> = None;
+
+    for candidate in rects.iter().copied().filter(|rect| rect.id != source_id) {
+        if !directional_half_plane(source.rect, candidate.rect, dir) {
+            continue;
+        }
+
+        let score = match strategy {
+            FloatingFocusStrategy::RadialCenter => {
+                let angle = angular_deviation_from_ray(source.rect, candidate.rect, dir);
+                if !angle.is_finite() || angle > std::f64::consts::FRAC_PI_4 {
+                    continue;
+                }
+                let (candidate_center_x, candidate_center_y) = center_point(candidate.rect);
+                let dx = candidate_center_x - source_center_x;
+                let dy = candidate_center_y - source_center_y;
+                CandidateScore {
+                    primary: (dx * dx + dy * dy) as f64,
+                    secondary: 0.0,
+                    perpendicular_offset: perpendicular_offset(source.rect, candidate.rect, dir),
+                }
+            }
+            FloatingFocusStrategy::TrailingEdgeParallel => CandidateScore {
+                primary: f64::from(directional_gap(
+                    dir,
+                    edge_for(dir, source.rect, false),
+                    edge_for(dir, candidate.rect, false),
+                )),
+                secondary: 0.0,
+                perpendicular_offset: perpendicular_offset(source.rect, candidate.rect, dir),
+            },
+            FloatingFocusStrategy::LeadingEdgeParallel => CandidateScore {
+                primary: f64::from(directional_gap(
+                    dir,
+                    edge_for(dir, source.rect, true),
+                    edge_for(dir, candidate.rect, true),
+                )),
+                secondary: 0.0,
+                perpendicular_offset: perpendicular_offset(source.rect, candidate.rect, dir),
+            },
+            FloatingFocusStrategy::CrossEdgeGap => CandidateScore {
+                primary: f64::from(directional_gap(
+                    dir,
+                    edge_for(dir, source.rect, false),
+                    edge_for(dir, candidate.rect, true),
+                )),
+                secondary: 0.0,
+                perpendicular_offset: perpendicular_offset(source.rect, candidate.rect, dir),
+            },
+            FloatingFocusStrategy::OverlapThenGap => {
+                let overlap = source.rect.perp_overlap_len(candidate.rect, dir);
+                if overlap <= 0 {
+                    continue;
+                }
+                CandidateScore {
+                    primary: f64::from(directional_gap(
+                        dir,
+                        edge_for(dir, source.rect, true),
+                        candidate.rect.receiving_edge(dir),
+                    )),
+                    secondary: f64::from(-overlap),
+                    perpendicular_offset: perpendicular_offset(source.rect, candidate.rect, dir),
+                }
+            }
+            FloatingFocusStrategy::RayAngle => CandidateScore {
+                primary: angular_deviation_from_ray(source.rect, candidate.rect, dir),
+                secondary: ray_anchor_distance_squared(source.rect, candidate.rect, dir) as f64,
+                perpendicular_offset: perpendicular_offset(source.rect, candidate.rect, dir),
+            },
+        };
+
+        match best {
+            Some((_, best_score)) if !score.is_better_than(best_score) => {}
+            _ => best = Some((candidate.id, score)),
+        }
+    }
+
+    best.map(|(id, _)| id)
+}
+
 pub fn select_closest_in_direction<T>(
     rects: &[DirectedRect<T>],
     source_id: T,
@@ -250,38 +441,12 @@ pub fn select_closest_in_direction<T>(
 where
     T: Copy + Eq,
 {
-    let source = rects.iter().find(|rect| rect.id == source_id)?;
-    let mut best: Option<(T, i32, i32)> = None;
-
-    for candidate in rects.iter().copied().filter(|rect| rect.id != source_id) {
-        let distance = match dir {
-            Direction::West if candidate.rect.x + candidate.rect.w <= source.rect.x => {
-                source.rect.x - (candidate.rect.x + candidate.rect.w)
-            }
-            Direction::East if candidate.rect.x >= source.rect.x + source.rect.w => {
-                candidate.rect.x - (source.rect.x + source.rect.w)
-            }
-            Direction::North if candidate.rect.y + candidate.rect.h <= source.rect.y => {
-                source.rect.y - (candidate.rect.y + candidate.rect.h)
-            }
-            Direction::South if candidate.rect.y >= source.rect.y + source.rect.h => {
-                candidate.rect.y - (source.rect.y + source.rect.h)
-            }
-            _ => continue,
-        };
-        let overlap = source.rect.perp_overlap_len(candidate.rect, dir);
-        if overlap <= 0 {
-            continue;
-        }
-        match best {
-            Some((_, best_distance, best_overlap))
-                if best_distance < distance
-                    || (best_distance == distance && best_overlap >= overlap) => {}
-            _ => best = Some((candidate.id, distance, overlap)),
-        }
-    }
-
-    best.map(|(id, _, _)| id)
+    select_closest_in_direction_with_strategy(
+        rects,
+        source_id,
+        dir,
+        FloatingFocusStrategy::OverlapThenGap,
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -352,8 +517,8 @@ impl MoveSurface {
 #[cfg(test)]
 mod tests {
     use super::{
-        select_closest_in_direction, DirectedRect, Direction, DirectionalNeighbors, MoveSurface,
-        Rect, SplitAxis,
+        select_closest_in_direction, select_closest_in_direction_with_strategy, DirectedRect,
+        Direction, DirectionalNeighbors, FloatingFocusStrategy, MoveSurface, Rect, SplitAxis,
     };
     use crate::engine::contracts::MoveDecision;
 
@@ -532,5 +697,209 @@ mod tests {
             select_closest_in_direction(&rects, 1, Direction::West),
             None
         );
+    }
+
+    #[test]
+    fn select_closest_in_direction_with_strategy_distinguishes_radial_and_cross_edge() {
+        let rects = vec![
+            DirectedRect {
+                id: 1_u64,
+                rect: Rect {
+                    x: 200,
+                    y: 100,
+                    w: 100,
+                    h: 100,
+                },
+            },
+            DirectedRect {
+                id: 2_u64,
+                rect: Rect {
+                    x: 40,
+                    y: 80,
+                    w: 60,
+                    h: 60,
+                },
+            },
+            DirectedRect {
+                id: 3_u64,
+                rect: Rect {
+                    x: 90,
+                    y: 150,
+                    w: 130,
+                    h: 130,
+                },
+            },
+        ];
+
+        assert_eq!(
+            select_closest_in_direction_with_strategy(
+                &rects,
+                1,
+                Direction::West,
+                FloatingFocusStrategy::RadialCenter,
+            ),
+            Some(2),
+        );
+        assert_eq!(
+            select_closest_in_direction_with_strategy(
+                &rects,
+                1,
+                Direction::West,
+                FloatingFocusStrategy::CrossEdgeGap,
+            ),
+            Some(3),
+        );
+    }
+
+    #[test]
+    fn select_closest_in_direction_with_strategy_distinguishes_parallel_edge_strategies() {
+        let rects = vec![
+            DirectedRect {
+                id: 1_u64,
+                rect: Rect {
+                    x: 200,
+                    y: 200,
+                    w: 80,
+                    h: 80,
+                },
+            },
+            DirectedRect {
+                id: 2_u64,
+                rect: Rect {
+                    x: 40,
+                    y: 170,
+                    w: 120,
+                    h: 50,
+                },
+            },
+            DirectedRect {
+                id: 3_u64,
+                rect: Rect {
+                    x: 70,
+                    y: 260,
+                    w: 80,
+                    h: 70,
+                },
+            },
+        ];
+
+        assert_eq!(
+            select_closest_in_direction_with_strategy(
+                &rects,
+                1,
+                Direction::West,
+                FloatingFocusStrategy::TrailingEdgeParallel,
+            ),
+            Some(2),
+        );
+        assert_eq!(
+            select_closest_in_direction_with_strategy(
+                &rects,
+                1,
+                Direction::West,
+                FloatingFocusStrategy::LeadingEdgeParallel,
+            ),
+            Some(3),
+        );
+    }
+
+    #[test]
+    fn select_closest_in_direction_with_strategy_distinguishes_overlap_then_gap_and_ray_angle() {
+        let rects = vec![
+            DirectedRect {
+                id: 1_u64,
+                rect: Rect {
+                    x: 200,
+                    y: 100,
+                    w: 100,
+                    h: 100,
+                },
+            },
+            DirectedRect {
+                id: 2_u64,
+                rect: Rect {
+                    x: 130,
+                    y: 180,
+                    w: 40,
+                    h: 40,
+                },
+            },
+            DirectedRect {
+                id: 3_u64,
+                rect: Rect {
+                    x: 20,
+                    y: 120,
+                    w: 80,
+                    h: 60,
+                },
+            },
+        ];
+
+        assert_eq!(
+            select_closest_in_direction_with_strategy(
+                &rects,
+                1,
+                Direction::West,
+                FloatingFocusStrategy::OverlapThenGap,
+            ),
+            Some(2),
+        );
+        assert_eq!(
+            select_closest_in_direction_with_strategy(
+                &rects,
+                1,
+                Direction::West,
+                FloatingFocusStrategy::RayAngle,
+            ),
+            Some(3),
+        );
+    }
+
+    #[test]
+    fn select_closest_in_direction_with_strategy_uses_shared_tiebreakers() {
+        let rects = vec![
+            DirectedRect {
+                id: 1_u64,
+                rect: Rect {
+                    x: 200,
+                    y: 200,
+                    w: 100,
+                    h: 100,
+                },
+            },
+            DirectedRect {
+                id: 2_u64,
+                rect: Rect {
+                    x: 50,
+                    y: 225,
+                    w: 50,
+                    h: 50,
+                },
+            },
+            DirectedRect {
+                id: 3_u64,
+                rect: Rect {
+                    x: 50,
+                    y: 0,
+                    w: 50,
+                    h: 50,
+                },
+            },
+        ];
+
+        for strategy in [
+            FloatingFocusStrategy::RadialCenter,
+            FloatingFocusStrategy::TrailingEdgeParallel,
+            FloatingFocusStrategy::LeadingEdgeParallel,
+            FloatingFocusStrategy::CrossEdgeGap,
+            FloatingFocusStrategy::OverlapThenGap,
+            FloatingFocusStrategy::RayAngle,
+        ] {
+            assert_eq!(
+                select_closest_in_direction_with_strategy(&rects, 1, Direction::West, strategy),
+                Some(2),
+                "strategy {strategy:?} should break ties by perpendicular offset",
+            );
+        }
     }
 }
