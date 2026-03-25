@@ -493,6 +493,7 @@ impl TerminalMultiplexerProvider for WeztermMux {
     }
 
     fn active_foreground_process(&self, pid: u32) -> Option<String> {
+        let _span = tracing::debug_span!("wezterm.active_foreground_process", pid).entered();
         let pane_id = self.focused_pane_for_pid(pid).ok()?;
         let panes = self.raw_panes_for_pid(pid).ok()?;
         panes

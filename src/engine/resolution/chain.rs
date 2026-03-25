@@ -210,10 +210,17 @@ fn resolve_terminal_chain(
     let allow_tmux_resolution = matches!(host_mux_backend, TerminalMuxBackend::Tmux)
         || matches!(nvim_mux_backend, TerminalMuxBackend::Tmux);
 
-    let fg_hint = crate::adapters::terminal_multiplexers::active_foreground_process(
-        host.aliases,
-        terminal_pid,
-    );
+    let fg_hint = {
+        let _span = tracing::debug_span!(
+            "chain_resolver.active_foreground_process",
+            pid = terminal_pid
+        )
+        .entered();
+        crate::adapters::terminal_multiplexers::active_foreground_process(
+            host.aliases,
+            terminal_pid,
+        )
+    };
     let fg_base = fg_hint
         .as_deref()
         .map(runtime::normalize_process_name)
@@ -223,10 +230,14 @@ fn resolve_terminal_chain(
         terminal_pid, fg_hint, fg_base
     ));
 
-    let shells: Vec<u32> = runtime::child_pids(terminal_pid)
-        .into_iter()
-        .filter(|&pid| runtime::is_shell_pid(pid))
-        .collect();
+    let shells: Vec<u32> = {
+        let _span =
+            tracing::debug_span!("chain_resolver.shell_candidates", pid = terminal_pid).entered();
+        runtime::child_pids(terminal_pid)
+            .into_iter()
+            .filter(|&pid| runtime::is_shell_pid(pid))
+            .collect()
+    };
     logging::debug(format!(
         "resolve_terminal_chain: shell_candidates={:?}",
         shells

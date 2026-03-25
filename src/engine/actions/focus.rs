@@ -6,6 +6,35 @@ use crate::engine::topology::Direction;
 use crate::engine::wm::ConfiguredWindowManager;
 use crate::logging;
 
+fn attempt_focus_adapter(
+    app: &dyn crate::engine::contracts::AppAdapter,
+    owner_pid: u32,
+    dir: Direction,
+) -> Result<bool> {
+    if !app.capabilities().focus {
+        return Ok(false);
+    }
+    let adapter_name = app.adapter_name();
+    let _span = tracing::debug_span!(
+        "actions.focus.adapter",
+        adapter = adapter_name,
+        pid = owner_pid,
+        ?dir
+    )
+    .entered();
+    if TopologyHandler::can_focus(app, dir, owner_pid)
+        .with_context(|| format!("{adapter_name} can_focus failed"))?
+    {
+        TopologyHandler::focus(app, dir, owner_pid)
+            .with_context(|| format!("{adapter_name} focus failed"))?;
+        logging::debug(format!(
+            "actions::focus: app focus handled by {adapter_name}"
+        ));
+        return Ok(true);
+    }
+    Ok(false)
+}
+
 pub(crate) fn attempt_focused_app_focus(
     wm: &mut ConfiguredWindowManager,
     dir: Direction,
@@ -14,18 +43,7 @@ pub(crate) fn attempt_focused_app_focus(
     let result = match with_focused_app_session(wm, |session| {
         let owner_pid = session.pid.get();
         for app in session.chain {
-            if !app.capabilities().focus {
-                continue;
-            }
-            let adapter_name = app.adapter_name();
-            if TopologyHandler::can_focus(app.as_ref(), dir, owner_pid)
-                .with_context(|| format!("{adapter_name} can_focus failed"))?
-            {
-                TopologyHandler::focus(app.as_ref(), dir, owner_pid)
-                    .with_context(|| format!("{adapter_name} focus failed"))?;
-                logging::debug(format!(
-                    "actions::focus: app focus handled by {adapter_name}"
-                ));
+            if attempt_focus_adapter(app.as_ref(), owner_pid, dir)? {
                 return Ok(true);
             }
         }

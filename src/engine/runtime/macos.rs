@@ -311,6 +311,12 @@ fn get_process_pgrp(pid: u32) -> Option<u32> {
 
 /// Find the foreground process name for a TTY within a process tree.
 pub fn foreground_process_name_for_tty_in_tree(root_pid: u32, tty_name: &str) -> Option<String> {
+    let _span = tracing::debug_span!(
+        "runtime.macos.foreground_process_name_for_tty",
+        root_pid,
+        tty = tty_name
+    )
+    .entered();
     if root_pid == 0 || tty_name.trim().is_empty() {
         return None;
     }

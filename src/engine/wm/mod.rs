@@ -40,8 +40,14 @@ pub fn connect_backend_for_test(
 
 pub fn connect_selected() -> Result<ConfiguredWindowManager> {
     let _span = tracing::debug_span!("window_managers.connect_selected").entered();
-    let backend = selected_wm_backend();
-    let spec = spec_for_backend(backend);
+    let backend = {
+        let _span = tracing::debug_span!("window_managers.select_backend").entered();
+        selected_wm_backend()
+    };
+    let spec = {
+        let _span = tracing::debug_span!("window_managers.resolve_spec").entered();
+        spec_for_backend(backend)
+    };
     connect_backend(backend, spec)
 }
 

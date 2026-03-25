@@ -27,13 +27,24 @@ pub(crate) fn with_focused_app_session<T>(
     wm: &mut ConfiguredWindowManager,
     f: impl FnOnce(FocusedAppSession) -> Result<T>,
 ) -> Result<Option<T>> {
-    let focused = wm.focused_window()?;
+    let focused = {
+        let _span = tracing::debug_span!("actions.context.focused_window").entered();
+        wm.focused_window()?
+    };
     let Some(pid) = focused.pid else {
         return Ok(None);
     };
     let app_id = focused.app_id.unwrap_or_default();
     let title = focused.title.unwrap_or_default();
-    let chain = crate::engine::resolution::resolve_app_chain(&app_id, pid.get(), &title);
+    let chain = {
+        let _span = tracing::debug_span!(
+            "actions.context.resolve_chain",
+            app_id = app_id.as_str(),
+            pid = pid.get()
+        )
+        .entered();
+        crate::engine::resolution::resolve_app_chain(&app_id, pid.get(), &title)
+    };
     Ok(Some(f(FocusedAppSession {
         source_window_id: focused.id,
         source_tile_index: focused.original_tile_index,
