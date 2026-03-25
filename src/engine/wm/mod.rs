@@ -11,7 +11,7 @@ pub use session::*;
 // ---------------------------------------------------------------------------
 
 use crate::adapters::window_managers::spec_for_backend;
-use crate::config::selected_wm_backend;
+use crate::config::{selected_wm_backend, WmBackend};
 use anyhow::{anyhow, Context, Result};
 
 fn connect_backend(
@@ -51,11 +51,15 @@ pub fn connect_selected() -> Result<ConfiguredWindowManager> {
     connect_backend(backend, spec)
 }
 
+pub fn floating_focus_mode_for_backend(backend: WmBackend) -> FloatingFocusMode {
+    spec_for_backend(backend).floating_focus_mode()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         plan_resize, plan_tear_out, validate_declared_capabilities, CapabilitySupport,
-        ConfiguredWindowManager, DirectionalCapability, FocusedWindowRecord,
+        ConfiguredWindowManager, DirectionalCapability, FloatingFocusMode, FocusedWindowRecord,
         PrimitiveWindowManagerCapabilities, ResizeIntent, WindowCycleProvider, WindowCycleRequest,
         WindowManagerCapabilities, WindowManagerCapabilityDescriptor, WindowManagerFeatures,
         WindowManagerSession, WindowManagerSpec, WindowRecord, WindowTearOutComposer,
@@ -194,6 +198,24 @@ mod tests {
         assert_spec(spec_for_backend(WmBackend::Paneru));
         assert_spec(spec_for_backend(WmBackend::Yabai));
         let _ = super::connect_selected as fn() -> Result<ConfiguredWindowManager>;
+    }
+
+    #[test]
+    fn built_in_specs_expose_expected_floating_focus_modes() {
+        use crate::engine::wm::FloatingFocusMode;
+
+        assert_eq!(
+            spec_for_backend(WmBackend::MacosNative).floating_focus_mode(),
+            FloatingFocusMode::FloatingOnly,
+        );
+        assert_eq!(
+            spec_for_backend(WmBackend::Niri).floating_focus_mode(),
+            FloatingFocusMode::TilingOnly,
+        );
+        assert_eq!(
+            spec_for_backend(WmBackend::Yabai).floating_focus_mode(),
+            FloatingFocusMode::TilingOnly,
+        );
     }
 
     #[test]
@@ -359,6 +381,7 @@ enabled = true
             },
             resize: DirectionalCapability::uniform(CapabilitySupport::Unsupported),
         };
+        const FLOATING_FOCUS_MODE: FloatingFocusMode = FloatingFocusMode::TilingOnly;
     }
 
     fn failing_spec(backend: WmBackend) -> &'static dyn WindowManagerSpec {
@@ -380,6 +403,10 @@ enabled = true
 
         fn connect(&self) -> Result<ConfiguredWindowManager> {
             Err(anyhow::anyhow!("{} connection failed", self.name()))
+        }
+
+        fn floating_focus_mode(&self) -> FloatingFocusMode {
+            FloatingFocusMode::TilingOnly
         }
     }
 

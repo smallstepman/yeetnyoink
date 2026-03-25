@@ -6,9 +6,10 @@ use crate::engine::runtime::{self, CommandContext, ProcessId};
 use crate::engine::topology::Direction;
 use crate::engine::wm::{
     validate_declared_capabilities, CapabilitySupport, ConfiguredWindowManager,
-    DirectionalCapability, FocusedWindowRecord, PrimitiveWindowManagerCapabilities, ResizeIntent,
-    WindowManagerCapabilities, WindowManagerCapabilityDescriptor, WindowManagerFeatures,
-    WindowManagerSession, WindowManagerSpec, WindowRecord,
+    DirectionalCapability, FloatingFocusMode, FocusedWindowRecord,
+    PrimitiveWindowManagerCapabilities, ResizeIntent, WindowManagerCapabilities,
+    WindowManagerCapabilityDescriptor, WindowManagerFeatures, WindowManagerSession,
+    WindowManagerSpec, WindowRecord,
 };
 
 pub struct I3Adapter;
@@ -31,6 +32,10 @@ impl WindowManagerSpec for I3Spec {
             Box::new(I3Adapter::connect()?),
             WindowManagerFeatures::default(),
         )
+    }
+
+    fn floating_focus_mode(&self) -> FloatingFocusMode {
+        I3Adapter::FLOATING_FOCUS_MODE
     }
 }
 
@@ -144,6 +149,7 @@ impl WindowManagerCapabilityDescriptor for I3Adapter {
         tear_out: DirectionalCapability::uniform(CapabilitySupport::Unsupported),
         resize: DirectionalCapability::uniform(CapabilitySupport::Native),
     };
+    const FLOATING_FOCUS_MODE: FloatingFocusMode = FloatingFocusMode::TilingOnly;
 }
 
 impl WindowManagerSession for I3Adapter {

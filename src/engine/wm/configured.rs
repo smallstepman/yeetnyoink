@@ -3,7 +3,7 @@ use anyhow::{anyhow, Context, Result};
 use crate::config::WmBackend;
 use crate::engine::topology::Direction;
 use crate::engine::wm::capabilities::{
-    plan_tear_out, CapabilitySupport, WindowManagerCapabilities,
+    plan_tear_out, CapabilitySupport, FloatingFocusMode, WindowManagerCapabilities,
 };
 use crate::engine::wm::session::{
     FocusedWindowRecord, ResizeIntent, WindowCycleProvider, WindowManagerDomainFactory,
@@ -183,6 +183,7 @@ pub trait WindowManagerSpec: Sync {
     fn backend(&self) -> WmBackend;
     fn name(&self) -> &'static str;
     fn connect(&self) -> Result<ConfiguredWindowManager>;
+    fn floating_focus_mode(&self) -> FloatingFocusMode;
     fn focused_app_record(&self) -> Result<Option<crate::engine::wm::FocusedAppRecord>> {
         Ok(None)
     }
@@ -195,6 +196,7 @@ pub trait WindowManagerSpec: Sync {
 pub(crate) struct UnsupportedWindowManagerSpec {
     pub(crate) backend: WmBackend,
     pub(crate) name: &'static str,
+    pub(crate) floating_focus_mode: FloatingFocusMode,
 }
 
 impl WindowManagerSpec for UnsupportedWindowManagerSpec {
@@ -213,6 +215,10 @@ impl WindowManagerSpec for UnsupportedWindowManagerSpec {
             std::env::consts::OS
         ))
     }
+
+    fn floating_focus_mode(&self) -> FloatingFocusMode {
+        self.floating_focus_mode
+    }
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -220,34 +226,40 @@ pub(crate) static UNSUPPORTED_NIRI_SPEC: UnsupportedWindowManagerSpec =
     UnsupportedWindowManagerSpec {
         backend: WmBackend::Niri,
         name: "niri",
+        floating_focus_mode: FloatingFocusMode::TilingOnly,
     };
 #[cfg(not(target_os = "linux"))]
 pub(crate) static UNSUPPORTED_I3_SPEC: UnsupportedWindowManagerSpec =
     UnsupportedWindowManagerSpec {
         backend: WmBackend::I3,
         name: "i3",
+        floating_focus_mode: FloatingFocusMode::TilingOnly,
     };
 #[cfg(not(target_os = "linux"))]
 pub(crate) static UNSUPPORTED_HYPRLAND_SPEC: UnsupportedWindowManagerSpec =
     UnsupportedWindowManagerSpec {
         backend: WmBackend::Hyprland,
         name: "hyprland",
+        floating_focus_mode: FloatingFocusMode::TilingOnly,
     };
 #[cfg(not(target_os = "macos"))]
 pub(crate) static UNSUPPORTED_MACOS_NATIVE_SPEC: UnsupportedWindowManagerSpec =
     UnsupportedWindowManagerSpec {
         backend: WmBackend::MacosNative,
         name: "macos_native",
+        floating_focus_mode: FloatingFocusMode::FloatingOnly,
     };
 #[cfg(not(target_os = "macos"))]
 pub(crate) static UNSUPPORTED_PANERU_SPEC: UnsupportedWindowManagerSpec =
     UnsupportedWindowManagerSpec {
         backend: WmBackend::Paneru,
         name: "paneru",
+        floating_focus_mode: FloatingFocusMode::TilingOnly,
     };
 #[cfg(not(target_os = "macos"))]
 pub(crate) static UNSUPPORTED_YABAI_SPEC: UnsupportedWindowManagerSpec =
     UnsupportedWindowManagerSpec {
         backend: WmBackend::Yabai,
         name: "yabai",
+        floating_focus_mode: FloatingFocusMode::TilingOnly,
     };

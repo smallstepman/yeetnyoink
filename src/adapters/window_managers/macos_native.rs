@@ -14,7 +14,7 @@ use crate::engine::topology::{
 };
 use crate::engine::wm::{
     validate_declared_capabilities, CapabilitySupport, ConfiguredWindowManager,
-    DirectionalCapability, FocusedAppRecord, FocusedWindowRecord,
+    DirectionalCapability, FloatingFocusMode, FocusedAppRecord, FocusedWindowRecord,
     PrimitiveWindowManagerCapabilities, ResizeIntent, WindowManagerCapabilities,
     WindowManagerCapabilityDescriptor, WindowManagerFeatures, WindowManagerSession,
     WindowManagerSpec, WindowRecord,
@@ -374,6 +374,10 @@ impl WindowManagerSpec for MacosNativeSpec {
         )
     }
 
+    fn floating_focus_mode(&self) -> FloatingFocusMode {
+        MacosNativeAdapter::<RealNativeApi>::FLOATING_FOCUS_MODE
+    }
+
     fn focused_app_record(&self) -> anyhow::Result<Option<FocusedAppRecord>> {
         let api = RealNativeApi::new();
         if !api.ax_is_trusted() {
@@ -447,9 +451,12 @@ where
             .unwrap_or_else(|| active_directed_rects(&topology));
         let strategy = config::macos_native_floating_focus_strategy()
             .expect("macos_native floating focus strategy should be validated at config load");
-        let Some(target_id) =
-            select_closest_in_direction_with_strategy(&rects, focused.id, direction, Some(strategy))
-        else {
+        let Some(target_id) = select_closest_in_direction_with_strategy(
+            &rects,
+            focused.id,
+            direction,
+            Some(strategy),
+        ) else {
             if let Some(target_space_id) =
                 adjacent_space_in_direction(&topology, focused.space_id, direction)
             {
@@ -483,7 +490,7 @@ where
         let rects = active_directed_rects(&topology);
         let target_id =
             select_closest_in_direction_with_strategy(&rects, focused.id, direction, None)
-            .with_context(|| format!("macos_native: no window to move {direction}"))?;
+                .with_context(|| format!("macos_native: no window to move {direction}"))?;
         let source = active_window_by_id(&topology, focused.id)
             .and_then(|window| window.frame)
             .with_context(|| format!("macos_native: focused window {} has no frame", focused.id))?;
@@ -524,6 +531,7 @@ impl<A> WindowManagerCapabilityDescriptor for MacosNativeAdapter<A> {
         tear_out: DirectionalCapability::uniform(CapabilitySupport::Unsupported),
         resize: DirectionalCapability::uniform(CapabilitySupport::Unsupported),
     };
+    const FLOATING_FOCUS_MODE: FloatingFocusMode = FloatingFocusMode::FloatingOnly;
 }
 
 impl<A> WindowManagerSession for MacosNativeAdapter<A>
@@ -5405,10 +5413,7 @@ mod tests {
         let parsed: crate::config::Config =
             toml::from_str(raw).expect("macOS native test config should parse");
         crate::config::install(parsed);
-        InstalledConfigGuard {
-            _env: env,
-            old,
-        }
+        InstalledConfigGuard { _env: env, old }
     }
 
     fn install_macos_native_focus_config(strategy: &str) -> InstalledConfigGuard {
@@ -5863,8 +5868,7 @@ shift = true
 option = true
 command = true
 "#,
-        )
-        ;
+        );
 
         let calls = Rc::new(RefCell::new(Vec::new()));
 
