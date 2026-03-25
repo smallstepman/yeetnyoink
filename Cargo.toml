@@ -29,8 +29,8 @@ niri-ipc = "=25.11.0"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 accessibility-sys = "0.2.0"
-objc2-core-foundation = { version = "0.3.2", default-features = false }
-objc2-core-graphics = { version = "0.3.2", default-features = false }
+core-foundation = "0.10.1"
+core-graphics = "0.25.0"
 
 [profile.dev]
 opt-level = 0
