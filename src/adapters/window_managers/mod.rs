@@ -185,18 +185,16 @@ mod tests {
             assert_mode_matches_declared::<crate::adapters::window_managers::yabai::YabaiAdapter>(
                 WmBackend::Yabai,
             );
-            assert_eq!(
-                super::spec_for_backend(WmBackend::Niri).floating_focus_mode(),
-                FloatingFocusMode::TilingOnly,
+            assert_mode_matches_declared::<crate::adapters::window_managers::NiriAdapter>(
+                WmBackend::Niri,
             );
             assert_eq!(
                 super::spec_for_backend(WmBackend::I3).floating_focus_mode(),
                 FloatingFocusMode::TilingOnly,
             );
-            assert_eq!(
-                super::spec_for_backend(WmBackend::Hyprland).floating_focus_mode(),
-                FloatingFocusMode::TilingOnly,
-            );
+            assert_mode_matches_declared::<
+                crate::adapters::window_managers::hyprland::HyprlandAdapter,
+            >(WmBackend::Hyprland);
         }
     }
 
