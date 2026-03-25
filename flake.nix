@@ -488,6 +488,24 @@
             };
           };
 
+          tilingOnlyWmBackends = [
+            "niri"
+            "i3"
+            "hyprland"
+            "paneru"
+            "yabai"
+          ];
+          generatedWmConfig = if cfg.config.wm == null then {} else cfg.config.wm;
+          configuredGeneratedWmBackends = lib.filterAttrs (_: backendCfg: backendCfg != null) generatedWmConfig;
+          configuredGeneratedWmBackendNames = builtins.attrNames configuredGeneratedWmBackends;
+          selectedGeneratedWmBackendName =
+            if builtins.length configuredGeneratedWmBackendNames == 1
+            then builtins.head configuredGeneratedWmBackendNames
+            else null;
+          selectedGeneratedWmBackend =
+            if selectedGeneratedWmBackendName == null
+            then null
+            else configuredGeneratedWmBackends.${selectedGeneratedWmBackendName};
           generatedConfig = tomlFormat.generate "yeetnyoink-config.toml" (
             cleanToml (lib.removeAttrs cfg.config [ "raw" ])
           );
@@ -529,6 +547,32 @@
           };
 
           config = mkIf cfg.enable {
+            assertions = lib.optionals (cfg.config.raw == null) [
+              {
+                assertion = builtins.length configuredGeneratedWmBackendNames == 1;
+                message = "programs.yeetnyoink.config must configure exactly one wm.<backend> table when generating TOML.";
+              }
+              {
+                assertion =
+                  selectedGeneratedWmBackend == null
+                  || selectedGeneratedWmBackend.enabled;
+                message = "programs.yeetnyoink.config must set enabled = true on its single configured wm.<backend> table when generating TOML.";
+              }
+              {
+                assertion =
+                  selectedGeneratedWmBackendName != "macos_native"
+                  || selectedGeneratedWmBackend.floating_focus_strategy != null;
+                message = "programs.yeetnyoink.config.wm.macos_native must set floating_focus_strategy when generating TOML.";
+              }
+              {
+                assertion = lib.all (
+                  backendName:
+                    !(builtins.elem backendName tilingOnlyWmBackends)
+                    || configuredGeneratedWmBackends.${backendName}.floating_focus_strategy == null
+                ) configuredGeneratedWmBackendNames;
+                message = "programs.yeetnyoink.config built-in tiling WM backends (niri, i3, hyprland, paneru, yabai) must leave floating_focus_strategy unset when generating TOML.";
+              }
+            ];
             home.packages = [ cfg.package ];
             xdg.configFile."yeetnyoink/config.toml".source = configSource;
           };

@@ -104,8 +104,9 @@ for native WezTerm/kitty mux backends.
 ## Home Manager module
 
 The flake exports `homeManagerModules.default`. Its
-`programs.yeetnyoink.config.*` options are typed to match `src/config.rs`,
-and Home Manager renders them to `~/.config/yeetnyoink/config.toml`.
+`programs.yeetnyoink.config.*` options mirror the config shape from `src/config.rs`,
+and for generated config Home Manager enforces the built-in WM contract before
+rendering `~/.config/yeetnyoink/config.toml`.
 
 ```nix
 {
