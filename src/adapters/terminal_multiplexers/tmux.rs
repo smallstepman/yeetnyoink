@@ -10,7 +10,7 @@ use crate::engine::contracts::{
 };
 use crate::engine::runtime::{self, CommandContext, ProcessId};
 use crate::engine::topology::{
-    select_closest_in_direction, DirectedRect, Direction, DirectionalNeighbors, Rect,
+    select_closest_in_direction_with_strategy, DirectedRect, Direction, DirectionalNeighbors, Rect,
 };
 
 // ---------------------------------------------------------------------------
@@ -335,7 +335,12 @@ impl TmuxSession {
             .find(|pane| pane.pane_id == source_pane_id)
             .with_context(|| format!("source tmux pane %{source_pane_id} missing from window"))?;
         let rects: Vec<_> = panes.into_iter().map(TmuxPaneGeom::directed_rect).collect();
-        Ok(select_closest_in_direction(&rects, source_pane_id, dir))
+        Ok(select_closest_in_direction_with_strategy(
+            &rects,
+            source_pane_id,
+            dir,
+            None,
+        ))
     }
 
     fn directional_neighbor_pane_id(&self, source_pane_id: u64, dir: Direction) -> Result<u64> {

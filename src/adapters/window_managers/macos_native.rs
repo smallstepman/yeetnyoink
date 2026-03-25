@@ -10,8 +10,7 @@ use std::{
 use crate::config::{self, MissionControlShortcutConfig, WmBackend};
 use crate::engine::runtime::{self, CommandContext, ProcessId};
 use crate::engine::topology::{
-    select_closest_in_direction, select_closest_in_direction_with_strategy, DirectedRect,
-    Direction, Rect,
+    select_closest_in_direction_with_strategy, DirectedRect, Direction, Rect,
 };
 use crate::engine::wm::{
     validate_declared_capabilities, CapabilitySupport, ConfiguredWindowManager,
@@ -449,7 +448,7 @@ where
         let strategy = config::macos_native_floating_focus_strategy()
             .expect("macos_native floating focus strategy should be validated at config load");
         let Some(target_id) =
-            select_closest_in_direction_with_strategy(&rects, focused.id, direction, strategy)
+            select_closest_in_direction_with_strategy(&rects, focused.id, direction, Some(strategy))
         else {
             if let Some(target_space_id) =
                 adjacent_space_in_direction(&topology, focused.space_id, direction)
@@ -482,7 +481,8 @@ where
         let topology = self.ctx.topology_snapshot().map_err(map_probe_error)?;
         let focused = focused_window_from_topology(&topology).map_err(map_probe_error)?;
         let rects = active_directed_rects(&topology);
-        let target_id = select_closest_in_direction(&rects, focused.id, direction)
+        let target_id =
+            select_closest_in_direction_with_strategy(&rects, focused.id, direction, None)
             .with_context(|| format!("macos_native: no window to move {direction}"))?;
         let source = active_window_by_id(&topology, focused.id)
             .and_then(|window| window.frame)
