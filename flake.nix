@@ -128,15 +128,112 @@
             else
               value;
 
-          wmConfigModule = {
-            options.enabled_integration = optionalEnumOption [
-              "niri"
-              "i3"
-              "hyprland"
-              "paneru"
-              "yabai"
-            ] "Window-manager backend. Rust defaults to niri on Linux and yabai on macOS.";
-          };
+          wmConfigModule =
+            let
+              floatingFocusStrategyType = types.enum [
+                "radial_center"
+                "trailing_edge_parallel"
+                "leading_edge_parallel"
+                "cross_edge_gap"
+                "overlap_then_gap"
+                "ray_angle"
+              ];
+
+              enabledWmBackendModule = backendName: {
+                options = {
+                  enabled = mkOption {
+                    type = types.bool;
+                    description = "Whether to enable the ${backendName} backend.";
+                  };
+
+                  floating_focus_strategy = mkOption {
+                    type = types.nullOr floatingFocusStrategyType;
+                    default = null;
+                    description = "Floating-window directional-focus strategy for the ${backendName} backend. Current built-in tiling-only backends must leave this unset.";
+                  };
+                };
+              };
+
+              missionControlShortcutConfigModule = {
+                options = {
+                  keycode = mkOption {
+                    type = types.str;
+                    description = "0x-prefixed macOS virtual keycode for the shortcut.";
+                  };
+
+                  shift = mkOption {
+                    type = types.bool;
+                    default = false;
+                    description = "Whether Shift is held for the shortcut.";
+                  };
+
+                  ctrl = mkOption {
+                    type = types.bool;
+                    default = false;
+                    description = "Whether Control is held for the shortcut.";
+                  };
+
+                  option = mkOption {
+                    type = types.bool;
+                    default = false;
+                    description = "Whether Option is held for the shortcut.";
+                  };
+
+                  command = mkOption {
+                    type = types.bool;
+                    default = false;
+                    description = "Whether Command is held for the shortcut.";
+                  };
+
+                  fn = mkOption {
+                    type = types.bool;
+                    default = false;
+                    description = "Whether Fn is held for the shortcut.";
+                  };
+                };
+              };
+
+              macosNativeWmConfigModule = {
+                options = {
+                  enabled = mkOption {
+                    type = types.bool;
+                    description = "Whether to enable the macOS-native Spaces-aware backend.";
+                  };
+
+                  floating_focus_strategy = mkOption {
+                    type = types.nullOr floatingFocusStrategyType;
+                    default = null;
+                    description = "Floating-window directional-focus strategy for the macOS-native backend. Runtime validation requires this when `enabled = true`.";
+                  };
+
+                  mission_control_keyboard_shortcuts = mkOption {
+                    type = types.submodule {
+                      options = {
+                        move_left_a_space = mkOption {
+                          type = types.submodule missionControlShortcutConfigModule;
+                          description = "Shortcut that macOS Mission Control uses to move left one space.";
+                        };
+
+                        move_right_a_space = mkOption {
+                          type = types.submodule missionControlShortcutConfigModule;
+                          description = "Shortcut that macOS Mission Control uses to move right one space.";
+                        };
+                      };
+                    };
+                    description = "Mission Control space-navigation shortcuts used by the macOS-native WM backend.";
+                  };
+                };
+              };
+            in {
+              options = {
+                macos_native = optionalSubmoduleOption macosNativeWmConfigModule "macOS-native Spaces-aware backend config. When enabled, runtime validation requires `floating_focus_strategy` plus both Mission Control adjacent-space shortcuts.";
+                niri = optionalSubmoduleOption (enabledWmBackendModule "niri") "niri backend config. Current built-in backend is tiling-only, so leave `floating_focus_strategy` unset.";
+                i3 = optionalSubmoduleOption (enabledWmBackendModule "i3") "i3 backend config. Current built-in backend is tiling-only, so leave `floating_focus_strategy` unset.";
+                hyprland = optionalSubmoduleOption (enabledWmBackendModule "hyprland") "Hyprland backend config. Current built-in backend is tiling-only, so leave `floating_focus_strategy` unset.";
+                paneru = optionalSubmoduleOption (enabledWmBackendModule "paneru") "Paneru backend config. Current built-in backend is tiling-only, so leave `floating_focus_strategy` unset.";
+                yabai = optionalSubmoduleOption (enabledWmBackendModule "yabai") "yabai backend config. Current built-in backend is tiling-only, so leave `floating_focus_strategy` unset.";
+              };
+            };
 
           loggingRuntimeConfigModule = {
             options.debug = optionalBoolOption "Enable debug logging.";
@@ -391,6 +488,24 @@
             };
           };
 
+          tilingOnlyWmBackends = [
+            "niri"
+            "i3"
+            "hyprland"
+            "paneru"
+            "yabai"
+          ];
+          generatedWmConfig = if cfg.config.wm == null then {} else cfg.config.wm;
+          configuredGeneratedWmBackends = lib.filterAttrs (_: backendCfg: backendCfg != null) generatedWmConfig;
+          configuredGeneratedWmBackendNames = builtins.attrNames configuredGeneratedWmBackends;
+          selectedGeneratedWmBackendName =
+            if builtins.length configuredGeneratedWmBackendNames == 1
+            then builtins.head configuredGeneratedWmBackendNames
+            else null;
+          selectedGeneratedWmBackend =
+            if selectedGeneratedWmBackendName == null
+            then null
+            else configuredGeneratedWmBackends.${selectedGeneratedWmBackendName};
           generatedConfig = tomlFormat.generate "yeetnyoink-config.toml" (
             cleanToml (lib.removeAttrs cfg.config [ "raw" ])
           );
@@ -432,6 +547,32 @@
           };
 
           config = mkIf cfg.enable {
+            assertions = lib.optionals (cfg.config.raw == null) [
+              {
+                assertion = builtins.length configuredGeneratedWmBackendNames == 1;
+                message = "programs.yeetnyoink.config must configure exactly one wm.<backend> table when generating TOML.";
+              }
+              {
+                assertion =
+                  selectedGeneratedWmBackend == null
+                  || selectedGeneratedWmBackend.enabled;
+                message = "programs.yeetnyoink.config must set enabled = true on its single configured wm.<backend> table when generating TOML.";
+              }
+              {
+                assertion =
+                  selectedGeneratedWmBackendName != "macos_native"
+                  || selectedGeneratedWmBackend.floating_focus_strategy != null;
+                message = "programs.yeetnyoink.config.wm.macos_native must set floating_focus_strategy when generating TOML.";
+              }
+              {
+                assertion = lib.all (
+                  backendName:
+                    !(builtins.elem backendName tilingOnlyWmBackends)
+                    || configuredGeneratedWmBackends.${backendName}.floating_focus_strategy == null
+                ) configuredGeneratedWmBackendNames;
+                message = "programs.yeetnyoink.config built-in tiling WM backends (niri, i3, hyprland, paneru, yabai) must leave floating_focus_strategy unset when generating TOML.";
+              }
+            ];
             home.packages = [ cfg.package ];
             xdg.configFile."yeetnyoink/config.toml".source = configSource;
           };

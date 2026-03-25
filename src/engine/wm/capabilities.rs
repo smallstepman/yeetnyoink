@@ -10,6 +10,13 @@ pub enum CapabilitySupport {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FloatingFocusMode {
+    FloatingOnly,
+    TilingAndFloating,
+    TilingOnly,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DirectionalCapability {
     pub west: CapabilitySupport,
     pub east: CapabilitySupport,
@@ -151,6 +158,7 @@ fn supports_composed_resize(capabilities: WindowManagerCapabilities, direction: 
 pub trait WindowManagerCapabilityDescriptor {
     const NAME: &'static str;
     const CAPABILITIES: WindowManagerCapabilities;
+    const FLOATING_FOCUS_MODE: FloatingFocusMode;
 }
 
 pub fn validate_declared_capabilities<T: WindowManagerCapabilityDescriptor>() -> Result<()> {

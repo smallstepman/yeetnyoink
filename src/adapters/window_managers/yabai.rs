@@ -11,9 +11,10 @@ use crate::engine::runtime::{self, CommandContext, ProcessId};
 use crate::engine::topology::Direction;
 use crate::engine::wm::{
     validate_declared_capabilities, CapabilitySupport, ConfiguredWindowManager,
-    DirectionalCapability, FocusedWindowRecord, PrimitiveWindowManagerCapabilities, ResizeIntent,
-    WindowManagerCapabilities, WindowManagerCapabilityDescriptor, WindowManagerFeatures,
-    WindowManagerSession, WindowManagerSpec, WindowRecord,
+    DirectionalCapability, FloatingFocusMode, FocusedWindowRecord,
+    PrimitiveWindowManagerCapabilities, ResizeIntent, WindowManagerCapabilities,
+    WindowManagerCapabilityDescriptor, WindowManagerFeatures, WindowManagerSession,
+    WindowManagerSpec, WindowRecord,
 };
 
 pub struct YabaiAdapter;
@@ -36,6 +37,10 @@ impl WindowManagerSpec for YabaiSpec {
             Box::new(YabaiAdapter::connect()?),
             WindowManagerFeatures::default(),
         )
+    }
+
+    fn floating_focus_mode(&self) -> FloatingFocusMode {
+        YabaiAdapter::FLOATING_FOCUS_MODE
     }
 }
 
@@ -185,6 +190,7 @@ impl WindowManagerCapabilityDescriptor for YabaiAdapter {
         // Resize is natively supported in all directions
         resize: DirectionalCapability::uniform(CapabilitySupport::Native),
     };
+    const FLOATING_FOCUS_MODE: FloatingFocusMode = FloatingFocusMode::TilingOnly;
 }
 
 impl WindowManagerSession for YabaiAdapter {

@@ -16,10 +16,10 @@ use yeetnyoink::profiling::ProfileConfig;
 #[command(
     name = "yeetnyoink",
     about = "Deep focus/move integration for your configured window manager",
-    after_help = "Choose the built-in window manager integration in your config via [wm].enabled_integration. No runtime window-manager detection or probing occurs."
+    after_help = "Your config must contain exactly one [wm.<backend>] table, and that table must set `enabled = true`. If you select `wm.macos_native`, that table must also set `floating_focus_strategy` and both Mission Control adjacent-space shortcuts. Current built-in tiling-only (`TilingOnly`) WM backends must not set `floating_focus_strategy`; there is no built-in mixed tiling-and-floating backend yet. Supported strategy names are `radial_center`, `trailing_edge_parallel`, `leading_edge_parallel`, `cross_edge_gap`, `overlap_then_gap`, and `ray_angle`. No runtime window-manager detection or probing occurs."
 )]
 struct Cli {
-    /// Load config from an explicit path; [wm].enabled_integration selects the built-in WM integration.
+    /// Load config from an explicit path; your config must contain exactly one [wm.<backend>] table, that table must set `enabled = true`, `wm.macos_native` requires `floating_focus_strategy`, and current tiling-only backends must leave it unset.
     #[arg(long, global = true, value_name = "PATH")]
     config: Option<PathBuf>,
 
@@ -161,20 +161,11 @@ mod tests {
 
     #[test]
     fn cli_help_describes_configured_wm_selection() {
-        let mut command = Cli::command();
-        let mut help = Vec::new();
-        command
-            .write_long_help(&mut help)
-            .expect("help text should render");
-        let help = String::from_utf8(help).expect("help text should be utf-8");
+        let help = Cli::command().render_long_help().to_string();
 
-        assert!(
-            help.contains("Choose the built-in window manager integration in your config"),
-            "help should explain that WM selection is config driven: {help}"
-        );
-        assert!(
-            help.contains("No runtime window-manager detection or probing occurs"),
-            "help should explain that WM probing is disabled: {help}"
-        );
+        assert!(help.contains("must contain exactly one [wm.<backend>] table"));
+        assert!(help.contains("that table must set `enabled = true`"));
+        assert!(help.contains("wm.macos_native"));
+        assert!(help.contains("TilingOnly") || help.contains("tiling-only"));
     }
 }

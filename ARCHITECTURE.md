@@ -85,8 +85,8 @@ trait AppAdapter: Send + TopologyHandler + ChainResolver {
 Hierarchical TOML-based configuration:
 
 ```toml
-[wm]
-enabled_integration = "niri"
+[wm.niri]
+enabled = true
 
 [app.terminal.wezterm]
 enabled = true
@@ -105,6 +105,13 @@ enabled = true
 app = "wezterm"
 mux_backend = "inherit"
 ```
+
+Your config must contain exactly one `wm.<backend>` table, and that table must set `enabled =
+true`. `wm.macos_native` uses the same per-backend table shape, but it additionally requires
+`floating_focus_strategy` plus the Mission Control `move_left_a_space` /
+`move_right_a_space` shortcut blocks because adjacent-Space transitions are driven through the
+configured macOS keyboard shortcuts. Current built-in tiling-only backends must not set
+`floating_focus_strategy`; there is no built-in mixed tiling-and-floating backend yet.
 
 Config discovery order:
 1. `--config <path>` CLI flag (explicit path)
@@ -162,7 +169,7 @@ Key mux operations:
 ### Window Managers (`src/adapters/window_managers/`)
 
 WM selection is config-driven rather than probe-driven:
-- `config.toml` selects one built-in backend with `[wm].enabled_integration`
+- `config.toml` must contain exactly one `[wm.<backend>]` table, and that table must set `enabled = true`
 - `connect_selected()` resolves that enum to a built-in `WindowManagerSpec`
 - There is **no runtime WM probing/detection or fallback chain**
 
@@ -277,7 +284,7 @@ The system is heavily configuration-driven:
 
 ### Override Points
 - `app_adapter_override()`: Pin to specific app
-- `[wm].enabled_integration`: Select the built-in WM backend
+- `[wm.<backend>].enabled`: Select the built-in WM backend
 - `--config <path>`: Explicit config file path
 
 ## Error Handling Philosophy

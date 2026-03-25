@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use super::{is_shell_comm, normalize_process_name, process_tree_pids};
+use super::{is_shell_comm, normalize_process_name};
 
 // ---------------------------------------------------------------------------
 // Process table cache
@@ -23,6 +23,20 @@ use super::{is_shell_comm, normalize_process_name, process_tree_pids};
 struct ProcessInfo {
     ppid: u32,
     comm: String,
+}
+
+#[derive(Debug, Clone)]
+struct TtyProcessInfo {
+    pid: u32,
+    pgrp: Option<u32>,
+    tpgid: Option<u32>,
+    comm: String,
+}
+
+#[derive(Debug, Clone)]
+struct TtyProcessCacheEntry {
+    processes: Vec<TtyProcessInfo>,
+    last_refresh: Instant,
 }
 
 /// A cached snapshot of the process table.
@@ -110,8 +124,79 @@ impl ProcessTableCache {
     }
 }
 
+fn parse_positive_process_group(raw: &str) -> Option<u32> {
+    raw.trim()
+        .parse::<i32>()
+        .ok()
+        .filter(|value| *value > 0)
+        .map(|value| value as u32)
+}
+
+fn normalize_tty_name(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed == "??" {
+        return None;
+    }
+    Some(trimmed.strip_prefix("/dev/").unwrap_or(trimmed).to_string())
+}
+
+fn tty_processes(tty_name: &str) -> Vec<TtyProcessInfo> {
+    let Some(tty_name) = normalize_tty_name(tty_name) else {
+        return Vec::new();
+    };
+    if let Some(processes) = TTY_PROCESS_CACHE.with(|cache| {
+        cache
+            .borrow()
+            .get(&tty_name)
+            .filter(|entry| entry.last_refresh.elapsed() <= Duration::from_millis(100))
+            .map(|entry| entry.processes.clone())
+    }) {
+        return processes;
+    }
+    let _span = tracing::debug_span!("runtime.macos.tty_processes", tty = %tty_name).entered();
+    let output = Command::new("ps")
+        .args(["-t", &tty_name, "-o", "pid=,ppid=,pgid=,tpgid=,comm="])
+        .output()
+        .ok();
+
+    let Some(output) = output else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+
+    let processes = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() < 5 {
+                return None;
+            }
+            Some(TtyProcessInfo {
+                pid: parts[0].parse::<u32>().ok()?,
+                pgrp: parse_positive_process_group(parts[2]),
+                tpgid: parse_positive_process_group(parts[3]),
+                comm: normalize_process_name(&parts[4..].join(" ")),
+            })
+        })
+        .collect::<Vec<_>>();
+    TTY_PROCESS_CACHE.with(|cache| {
+        cache.borrow_mut().insert(
+            tty_name,
+            TtyProcessCacheEntry {
+                processes: processes.clone(),
+                last_refresh: Instant::now(),
+            },
+        );
+    });
+    processes
+}
+
 thread_local! {
     static PROCESS_CACHE: RefCell<ProcessTableCache> = RefCell::new(ProcessTableCache::new());
+    static TTY_PROCESS_CACHE: RefCell<HashMap<String, TtyProcessCacheEntry>> =
+        RefCell::new(HashMap::new());
 }
 
 /// Ensure the process cache is fresh and run a query against it.
@@ -223,11 +308,18 @@ pub fn process_fd_target(pid: u32, fd: u32) -> Option<String> {
 
 /// Check if a process uses a specific TTY.
 pub fn process_uses_tty(pid: u32, tty_name: &str) -> bool {
-    // Check stdin, stdout, stderr (fd 0, 1, 2)
-    [0_u32, 1, 2]
+    tty_processes(tty_name)
         .into_iter()
-        .filter_map(|fd| process_fd_target(pid, fd))
-        .any(|target| target == tty_name)
+        .any(|process| process.pid == pid)
+}
+
+/// Find the most relevant shell process attached to a specific TTY.
+pub fn shell_pid_for_tty_name(tty_name: &str) -> Option<u32> {
+    tty_processes(tty_name)
+        .into_iter()
+        .rev()
+        .find(|process| is_shell_comm(&process.comm))
+        .map(|process| process.pid)
 }
 
 // ---------------------------------------------------------------------------
@@ -271,44 +363,6 @@ pub fn socket_path_for_pid_from_ss(pid: u32, path_contains: &str) -> Option<Stri
 // Foreground process detection
 // ---------------------------------------------------------------------------
 
-/// Get tpgid (terminal foreground process group ID) for a process.
-fn get_process_tpgid(pid: u32) -> Option<u32> {
-    let output = Command::new("ps")
-        .args(["-p", &pid.to_string(), "-o", "tpgid="])
-        .output()
-        .ok()?;
-
-    if !output.status.success() {
-        return None;
-    }
-
-    String::from_utf8_lossy(&output.stdout)
-        .trim()
-        .parse::<i32>()
-        .ok()
-        .filter(|v| *v > 0)
-        .map(|v| v as u32)
-}
-
-/// Get pgrp (process group ID) for a process.
-fn get_process_pgrp(pid: u32) -> Option<u32> {
-    let output = Command::new("ps")
-        .args(["-p", &pid.to_string(), "-o", "pgid="])
-        .output()
-        .ok()?;
-
-    if !output.status.success() {
-        return None;
-    }
-
-    String::from_utf8_lossy(&output.stdout)
-        .trim()
-        .parse::<i32>()
-        .ok()
-        .filter(|v| *v > 0)
-        .map(|v| v as u32)
-}
-
 /// Find the foreground process name for a TTY within a process tree.
 pub fn foreground_process_name_for_tty_in_tree(root_pid: u32, tty_name: &str) -> Option<String> {
     let _span = tracing::debug_span!(
@@ -321,15 +375,9 @@ pub fn foreground_process_name_for_tty_in_tree(root_pid: u32, tty_name: &str) ->
         return None;
     }
 
-    let candidates: Vec<(u32, String, Option<u32>, Option<u32>)> = process_tree_pids(root_pid)
+    let candidates: Vec<(u32, String, Option<u32>, Option<u32>)> = tty_processes(tty_name)
         .into_iter()
-        .filter(|pid| process_uses_tty(*pid, tty_name))
-        .filter_map(|pid| {
-            let comm = process_comm(pid)?;
-            let pgrp = get_process_pgrp(pid);
-            let tpgid = get_process_tpgid(pid);
-            Some((pid, comm, pgrp, tpgid))
-        })
+        .map(|process| (process.pid, process.comm, process.pgrp, process.tpgid))
         .collect();
 
     let pick = |entries: &[(u32, String, Option<u32>, Option<u32>)]| {
@@ -405,6 +453,208 @@ pub fn parse_stat_pgrp(_stat: &str) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsString;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::{Path, PathBuf};
+    use std::sync::{Mutex, OnceLock};
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn reset_process_cache_for_tests() {
+        PROCESS_CACHE.with(|cache| {
+            let mut cache = cache.borrow_mut();
+            cache.processes.clear();
+            cache.last_refresh = Instant::now() - Duration::from_secs(1000);
+        });
+        TTY_PROCESS_CACHE.with(|cache| cache.borrow_mut().clear());
+    }
+
+    struct PathGuard {
+        original: Option<OsString>,
+    }
+
+    impl PathGuard {
+        fn prepend(dir: &Path) -> Self {
+            let original = std::env::var_os("PATH");
+            let mut value = OsString::from(dir);
+            if let Some(existing) = &original {
+                value.push(":");
+                value.push(existing);
+            }
+            std::env::set_var("PATH", &value);
+            Self { original }
+        }
+    }
+
+    impl Drop for PathGuard {
+        fn drop(&mut self) {
+            match self.original.take() {
+                Some(value) => std::env::set_var("PATH", value),
+                None => std::env::remove_var("PATH"),
+            }
+        }
+    }
+
+    struct FakeProcessTools {
+        _guard: PathGuard,
+        root: PathBuf,
+        lsof_count_file: PathBuf,
+    }
+
+    impl FakeProcessTools {
+        fn install() -> Self {
+            let root = std::env::temp_dir().join(format!(
+                "yny-macos-runtime-test-{}-{}",
+                std::process::id(),
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos()
+            ));
+            fs::create_dir_all(&root).expect("failed to create fake tool dir");
+            let lsof_count_file = root.join("lsof-count");
+            fs::write(&lsof_count_file, "0\n").expect("failed to initialize lsof count");
+            write_executable(
+                &root.join("ps"),
+                r#"#!/bin/sh
+case "$*" in
+  "-A -o pid=,ppid=,comm=")
+    cat <<'EOF'
+100 1 wezterm-gui
+101 100 zsh
+102 101 nvim
+EOF
+    ;;
+  "-t ttys001 -o pid=,ppid=,pgid=,tpgid=,comm=")
+    cat <<'EOF'
+101 100 101 102 zsh
+102 101 102 102 nvim
+EOF
+    ;;
+  *)
+    echo "unexpected ps args: $*" >&2
+    exit 1
+    ;;
+esac
+"#,
+            );
+            write_executable(
+                &root.join("lsof"),
+                &format!(
+                    r#"#!/bin/sh
+count="$(cat "{0}")"
+echo $((count + 1)) > "{0}"
+exit 1
+"#,
+                    lsof_count_file.display()
+                ),
+            );
+            let guard = PathGuard::prepend(&root);
+            Self {
+                _guard: guard,
+                root,
+                lsof_count_file,
+            }
+        }
+
+        fn lsof_invocations(&self) -> u32 {
+            fs::read_to_string(&self.lsof_count_file)
+                .expect("failed to read lsof count")
+                .trim()
+                .parse()
+                .expect("invalid lsof count")
+        }
+    }
+
+    impl Drop for FakeProcessTools {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
+    struct TtyOnlyProcessTools {
+        _guard: PathGuard,
+        root: PathBuf,
+        lsof_count_file: PathBuf,
+    }
+
+    impl TtyOnlyProcessTools {
+        fn install() -> Self {
+            let root = std::env::temp_dir().join(format!(
+                "yny-macos-runtime-tty-only-{}-{}",
+                std::process::id(),
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos()
+            ));
+            fs::create_dir_all(&root).expect("failed to create fake tool dir");
+            let lsof_count_file = root.join("lsof-count");
+            fs::write(&lsof_count_file, "0\n").expect("failed to initialize lsof count");
+            write_executable(
+                &root.join("ps"),
+                r#"#!/bin/sh
+case "$*" in
+  "-t ttys001 -o pid=,ppid=,pgid=,tpgid=,comm=")
+    cat <<'EOF'
+101 100 101 102 zsh
+102 101 102 102 nvim
+EOF
+    ;;
+  *)
+    echo "unexpected ps args: $*" >&2
+    exit 1
+    ;;
+esac
+"#,
+            );
+            write_executable(
+                &root.join("lsof"),
+                &format!(
+                    r#"#!/bin/sh
+count="$(cat "{0}")"
+echo $((count + 1)) > "{0}"
+exit 1
+"#,
+                    lsof_count_file.display()
+                ),
+            );
+            let guard = PathGuard::prepend(&root);
+            Self {
+                _guard: guard,
+                root,
+                lsof_count_file,
+            }
+        }
+
+        fn lsof_invocations(&self) -> u32 {
+            fs::read_to_string(&self.lsof_count_file)
+                .expect("failed to read lsof count")
+                .trim()
+                .parse()
+                .expect("invalid lsof count")
+        }
+    }
+
+    impl Drop for TtyOnlyProcessTools {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
+    fn write_executable(path: &Path, contents: &str) {
+        fs::write(path, contents).expect("failed to write fake executable");
+        let mut permissions = fs::metadata(path)
+            .expect("failed to stat fake executable")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(path, permissions).expect("failed to chmod fake executable");
+    }
 
     #[test]
     fn all_pids_includes_current_process() {
@@ -434,5 +684,52 @@ mod tests {
         let children = child_pids(std::process::id());
         // Just verify it doesn't crash - may or may not have children
         let _ = children;
+    }
+
+    #[test]
+    fn process_uses_tty_reads_tty_scoped_ps_without_lsof() {
+        let _lock = env_lock().lock().expect("env lock poisoned");
+        let tools = FakeProcessTools::install();
+        reset_process_cache_for_tests();
+
+        assert!(process_uses_tty(101, "ttys001"));
+        assert!(process_uses_tty(102, "ttys001"));
+        assert_eq!(tools.lsof_invocations(), 0);
+    }
+
+    #[test]
+    fn shell_pid_for_tty_name_reads_tty_scoped_ps_without_lsof() {
+        let _lock = env_lock().lock().expect("env lock poisoned");
+        let tools = FakeProcessTools::install();
+        reset_process_cache_for_tests();
+
+        assert_eq!(shell_pid_for_tty_name("ttys001"), Some(101));
+        assert_eq!(tools.lsof_invocations(), 0);
+    }
+
+    #[test]
+    fn foreground_process_name_for_tty_in_tree_uses_tty_scoped_ps_without_lsof() {
+        let _lock = env_lock().lock().expect("env lock poisoned");
+        let tools = FakeProcessTools::install();
+        reset_process_cache_for_tests();
+
+        assert_eq!(
+            foreground_process_name_for_tty_in_tree(100, "ttys001"),
+            Some("nvim".to_string())
+        );
+        assert_eq!(tools.lsof_invocations(), 0);
+    }
+
+    #[test]
+    fn foreground_process_name_for_tty_in_tree_does_not_need_process_tree_scan() {
+        let _lock = env_lock().lock().expect("env lock poisoned");
+        let tools = TtyOnlyProcessTools::install();
+        reset_process_cache_for_tests();
+
+        assert_eq!(
+            foreground_process_name_for_tty_in_tree(100, "ttys001"),
+            Some("nvim".to_string())
+        );
+        assert_eq!(tools.lsof_invocations(), 0);
     }
 }

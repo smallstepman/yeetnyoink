@@ -21,10 +21,11 @@ use crate::engine::transfer::{
 };
 use crate::engine::wm::{
     validate_declared_capabilities, CapabilitySupport, ConfiguredWindowManager,
-    DirectionalCapability, FocusedWindowRecord, PrimitiveWindowManagerCapabilities, ResizeIntent,
-    WindowCycleProvider, WindowCycleRequest, WindowManagerCapabilities,
-    WindowManagerCapabilityDescriptor, WindowManagerDomainFactory, WindowManagerFeatures,
-    WindowManagerSession, WindowManagerSpec, WindowRecord, WindowTearOutComposer,
+    DirectionalCapability, FloatingFocusMode, FocusedWindowRecord,
+    PrimitiveWindowManagerCapabilities, ResizeIntent, WindowCycleProvider, WindowCycleRequest,
+    WindowManagerCapabilities, WindowManagerCapabilityDescriptor, WindowManagerDomainFactory,
+    WindowManagerFeatures, WindowManagerSession, WindowManagerSpec, WindowRecord,
+    WindowTearOutComposer,
 };
 use crate::logging;
 
@@ -95,6 +96,7 @@ impl WindowManagerCapabilityDescriptor for NiriAdapter {
             south: CapabilitySupport::Native,
         },
     };
+    const FLOATING_FOCUS_MODE: FloatingFocusMode = FloatingFocusMode::TilingOnly;
 }
 
 impl WindowManagerSession for NiriAdapter {
@@ -200,6 +202,10 @@ impl WindowManagerSpec for NiriSpec {
         features.window_cycle = Some(Box::new(NiriAdapter::from_shared(shared.clone())));
         features.tear_out_composer = Some(Box::new(NiriAdapter::from_shared(shared.clone())));
         ConfiguredWindowManager::try_new(Box::new(NiriAdapter::from_shared(shared)), features)
+    }
+
+    fn floating_focus_mode(&self) -> FloatingFocusMode {
+        NiriAdapter::FLOATING_FOCUS_MODE
     }
 }
 

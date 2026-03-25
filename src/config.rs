@@ -17,13 +17,17 @@
 /// app = "wezterm"
 /// mux_backend = "inherit"
 ///
-/// [wm]
-/// enabled_integraton = 'niri'
+/// [wm.niri]
+/// enabled = true
 /// ```
-use crate::engine::topology::Direction;
-use anyhow::{anyhow, Context, Result};
+use crate::engine::{
+    floating_focus_mode_for_backend,
+    topology::{Direction, FloatingFocusStrategy},
+    FloatingFocusMode,
+};
+use anyhow::{anyhow, bail, Context, Result};
 use etcetera::base_strategy::{choose_base_strategy, BaseStrategy};
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Deserializer, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{OnceLock, RwLock};
@@ -49,15 +53,308 @@ pub struct Config {
 // Window manager selection
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct WmConfig {
-    /// Selects the active WM integration. Only one can be active at a time.
-    ///
-    /// ```toml
-    /// [wm]
-    /// enabled_integration = "yabai"
-    /// ```
-    pub enabled_integration: WmBackend,
+    pub macos_native: Option<MacosNativeWmConfig>,
+    pub niri: Option<EnabledWmConfig>,
+    pub i3: Option<EnabledWmConfig>,
+    pub hyprland: Option<EnabledWmConfig>,
+    pub paneru: Option<EnabledWmConfig>,
+    pub yabai: Option<EnabledWmConfig>,
+}
+
+impl Default for WmConfig {
+    fn default() -> Self {
+        #[cfg(target_os = "linux")]
+        {
+            Self {
+                macos_native: None,
+                niri: Some(EnabledWmConfig {
+                    enabled: true,
+                    floating_focus_strategy: None,
+                }),
+                i3: None,
+                hyprland: None,
+                paneru: None,
+                yabai: None,
+            }
+        }
+        #[cfg(target_os = "macos")]
+        {
+            Self {
+                macos_native: None,
+                niri: None,
+                i3: None,
+                hyprland: None,
+                paneru: None,
+                yabai: Some(EnabledWmConfig {
+                    enabled: true,
+                    floating_focus_strategy: None,
+                }),
+            }
+        }
+    }
+}
+
+impl WmConfig {
+    fn present_backends(&self) -> [Option<WmBackend>; 6] {
+        [
+            self.macos_native.as_ref().map(|_| WmBackend::MacosNative),
+            self.niri.as_ref().map(|_| WmBackend::Niri),
+            self.i3.as_ref().map(|_| WmBackend::I3),
+            self.hyprland.as_ref().map(|_| WmBackend::Hyprland),
+            self.paneru.as_ref().map(|_| WmBackend::Paneru),
+            self.yabai.as_ref().map(|_| WmBackend::Yabai),
+        ]
+    }
+
+    fn configured_backends(&self) -> [Option<WmBackend>; 6] {
+        [
+            self.macos_native
+                .as_ref()
+                .and_then(|cfg| cfg.enabled.then_some(WmBackend::MacosNative)),
+            self.niri
+                .as_ref()
+                .and_then(|cfg| cfg.enabled.then_some(WmBackend::Niri)),
+            self.i3
+                .as_ref()
+                .and_then(|cfg| cfg.enabled.then_some(WmBackend::I3)),
+            self.hyprland
+                .as_ref()
+                .and_then(|cfg| cfg.enabled.then_some(WmBackend::Hyprland)),
+            self.paneru
+                .as_ref()
+                .and_then(|cfg| cfg.enabled.then_some(WmBackend::Paneru)),
+            self.yabai
+                .as_ref()
+                .and_then(|cfg| cfg.enabled.then_some(WmBackend::Yabai)),
+        ]
+    }
+
+    pub fn selected_backend(&self) -> Option<WmBackend> {
+        let mut configured = self.configured_backends().into_iter().flatten();
+        let selected = configured.next()?;
+        if configured.next().is_some() {
+            return None;
+        }
+        Some(selected)
+    }
+
+    fn validate(&self) -> Result<()> {
+        let mut present = self.present_backends().into_iter().flatten();
+        let Some(backend) = present.next() else {
+            bail!("config must define exactly one window manager table");
+        };
+        if present.next().is_some() {
+            bail!("config must define exactly one window manager table");
+        }
+
+        let (enabled, strategy) = match backend {
+            WmBackend::MacosNative => {
+                let cfg = self
+                    .macos_native
+                    .as_ref()
+                    .expect("present_backends must only return configured backends");
+                (cfg.enabled, cfg.floating_focus_strategy)
+            }
+            WmBackend::Niri => {
+                let cfg = self
+                    .niri
+                    .as_ref()
+                    .expect("present_backends must only return configured backends");
+                (cfg.enabled, cfg.floating_focus_strategy)
+            }
+            WmBackend::I3 => {
+                let cfg = self
+                    .i3
+                    .as_ref()
+                    .expect("present_backends must only return configured backends");
+                (cfg.enabled, cfg.floating_focus_strategy)
+            }
+            WmBackend::Hyprland => {
+                let cfg = self
+                    .hyprland
+                    .as_ref()
+                    .expect("present_backends must only return configured backends");
+                (cfg.enabled, cfg.floating_focus_strategy)
+            }
+            WmBackend::Paneru => {
+                let cfg = self
+                    .paneru
+                    .as_ref()
+                    .expect("present_backends must only return configured backends");
+                (cfg.enabled, cfg.floating_focus_strategy)
+            }
+            WmBackend::Yabai => {
+                let cfg = self
+                    .yabai
+                    .as_ref()
+                    .expect("present_backends must only return configured backends");
+                (cfg.enabled, cfg.floating_focus_strategy)
+            }
+        };
+        if !enabled {
+            bail!(
+                "window manager table `wm.{}` must have `enabled = true`",
+                backend.as_str()
+            );
+        }
+
+        validate_floating_focus_strategy_mode(
+            backend,
+            floating_focus_mode_for_backend(backend),
+            strategy,
+        )?;
+
+        if let Some(macos_native) = &self.macos_native {
+            macos_native.validate()?;
+        }
+
+        Ok(())
+    }
+}
+
+impl<'de> Deserialize<'de> for WmConfig {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        const FIELDS: &[&str] = &["macos_native", "niri", "i3", "hyprland", "paneru", "yabai"];
+
+        let mut raw = toml::Table::deserialize(deserializer)?;
+        let parsed = Self {
+            macos_native: take_typed_wm_table::<MacosNativeWmConfig, D::Error>(
+                &mut raw,
+                "macos_native",
+            )?,
+            niri: take_typed_wm_table::<EnabledWmConfig, D::Error>(&mut raw, "niri")?,
+            i3: take_typed_wm_table::<EnabledWmConfig, D::Error>(&mut raw, "i3")?,
+            hyprland: take_typed_wm_table::<EnabledWmConfig, D::Error>(&mut raw, "hyprland")?,
+            paneru: take_typed_wm_table::<EnabledWmConfig, D::Error>(&mut raw, "paneru")?,
+            yabai: take_typed_wm_table::<EnabledWmConfig, D::Error>(&mut raw, "yabai")?,
+        };
+
+        if let Some((unknown, _)) = raw.into_iter().next() {
+            return Err(serde::de::Error::unknown_field(&unknown, FIELDS));
+        }
+
+        Ok(parsed)
+    }
+}
+
+fn take_typed_wm_table<T, E>(
+    raw: &mut toml::Table,
+    key: &'static str,
+) -> std::result::Result<Option<T>, E>
+where
+    T: DeserializeOwned,
+    E: serde::de::Error,
+{
+    let Some(value) = raw.remove(key) else {
+        return Ok(None);
+    };
+
+    value.try_into().map(Some).map_err(E::custom)
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct EnabledWmConfig {
+    pub enabled: bool,
+    pub floating_focus_strategy: Option<FloatingFocusStrategy>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MacosNativeWmConfig {
+    pub enabled: bool,
+    pub floating_focus_strategy: Option<FloatingFocusStrategy>,
+    pub mission_control_keyboard_shortcuts: MissionControlKeyboardShortcutsConfig,
+}
+
+impl MacosNativeWmConfig {
+    fn validate(&self) -> Result<()> {
+        self.mission_control_keyboard_shortcuts.validate()
+    }
+}
+
+fn validate_floating_focus_strategy_mode(
+    backend: WmBackend,
+    mode: FloatingFocusMode,
+    strategy: Option<FloatingFocusStrategy>,
+) -> Result<()> {
+    match (mode, strategy) {
+        (FloatingFocusMode::FloatingOnly, None) => bail!(
+            "window manager table `wm.{}` requires `floating_focus_strategy` for {:?}",
+            backend.as_str(),
+            mode
+        ),
+        (FloatingFocusMode::TilingOnly, Some(strategy)) => bail!(
+            "window manager table `wm.{}` does not allow `floating_focus_strategy = {:?}` for {:?}",
+            backend.as_str(),
+            strategy,
+            mode
+        ),
+        _ => Ok(()),
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MissionControlKeyboardShortcutsConfig {
+    pub move_left_a_space: MissionControlShortcutConfig,
+    pub move_right_a_space: MissionControlShortcutConfig,
+}
+
+impl MissionControlKeyboardShortcutsConfig {
+    fn validate(&self) -> Result<()> {
+        self.move_left_a_space.validate()?;
+        self.move_right_a_space.validate()?;
+        Ok(())
+    }
+
+    pub fn shortcut_for(&self, direction: Direction) -> Option<&MissionControlShortcutConfig> {
+        match direction {
+            Direction::West => Some(&self.move_left_a_space),
+            Direction::East => Some(&self.move_right_a_space),
+            Direction::North | Direction::South => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MissionControlShortcutConfig {
+    pub keycode: String,
+    pub shift: bool,
+    pub ctrl: bool,
+    pub option: bool,
+    pub command: bool,
+    pub r#fn: bool,
+}
+
+impl MissionControlShortcutConfig {
+    fn validate(&self) -> Result<()> {
+        self.parse_keycode()?;
+        Ok(())
+    }
+
+    pub fn parse_keycode(&self) -> Result<u16> {
+        parse_macos_keycode(&self.keycode)
+    }
+}
+
+fn parse_macos_keycode(raw: &str) -> Result<u16> {
+    let trimmed = raw.trim();
+    let Some(hex) = trimmed
+        .strip_prefix("0x")
+        .or_else(|| trimmed.strip_prefix("0X"))
+    else {
+        bail!("invalid macOS Mission Control keycode `{trimmed}`");
+    };
+
+    u16::from_str_radix(hex, 16)
+        .map_err(|_| anyhow!("invalid macOS Mission Control keycode `{trimmed}`"))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -72,24 +369,14 @@ pub enum WmBackend {
     /// Hyprland - Wayland compositor, Linux only
     Hyprland,
 
+    /// macOS native Spaces-aware backend
+    MacosNative,
+
     /// Paneru - sliding/scrolling tiling WM for macOS (niri-like)
     Paneru,
 
     /// Yabai - tiling WM for macOS
     Yabai,
-}
-
-impl Default for WmBackend {
-    fn default() -> Self {
-        #[cfg(target_os = "linux")]
-        {
-            Self::Niri
-        }
-        #[cfg(target_os = "macos")]
-        {
-            Self::Yabai
-        }
-    }
 }
 
 impl WmBackend {
@@ -98,6 +385,7 @@ impl WmBackend {
             Self::Niri => "niri",
             Self::I3 => "i3",
             Self::Hyprland => "hyprland",
+            Self::MacosNative => "macos_native",
             Self::Paneru => "paneru",
             Self::Yabai => "yabai",
         }
@@ -106,7 +394,7 @@ impl WmBackend {
     pub const fn supported_on_current_platform(self) -> bool {
         match self {
             Self::Niri | Self::I3 | Self::Hyprland => cfg!(target_os = "linux"),
-            Self::Paneru | Self::Yabai => cfg!(target_os = "macos"),
+            Self::MacosNative | Self::Paneru | Self::Yabai => cfg!(target_os = "macos"),
         }
     }
 }
@@ -761,7 +1049,13 @@ fn resolve_config_path(explicit: Option<&Path>) -> Result<(PathBuf, bool)> {
 fn load_config_from(path: &Path) -> Result<Config> {
     let raw = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read config file {}", path.display()))?;
-    toml::from_str(&raw).with_context(|| format!("failed to parse config file {}", path.display()))
+    let parsed: Config = toml::from_str(&raw)
+        .with_context(|| format!("failed to parse config file {}", path.display()))?;
+    parsed
+        .wm
+        .validate()
+        .map_err(|err| anyhow!("failed to validate config file {}: {err}", path.display()))?;
+    Ok(parsed)
 }
 
 pub fn prepare() -> Result<()> {
@@ -1060,7 +1354,34 @@ fn app_enabled_from(cfg: &Config, section: AppSection, aliases: &[&str]) -> bool
 }
 
 pub fn selected_wm_backend() -> WmBackend {
-    read_config().wm.enabled_integration
+    read_config()
+        .wm
+        .selected_backend()
+        .expect("validated config must select exactly one window manager backend")
+}
+
+pub fn macos_native_floating_focus_strategy() -> Option<FloatingFocusStrategy> {
+    read_config()
+        .wm
+        .macos_native
+        .as_ref()
+        .filter(|cfg| cfg.enabled)
+        .and_then(|cfg| cfg.floating_focus_strategy)
+}
+
+pub fn macos_native_mission_control_shortcut(
+    direction: Direction,
+) -> Option<MissionControlShortcutConfig> {
+    read_config()
+        .wm
+        .macos_native
+        .as_ref()
+        .filter(|cfg| cfg.enabled)
+        .and_then(|cfg| {
+            cfg.mission_control_keyboard_shortcuts
+                .shortcut_for(direction)
+        })
+        .cloned()
 }
 
 fn app_adapter_override_from(cfg: &Config) -> Option<String> {
@@ -1349,6 +1670,21 @@ fn check_allowed(cfg: &InternalPaneDirectionConfig, direction: Direction) -> boo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn write_temp_config(contents: &str) -> std::path::PathBuf {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time should be after unix epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "yeetnyoink-config-test-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).expect("temp dir should be created");
+        let config_path = root.join("config.toml");
+        std::fs::write(&config_path, contents).expect("config file should be writable");
+        config_path
+    }
 
     #[test]
     fn parses_terminal_editor_and_mux_controls() {
@@ -1847,25 +2183,383 @@ app = "wezterm"
     }
 
     #[test]
-    fn wm_backend_deserializes_any_builtin_name() {
-        assert_eq!(
-            toml::from_str::<WmConfig>("enabled_integration = \"niri\"")
-                .unwrap()
-                .enabled_integration,
-            WmBackend::Niri
+    fn wm_config_selects_backend_from_single_enabled_table() {
+        let parsed = toml::from_str::<WmConfig>(
+            r#"
+[niri]
+enabled = true
+
+[yabai]
+enabled = false
+"#,
+        )
+        .unwrap();
+        assert_eq!(parsed.selected_backend(), Some(WmBackend::Niri));
+
+        let parsed = toml::from_str::<WmConfig>("[yabai]\nenabled = true\n").unwrap();
+        assert_eq!(parsed.selected_backend(), Some(WmBackend::Yabai));
+
+        let parsed = toml::from_str::<WmConfig>(
+            r#"
+[macos_native]
+enabled = true
+floating_focus_strategy = "radial_center"
+
+[macos_native.mission_control_keyboard_shortcuts.move_left_a_space]
+keycode = "0x7B"
+ctrl = true
+fn = true
+shift = false
+option = false
+command = false
+
+[macos_native.mission_control_keyboard_shortcuts.move_right_a_space]
+keycode = "0x7C"
+ctrl = true
+fn = true
+shift = false
+option = false
+command = false
+"#,
+        )
+        .unwrap();
+        assert_eq!(parsed.selected_backend(), Some(WmBackend::MacosNative));
+    }
+
+    #[test]
+    fn wm_config_rejects_backend_table_without_enabled_field() {
+        let err = toml::from_str::<WmConfig>("[niri]\n")
+            .expect_err("wm backend tables must declare enabled");
+        assert!(err.to_string().contains("enabled"));
+    }
+
+    #[test]
+    fn wm_config_rejects_legacy_enabled_integration_field() {
+        let err = toml::from_str::<WmConfig>("enabled_integration = \"niri\"")
+            .expect_err("legacy wm selector should be rejected");
+        assert!(err.to_string().contains("unknown field"));
+    }
+
+    #[test]
+    fn wm_config_requires_macos_native_floating_focus_strategy() {
+        let config_path = write_temp_config(
+            r#"
+[wm.macos_native]
+enabled = true
+
+[wm.macos_native.mission_control_keyboard_shortcuts.move_left_a_space]
+keycode = "0x7B"
+ctrl = true
+fn = true
+shift = false
+option = false
+command = false
+
+[wm.macos_native.mission_control_keyboard_shortcuts.move_right_a_space]
+keycode = "0x7C"
+ctrl = true
+fn = true
+shift = false
+option = false
+command = false
+"#,
         );
+
+        let old = snapshot();
+        let err = prepare_with_path(Some(config_path.as_path()))
+            .expect_err("macOS native config should require floating focus strategy");
+        install(old);
+
+        let message = format!("{err:#}");
+        assert!(message.contains("floating_focus_strategy"), "{message}");
+    }
+
+    #[test]
+    fn wm_config_parses_macos_native_floating_focus_strategy() {
+        let parsed = toml::from_str::<WmConfig>(
+            r#"
+[macos_native]
+enabled = true
+floating_focus_strategy = "radial_center"
+
+[macos_native.mission_control_keyboard_shortcuts.move_left_a_space]
+keycode = "0x7B"
+ctrl = true
+fn = true
+shift = false
+option = false
+command = false
+
+[macos_native.mission_control_keyboard_shortcuts.move_right_a_space]
+keycode = "0x7C"
+ctrl = true
+fn = true
+shift = false
+option = false
+command = false
+"#,
+        )
+        .expect("macOS native WM config should parse");
+
+        assert_eq!(parsed.selected_backend(), Some(WmBackend::MacosNative));
         assert_eq!(
-            toml::from_str::<WmConfig>("enabled_integration = \"yabai\"")
-                .unwrap()
-                .enabled_integration,
-            WmBackend::Yabai
+            parsed
+                .macos_native
+                .as_ref()
+                .and_then(|cfg| cfg.floating_focus_strategy),
+            Some(crate::engine::topology::FloatingFocusStrategy::RadialCenter)
         );
+    }
+
+    #[test]
+    fn wm_config_rejects_unknown_floating_focus_strategy() {
+        let err = toml::from_str::<WmConfig>(
+            r#"
+[niri]
+enabled = true
+floating_focus_strategy = "diagonal_telepathy"
+"#,
+        )
+        .expect_err("unknown floating focus strategy should be rejected");
+
+        assert!(err.to_string().contains("diagonal_telepathy"));
+    }
+
+    #[test]
+    fn wm_config_rejects_floating_focus_strategy_for_tiling_only_backend() {
+        let config_path = write_temp_config(
+            r#"
+[wm.niri]
+enabled = true
+floating_focus_strategy = "ray_angle"
+"#,
+        );
+
+        let old = snapshot();
+        let err = prepare_with_path(Some(config_path.as_path())).unwrap_err();
+        install(old);
+
+        assert!(format!("{err:#}").contains("TilingOnly"));
+    }
+
+    #[test]
+    fn wm_config_allows_missing_floating_focus_strategy_for_tiling_only_backend() {
+        let parsed = toml::from_str::<WmConfig>(
+            r#"
+[niri]
+enabled = true
+"#,
+        )
+        .expect("tiling-only backends should allow omitting a floating focus strategy");
         assert_eq!(
-            toml::from_str::<WmConfig>("enabled_integration = \"hyprland\"")
-                .unwrap()
-                .enabled_integration,
-            WmBackend::Hyprland
+            parsed
+                .niri
+                .as_ref()
+                .and_then(|cfg| cfg.floating_focus_strategy),
+            None
         );
+    }
+
+    #[test]
+    fn full_config_optional_wm_backend_parses_without_floating_focus_strategy() {
+        let parsed = toml::from_str::<Config>(
+            r#"
+[wm.niri]
+enabled = true
+"#,
+        )
+        .expect("full config should allow optional WM backend without floating focus strategy");
+
+        assert_eq!(parsed.wm.selected_backend(), Some(WmBackend::Niri));
+        assert_eq!(
+            parsed
+                .wm
+                .niri
+                .as_ref()
+                .and_then(|cfg| cfg.floating_focus_strategy),
+            None
+        );
+    }
+
+    #[test]
+    fn macos_native_floating_focus_strategy_getter_returns_selected_strategy() {
+        let config_path = write_temp_config(
+            r#"
+[wm.macos_native]
+enabled = true
+floating_focus_strategy = "radial_center"
+
+[wm.macos_native.mission_control_keyboard_shortcuts.move_left_a_space]
+keycode = "0x7B"
+ctrl = true
+fn = true
+shift = false
+option = false
+command = false
+
+[wm.macos_native.mission_control_keyboard_shortcuts.move_right_a_space]
+keycode = "0x7C"
+ctrl = true
+fn = true
+shift = false
+option = false
+command = false
+"#,
+        );
+
+        let old = snapshot();
+        prepare_with_path(Some(config_path.as_path()))
+            .expect("macOS native config with floating focus strategy should load");
+        assert_eq!(
+            macos_native_floating_focus_strategy(),
+            Some(crate::engine::topology::FloatingFocusStrategy::RadialCenter)
+        );
+        install(old);
+    }
+
+    #[test]
+    fn wm_config_rejects_multiple_wm_tables_even_if_only_one_is_enabled() {
+        let config_path = write_temp_config(
+            r#"
+[wm.niri]
+enabled = true
+
+[wm.yabai]
+enabled = false
+"#,
+        );
+
+        let old = snapshot();
+        let err = prepare_with_path(Some(config_path.as_path()))
+            .expect_err("multiple window manager tables should be rejected");
+        install(old);
+
+        assert!(format!("{err:#}").contains("exactly one window manager table"));
+    }
+
+    #[test]
+    fn wm_config_rejects_missing_window_manager_table() {
+        let err = toml::from_str::<WmConfig>("")
+            .expect("empty wm config should deserialize")
+            .validate()
+            .expect_err("missing wm tables should be rejected");
+
+        assert!(format!("{err:#}").contains("exactly one window manager table"));
+    }
+
+    #[test]
+    fn wm_config_rejects_present_window_manager_table_when_disabled() {
+        let config_path = write_temp_config(
+            r#"
+[wm.yabai]
+enabled = false
+"#,
+        );
+
+        let old = snapshot();
+        let err = prepare_with_path(Some(config_path.as_path()))
+            .expect_err("present wm table must be enabled");
+        install(old);
+
+        let message = format!("{err:#}");
+        assert!(message.contains("enabled"), "{message}");
+    }
+
+    #[test]
+    fn wm_config_accepts_macos_native_when_floating_focus_strategy_is_present() {
+        let config_path = write_temp_config(
+            r#"
+[wm.macos_native]
+enabled = true
+floating_focus_strategy = "radial_center"
+
+[wm.macos_native.mission_control_keyboard_shortcuts.move_left_a_space]
+keycode = "0x7B"
+ctrl = true
+fn = true
+shift = false
+option = false
+command = false
+
+[wm.macos_native.mission_control_keyboard_shortcuts.move_right_a_space]
+keycode = "0x7C"
+ctrl = true
+fn = true
+shift = false
+option = false
+command = false
+"#,
+        );
+
+        let old = snapshot();
+        prepare_with_path(Some(config_path.as_path()))
+            .expect("macOS native config should load when strategy is present");
+        install(old);
+    }
+
+    #[test]
+    fn floating_focus_strategy_mode_allows_tiling_and_floating_with_optional_strategy() {
+        assert!(validate_floating_focus_strategy_mode(
+            WmBackend::Yabai,
+            FloatingFocusMode::TilingAndFloating,
+            None
+        )
+        .is_ok());
+        assert!(validate_floating_focus_strategy_mode(
+            WmBackend::Yabai,
+            FloatingFocusMode::TilingAndFloating,
+            Some(crate::engine::topology::FloatingFocusStrategy::RayAngle)
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn prepare_with_path_rejects_invalid_macos_native_keycode() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time should be after unix epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "yeetnyoink-config-wm-macos-keycode-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).expect("temp dir should be created");
+        let config_path = root.join("config.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+[wm.macos_native]
+enabled = true
+floating_focus_strategy = "radial_center"
+
+[wm.macos_native.mission_control_keyboard_shortcuts.move_left_a_space]
+keycode = "left"
+ctrl = true
+fn = true
+shift = false
+option = false
+command = false
+
+[wm.macos_native.mission_control_keyboard_shortcuts.move_right_a_space]
+keycode = "0x7C"
+ctrl = true
+fn = true
+shift = false
+option = false
+command = false
+"#,
+        )
+        .expect("config file should be writable");
+
+        let old = snapshot();
+        let err = prepare_with_path(Some(&config_path))
+            .expect_err("invalid macOS-native keycodes should be rejected");
+        install(old);
+        let _ = std::fs::remove_dir_all(&root);
+
+        assert!(err
+            .to_string()
+            .contains("invalid macOS Mission Control keycode"));
     }
 }
 

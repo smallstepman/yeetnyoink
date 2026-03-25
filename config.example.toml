@@ -16,8 +16,31 @@
 #   (single-letter aliases like `W`, `E`, `N`, `S` also parse).
 #
 
-[wm]
-enabled_integration = "niri" # niri | i3 | hyprland | paneru | yabai
+[wm.niri] # or [wm.i3]/[wm.hyprland] on Linux, [wm.paneru]/[wm.yabai] on macOS
+enabled = true
+
+# Example macOS-native config (choose this instead of another wm.* table):
+# Keep exactly one wm.* table in your real config; do not leave extra disabled wm.* tables around.
+# [wm.macos_native]
+# enabled = true
+# floating_focus_strategy = "overlap_then_gap" # radial_center | trailing_edge_parallel | leading_edge_parallel | cross_edge_gap | overlap_then_gap | ray_angle
+# [wm.macos_native.mission_control_keyboard_shortcuts.move_left_a_space]
+# keycode = "0x7B"
+# ctrl = true
+# fn = true
+# shift = false
+# option = false
+# command = false
+#
+# [wm.macos_native.mission_control_keyboard_shortcuts.move_right_a_space]
+# keycode = "0x7C"
+# ctrl = true
+# fn = true
+# shift = false
+# option = false
+# command = false
+# # Current built-in tiling-only backends must not set floating_focus_strategy.
+# # There is no built-in mixed tiling+floating backend yet.
 
 # ---------------------------------------------------------------------------
 # Instrumentation (logging and profiling)

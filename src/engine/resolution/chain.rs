@@ -126,6 +126,7 @@ fn shell_matches_foreground_tpgid(shell_pid: u32, fg_base: &str) -> bool {
         .unwrap_or(false)
 }
 
+#[cfg(any(test, not(target_os = "macos")))]
 fn shell_pid_for_tty<F>(shells: &[u32], tty_name: Option<&str>, mut uses_tty: F) -> Option<u32>
 where
     F: FnMut(u32, &str) -> bool,
@@ -150,6 +151,12 @@ fn shell_pid_for_host_focused_tty(
         .ok()?;
     let focused_tty = crate::engine::contracts::TerminalPaneSnapshot::active_or_first(panes.iter())
         .and_then(|pane| pane.tty_name.as_deref());
+    #[cfg(target_os = "macos")]
+    let selected = {
+        let _ = shells;
+        focused_tty.and_then(runtime::shell_pid_for_tty_name)
+    };
+    #[cfg(not(target_os = "macos"))]
     let selected = shell_pid_for_tty(shells, focused_tty, runtime::process_uses_tty);
     if let (Some(shell_pid), Some(tty_name)) = (selected, focused_tty) {
         logging::debug(format!(
@@ -245,19 +252,49 @@ fn resolve_terminal_chain(
         terminal_pid, fg_hint, fg_base
     ));
 
-    let shells: Vec<u32> = {
-        let _span =
-            tracing::debug_span!("chain_resolver.shell_candidates", pid = terminal_pid).entered();
-        runtime::child_pids(terminal_pid)
-            .into_iter()
-            .filter(|&pid| runtime::is_shell_pid(pid))
-            .collect()
-    };
-    logging::debug(format!(
-        "resolve_terminal_chain: shell_candidates={:?}",
-        shells
-    ));
+    #[cfg(target_os = "macos")]
+    let focused_tty_shell = shell_pid_for_host_focused_tty(terminal_pid, host, &[]);
+    #[cfg(not(target_os = "macos"))]
+    let focused_tty_shell: Option<u32> = None;
 
+    let shells: Vec<u32> = if focused_tty_shell.is_none() {
+        let shells: Vec<u32> = {
+            let _span = tracing::debug_span!("chain_resolver.shell_candidates", pid = terminal_pid)
+                .entered();
+            runtime::child_pids(terminal_pid)
+                .into_iter()
+                .filter(|&pid| runtime::is_shell_pid(pid))
+                .collect()
+        };
+        logging::debug(format!(
+            "resolve_terminal_chain: shell_candidates={:?}",
+            shells
+        ));
+        shells
+    } else {
+        Vec::new()
+    };
+
+    #[cfg(target_os = "macos")]
+    let search_pid = focused_tty_shell.or_else(|| {
+        if shells.len() <= 1 {
+            shells.first().copied()
+        } else if !fg_base.is_empty() {
+            shells
+                .iter()
+                .copied()
+                .find(|&shell_pid| shell_matches_foreground_tpgid(shell_pid, &fg_base))
+                .or_else(|| {
+                    shells.iter().copied().find(|&shell_pid| {
+                        !runtime::find_descendants_by_comm(shell_pid, &fg_base).is_empty()
+                    })
+                })
+        } else {
+            None
+        }
+    });
+
+    #[cfg(not(target_os = "macos"))]
     let search_pid =
         if let Some(shell_pid) = shell_pid_for_host_focused_tty(terminal_pid, host, &shells) {
             Some(shell_pid)

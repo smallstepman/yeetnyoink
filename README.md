@@ -38,8 +38,8 @@ Run `yny setup zellij` to print the hosted `load_plugins { ... }` release URL sn
 ## Minimal config example
 
 ```toml
-[wm]
-enabled_integration = "niri" # or "i3" or "hyprland" on Linux
+[wm.niri] # or [wm.i3]/[wm.hyprland] on Linux, [wm.paneru]/[wm.yabai] on macOS
+enabled = true
 
 [app.terminal.wezterm]
 enabled = true
@@ -71,6 +71,16 @@ enabled = true
 tab_axis = "vertical"
 ```
 
+Your config must contain exactly one `wm.<backend>` table, and that table must set `enabled = true`.
+If you choose `wm.macos_native`, that table must set `wm.macos_native.floating_focus_strategy`
+(`radial_center`, `trailing_edge_parallel`, `leading_edge_parallel`, `cross_edge_gap`,
+`overlap_then_gap`, or `ray_angle`) and configure both
+`wm.macos_native.mission_control_keyboard_shortcuts.move_left_a_space` and
+`.move_right_a_space` with `keycode = "0x..."` plus `shift`/`ctrl`/`option`/`command`/`fn`
+booleans. Current built-in tiling-only WM backends (`wm.niri`, `wm.i3`, `wm.hyprland`,
+`wm.paneru`, and `wm.yabai`) must not set `floating_focus_strategy`. There is no built-in mixed
+tiling-and-floating backend yet.
+
 Terminal-hosted editors use `app.editor.<editor>.ui.terminal` to describe which terminal UI they
 run inside and which mux backend to use there. Direct graphical editors can additionally describe
 their GUI surface under `app.editor.<editor>.ui.graphical`.
@@ -94,8 +104,9 @@ for native WezTerm/kitty mux backends.
 ## Home Manager module
 
 The flake exports `homeManagerModules.default`. Its
-`programs.yeetnyoink.config.*` options are typed to match `src/config.rs`,
-and Home Manager renders them to `~/.config/yeetnyoink/config.toml`.
+`programs.yeetnyoink.config.*` options mirror the config shape from `src/config.rs`,
+and for generated config Home Manager enforces the built-in WM contract before
+rendering `~/.config/yeetnyoink/config.toml`.
 
 ```nix
 {
@@ -104,7 +115,7 @@ and Home Manager renders them to `~/.config/yeetnyoink/config.toml`.
   programs.yeetnyoink = {
     enable = true;
     config = {
-      wm.enabled_integration = "niri";
+      wm.niri.enabled = true;
 
       app.terminal.wezterm = {
         enabled = true;
@@ -167,5 +178,10 @@ Current built-in WM adapters:
 - `niri`
 - `i3`
 - `hyprland`
+- `macos_native`
+- `paneru`
+- `yabai`
 
-Adapter selection is driven by `wm.enabled_integration`. No runtime probing occurs; selection is explicit and must be set in your config or via the CLI.
+Adapter selection is driven by the one `wm.<backend>` table present in config, and that table must
+set `enabled = true`. No runtime probing occurs; selection is explicit and must be set in your
+config or via the CLI.

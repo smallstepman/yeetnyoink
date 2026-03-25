@@ -15,6 +15,8 @@
 pub mod hyprland;
 #[cfg(target_os = "linux")]
 pub mod i3;
+#[cfg(target_os = "macos")]
+pub(crate) mod macos_native;
 #[cfg(any(test, target_os = "linux"))]
 pub mod niri;
 #[cfg(target_os = "macos")]
@@ -29,6 +31,8 @@ pub use self::niri::NiriAdapter;
 use crate::adapters::window_managers::hyprland::HYPRLAND_SPEC;
 #[cfg(target_os = "linux")]
 use crate::adapters::window_managers::i3::I3_SPEC;
+#[cfg(target_os = "macos")]
+use crate::adapters::window_managers::macos_native::MACOS_NATIVE_SPEC;
 #[cfg(target_os = "linux")]
 use crate::adapters::window_managers::niri::NIRI_SPEC;
 #[cfg(target_os = "macos")]
@@ -41,6 +45,8 @@ use crate::engine::wm::configured::WindowManagerSpec;
 pub(crate) use crate::engine::wm::configured::UNSUPPORTED_HYPRLAND_SPEC;
 #[cfg(not(target_os = "linux"))]
 pub(crate) use crate::engine::wm::configured::UNSUPPORTED_I3_SPEC;
+#[cfg(not(target_os = "macos"))]
+pub(crate) use crate::engine::wm::configured::UNSUPPORTED_MACOS_NATIVE_SPEC;
 #[cfg(not(target_os = "linux"))]
 pub(crate) use crate::engine::wm::configured::UNSUPPORTED_NIRI_SPEC;
 #[cfg(not(target_os = "macos"))]
@@ -80,6 +86,16 @@ pub fn spec_for_backend(backend: WmBackend) -> &'static dyn WindowManagerSpec {
                 &UNSUPPORTED_HYPRLAND_SPEC
             }
         }
+        WmBackend::MacosNative => {
+            #[cfg(target_os = "macos")]
+            {
+                &MACOS_NATIVE_SPEC
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                &UNSUPPORTED_MACOS_NATIVE_SPEC
+            }
+        }
         WmBackend::Paneru => {
             #[cfg(target_os = "macos")]
             {
@@ -114,13 +130,72 @@ mod tests {
 
     #[test]
     fn built_in_specs_match_window_manager_contract() {
+        use crate::engine::FloatingFocusMode;
+
         fn assert_spec(_spec: &'static dyn WindowManagerSpec) {}
+        fn assert_mode_matches_declared<A>(backend: WmBackend)
+        where
+            A: WindowManagerCapabilityDescriptor,
+        {
+            let spec = super::spec_for_backend(backend);
+            assert_eq!(spec.name(), A::NAME);
+            assert_eq!(spec.floating_focus_mode(), A::FLOATING_FOCUS_MODE);
+        }
 
         assert_spec(super::spec_for_backend(WmBackend::Niri));
         assert_spec(super::spec_for_backend(WmBackend::I3));
         assert_spec(super::spec_for_backend(WmBackend::Hyprland));
+        assert_spec(super::spec_for_backend(WmBackend::MacosNative));
         assert_spec(super::spec_for_backend(WmBackend::Paneru));
         assert_spec(super::spec_for_backend(WmBackend::Yabai));
+
+        #[cfg(target_os = "linux")]
+        {
+            assert_mode_matches_declared::<crate::adapters::window_managers::NiriAdapter>(
+                WmBackend::Niri,
+            );
+            assert_mode_matches_declared::<crate::adapters::window_managers::i3::I3Adapter>(
+                WmBackend::I3,
+            );
+            assert_mode_matches_declared::<
+                crate::adapters::window_managers::hyprland::HyprlandAdapter,
+            >(WmBackend::Hyprland);
+            assert_eq!(
+                super::spec_for_backend(WmBackend::MacosNative).floating_focus_mode(),
+                FloatingFocusMode::FloatingOnly,
+            );
+            assert_eq!(
+                super::spec_for_backend(WmBackend::Paneru).floating_focus_mode(),
+                FloatingFocusMode::TilingOnly,
+            );
+            assert_eq!(
+                super::spec_for_backend(WmBackend::Yabai).floating_focus_mode(),
+                FloatingFocusMode::TilingOnly,
+            );
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            assert_mode_matches_declared::<
+                crate::adapters::window_managers::macos_native::MacosNativeAdapter,
+            >(WmBackend::MacosNative);
+            assert_mode_matches_declared::<crate::adapters::window_managers::paneru::PaneruAdapter>(
+                WmBackend::Paneru,
+            );
+            assert_mode_matches_declared::<crate::adapters::window_managers::yabai::YabaiAdapter>(
+                WmBackend::Yabai,
+            );
+            assert_mode_matches_declared::<crate::adapters::window_managers::NiriAdapter>(
+                WmBackend::Niri,
+            );
+            assert_eq!(
+                super::spec_for_backend(WmBackend::I3).floating_focus_mode(),
+                FloatingFocusMode::TilingOnly,
+            );
+            assert_mode_matches_declared::<
+                crate::adapters::window_managers::hyprland::HyprlandAdapter,
+            >(WmBackend::Hyprland);
+        }
     }
 
     #[test]
@@ -153,5 +228,17 @@ mod tests {
         assert_eq!(capabilities.tear_out.west, CapabilitySupport::Composed);
         assert!(capabilities.primitives.move_column);
         assert!(capabilities.primitives.consume_into_column_and_move);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_native_space_kind_symbols_are_exposed() {
+        use crate::adapters::window_managers::macos_native::SpaceKind;
+
+        assert_eq!(SpaceKind::Desktop.as_str(), "desktop");
+        assert_eq!(
+            SpaceKind::StageManagerOpaque.as_str(),
+            "stage_manager_opaque"
+        );
     }
 }
