@@ -50,6 +50,13 @@ pub struct FocusedWindowRecord {
     pub original_tile_index: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FocusedAppRecord {
+    pub app_id: String,
+    pub title: String,
+    pub pid: ProcessId,
+}
+
 pub trait WindowManagerSession: Send {
     fn adapter_name(&self) -> &'static str;
     fn capabilities(&self) -> WindowManagerCapabilities;

@@ -70,6 +70,21 @@ fn resolve_direct_adapter(app_id: &str) -> Option<Box<dyn AppAdapter>> {
     None
 }
 
+pub fn resolve_root_adapter(app_id: &str) -> Option<Box<dyn AppAdapter>> {
+    if let Some(host) = apps::TERMINAL_HOSTS
+        .iter()
+        .find(|host| host.app_ids.contains(&app_id))
+    {
+        if !crate::config::terminal_chain_enabled_for(host.aliases) {
+            logging::debug("resolve_root_adapter: terminal integration disabled via config");
+            return None;
+        }
+        return Some(bind_app_policy((host.build)()));
+    }
+
+    resolve_direct_adapter(app_id)
+}
+
 fn tmux_candidate_pids(root_pid: u32) -> Vec<u32> {
     let mut candidates = Vec::new();
     if runtime::process_comm(root_pid).as_deref() == Some("tmux") {
@@ -756,6 +771,33 @@ enabled = true
         let old_config = load_config(&config_dir.join("config.toml"));
 
         let chain = resolve_app_chain(kitty::APP_IDS[0], 0, "");
+        assert!(!chain.is_empty());
+        assert_eq!(
+            chain.last().map(|adapter| adapter.adapter_name()),
+            Some("terminal")
+        );
+
+        restore_config(old_config);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn wezterm_macos_bundle_id_resolves_terminal_chain() {
+        let _guard = env_guard();
+        let root = unique_temp_dir("wezterm-terminal-chain");
+        let config_dir = root.join("yeetnyoink");
+        fs::create_dir_all(&config_dir).expect("config dir should be created");
+        fs::write(
+            config_dir.join("config.toml"),
+            r#"
+[app.terminal.wezterm]
+enabled = true
+"#,
+        )
+        .expect("config file should be writable");
+        let old_config = load_config(&config_dir.join("config.toml"));
+
+        let chain = resolve_app_chain("com.github.wez.wezterm", 0, "");
         assert!(!chain.is_empty());
         assert_eq!(
             chain.last().map(|adapter| adapter.adapter_name()),
