@@ -106,6 +106,12 @@ app = "wezterm"
 mux_backend = "inherit"
 ```
 
+`wm.macos_native` uses the same per-backend table shape, but it additionally requires
+`floating_focus_strategy` plus the Mission Control `move_left_a_space` /
+`move_right_a_space` shortcut blocks because adjacent-Space transitions are driven through the
+configured macOS keyboard shortcuts. Other WM backends may omit `floating_focus_strategy` or set
+it optionally to use the same named floating-focus strategies.
+
 Config discovery order:
 1. `--config <path>` CLI flag (explicit path)
 2. Platform config dir (`$XDG_CONFIG_HOME/yeet-and-yoink/config.toml`)

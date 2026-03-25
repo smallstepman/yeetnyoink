@@ -16,10 +16,10 @@ use yeetnyoink::profiling::ProfileConfig;
 #[command(
     name = "yeetnyoink",
     about = "Deep focus/move integration for your configured window manager",
-    after_help = "Choose the built-in window manager integration by setting `enabled = true` in exactly one [wm.<backend>] table. No runtime window-manager detection or probing occurs."
+    after_help = "Choose the built-in window manager integration by setting `enabled = true` in exactly one [wm.<backend>] table. If you select `wm.macos_native`, that table must also set `floating_focus_strategy` and both Mission Control adjacent-space shortcuts. Other WM backends may omit `floating_focus_strategy` or set it optionally. Supported strategy names are `radial_center`, `trailing_edge_parallel`, `leading_edge_parallel`, `cross_edge_gap`, `overlap_then_gap`, and `ray_angle`. No runtime window-manager detection or probing occurs."
 )]
 struct Cli {
-    /// Load config from an explicit path; exactly one [wm.<backend>] table with `enabled = true` selects the built-in WM integration.
+    /// Load config from an explicit path; exactly one [wm.<backend>] table with `enabled = true` selects the built-in WM integration, `wm.macos_native` requires `floating_focus_strategy`, and other backends may set it optionally.
     #[arg(long, global = true, value_name = "PATH")]
     config: Option<PathBuf>,
 
@@ -169,8 +169,14 @@ mod tests {
         let help = String::from_utf8(help).expect("help text should be utf-8");
 
         assert!(
-            help.contains("Choose the built-in window manager integration in your config"),
+            help.contains(
+                "Choose the built-in window manager integration by setting `enabled = true` in exactly one [wm.<backend>] table"
+            ),
             "help should explain that WM selection is config driven: {help}"
+        );
+        assert!(
+            help.contains("floating_focus_strategy"),
+            "help should describe the macOS-native floating focus strategy requirement: {help}"
         );
         assert!(
             help.contains("No runtime window-manager detection or probing occurs"),

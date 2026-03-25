@@ -20,10 +20,10 @@
 /// [wm.niri]
 /// enabled = true
 /// ```
-use crate::engine::topology::Direction;
-use anyhow::{Context, Result, anyhow, bail};
-use etcetera::base_strategy::{BaseStrategy, choose_base_strategy};
-use serde::{Deserialize, Deserializer, Serialize, de::DeserializeOwned};
+use crate::engine::topology::{Direction, FloatingFocusStrategy};
+use anyhow::{anyhow, bail, Context, Result};
+use etcetera::base_strategy::{choose_base_strategy, BaseStrategy};
+use serde::{de::DeserializeOwned, Deserialize, Deserializer, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{OnceLock, RwLock};
@@ -65,7 +65,10 @@ impl Default for WmConfig {
         {
             Self {
                 macos_native: None,
-                niri: Some(EnabledWmConfig { enabled: true }),
+                niri: Some(EnabledWmConfig {
+                    enabled: true,
+                    floating_focus_strategy: None,
+                }),
                 i3: None,
                 hyprland: None,
                 paneru: None,
@@ -80,7 +83,10 @@ impl Default for WmConfig {
                 i3: None,
                 hyprland: None,
                 paneru: None,
-                yabai: Some(EnabledWmConfig { enabled: true }),
+                yabai: Some(EnabledWmConfig {
+                    enabled: true,
+                    floating_focus_strategy: None,
+                }),
             }
         }
     }
@@ -179,12 +185,14 @@ where
 #[serde(deny_unknown_fields)]
 pub struct EnabledWmConfig {
     pub enabled: bool,
+    pub floating_focus_strategy: Option<FloatingFocusStrategy>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct MacosNativeWmConfig {
     pub enabled: bool,
+    pub floating_focus_strategy: FloatingFocusStrategy,
     pub mission_control_keyboard_shortcuts: MissionControlKeyboardShortcutsConfig,
 }
 
@@ -1255,6 +1263,15 @@ pub fn selected_wm_backend() -> WmBackend {
         .expect("validated config must select exactly one window manager backend")
 }
 
+pub fn macos_native_floating_focus_strategy() -> Option<FloatingFocusStrategy> {
+    read_config()
+        .wm
+        .macos_native
+        .as_ref()
+        .filter(|cfg| cfg.enabled)
+        .map(|cfg| cfg.floating_focus_strategy)
+}
+
 pub fn macos_native_mission_control_shortcut(
     direction: Direction,
 ) -> Option<MissionControlShortcutConfig> {
@@ -2074,6 +2091,7 @@ enabled = false
             r#"
 [macos_native]
 enabled = true
+floating_focus_strategy = "radial_center"
 
 [macos_native.mission_control_keyboard_shortcuts.move_left_a_space]
 keycode = "0x7B"
@@ -2111,6 +2129,208 @@ command = false
     }
 
     #[test]
+    fn wm_config_requires_macos_native_floating_focus_strategy() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time should be after unix epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "yeetnyoink-config-wm-macos-floating-focus-required-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).expect("temp dir should be created");
+        let config_path = root.join("config.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+[wm.macos_native]
+enabled = true
+
+[wm.macos_native.mission_control_keyboard_shortcuts.move_left_a_space]
+keycode = "0x7B"
+ctrl = true
+fn = true
+shift = false
+option = false
+command = false
+
+[wm.macos_native.mission_control_keyboard_shortcuts.move_right_a_space]
+keycode = "0x7C"
+ctrl = true
+fn = true
+shift = false
+option = false
+command = false
+"#,
+        )
+        .expect("config file should be writable");
+
+        let old = snapshot();
+        let err = prepare_with_path(Some(&config_path))
+            .expect_err("macOS native config should require floating focus strategy");
+        install(old);
+        let _ = std::fs::remove_dir_all(&root);
+
+        let message = format!("{err:#}");
+        assert!(message.contains("floating_focus_strategy"), "{message}");
+    }
+
+    #[test]
+    fn wm_config_parses_macos_native_floating_focus_strategy() {
+        let parsed = toml::from_str::<WmConfig>(
+            r#"
+[macos_native]
+enabled = true
+floating_focus_strategy = "radial_center"
+
+[macos_native.mission_control_keyboard_shortcuts.move_left_a_space]
+keycode = "0x7B"
+ctrl = true
+fn = true
+shift = false
+option = false
+command = false
+
+[macos_native.mission_control_keyboard_shortcuts.move_right_a_space]
+keycode = "0x7C"
+ctrl = true
+fn = true
+shift = false
+option = false
+command = false
+"#,
+        )
+        .expect("macOS native WM config should parse");
+
+        assert_eq!(parsed.selected_backend(), Some(WmBackend::MacosNative));
+        assert_eq!(
+            parsed
+                .macos_native
+                .as_ref()
+                .map(|cfg| cfg.floating_focus_strategy),
+            Some(crate::engine::topology::FloatingFocusStrategy::RadialCenter)
+        );
+    }
+
+    #[test]
+    fn wm_config_rejects_unknown_floating_focus_strategy() {
+        let err = toml::from_str::<WmConfig>(
+            r#"
+[niri]
+enabled = true
+floating_focus_strategy = "diagonal_telepathy"
+"#,
+        )
+        .expect_err("unknown floating focus strategy should be rejected");
+
+        assert!(err.to_string().contains("diagonal_telepathy"));
+    }
+
+    #[test]
+    fn wm_config_optional_backends_can_omit_or_set_floating_focus_strategy() {
+        let parsed = toml::from_str::<WmConfig>(
+            r#"
+[niri]
+enabled = true
+"#,
+        )
+        .expect("optional backends should not require a floating focus strategy");
+        assert_eq!(
+            parsed
+                .niri
+                .as_ref()
+                .and_then(|cfg| cfg.floating_focus_strategy),
+            None
+        );
+
+        let parsed = toml::from_str::<WmConfig>(
+            r#"
+[niri]
+enabled = true
+floating_focus_strategy = "ray_angle"
+"#,
+        )
+        .expect("optional backends should accept floating focus strategy when provided");
+        assert_eq!(
+            parsed
+                .niri
+                .as_ref()
+                .and_then(|cfg| cfg.floating_focus_strategy),
+            Some(crate::engine::topology::FloatingFocusStrategy::RayAngle)
+        );
+    }
+
+    #[test]
+    fn full_config_optional_wm_backend_parses_without_floating_focus_strategy() {
+        let parsed = toml::from_str::<Config>(
+            r#"
+[wm.niri]
+enabled = true
+"#,
+        )
+        .expect("full config should allow optional WM backend without floating focus strategy");
+
+        assert_eq!(parsed.wm.selected_backend(), Some(WmBackend::Niri));
+        assert_eq!(
+            parsed
+                .wm
+                .niri
+                .as_ref()
+                .and_then(|cfg| cfg.floating_focus_strategy),
+            None
+        );
+    }
+
+    #[test]
+    fn macos_native_floating_focus_strategy_getter_returns_selected_strategy() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time should be after unix epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "yeetnyoink-config-wm-macos-floating-focus-getter-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).expect("temp dir should be created");
+        let config_path = root.join("config.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+[wm.macos_native]
+enabled = true
+floating_focus_strategy = "radial_center"
+
+[wm.macos_native.mission_control_keyboard_shortcuts.move_left_a_space]
+keycode = "0x7B"
+ctrl = true
+fn = true
+shift = false
+option = false
+command = false
+
+[wm.macos_native.mission_control_keyboard_shortcuts.move_right_a_space]
+keycode = "0x7C"
+ctrl = true
+fn = true
+shift = false
+option = false
+command = false
+"#,
+        )
+        .expect("config file should be writable");
+
+        let old = snapshot();
+        prepare_with_path(Some(&config_path))
+            .expect("macOS native config with floating focus strategy should load");
+        assert_eq!(
+            macos_native_floating_focus_strategy(),
+            Some(crate::engine::topology::FloatingFocusStrategy::RadialCenter)
+        );
+        install(old);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn prepare_with_path_rejects_multiple_configured_window_managers() {
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -2140,10 +2360,9 @@ enabled = true
         install(old);
         let _ = std::fs::remove_dir_all(&root);
 
-        assert!(
-            err.to_string()
-                .contains("enable exactly one window manager backend")
-        );
+        assert!(err
+            .to_string()
+            .contains("enable exactly one window manager backend"));
     }
 
     #[test]
@@ -2163,6 +2382,7 @@ enabled = true
             r#"
 [wm.macos_native]
 enabled = true
+floating_focus_strategy = "radial_center"
 
 [wm.macos_native.mission_control_keyboard_shortcuts.move_left_a_space]
 keycode = "left"
@@ -2189,10 +2409,9 @@ command = false
         install(old);
         let _ = std::fs::remove_dir_all(&root);
 
-        assert!(
-            err.to_string()
-                .contains("invalid macOS Mission Control keycode")
-        );
+        assert!(err
+            .to_string()
+            .contains("invalid macOS Mission Control keycode"));
     }
 }
 

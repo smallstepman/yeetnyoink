@@ -1,7 +1,7 @@
-use anyhow::{Context, bail};
+use anyhow::{bail, Context};
 use std::{
     collections::{HashMap, HashSet},
-    ffi::{CStr, CString, c_char, c_int, c_void},
+    ffi::{c_char, c_int, c_void, CStr, CString},
     fmt,
     ptr::{self, NonNull},
     time::{Duration, Instant},
@@ -9,12 +9,16 @@ use std::{
 
 use crate::config::{self, MissionControlShortcutConfig, WmBackend};
 use crate::engine::runtime::{self, CommandContext, ProcessId};
-use crate::engine::topology::{DirectedRect, Direction, Rect, select_closest_in_direction};
+use crate::engine::topology::{
+    select_closest_in_direction, select_closest_in_direction_with_strategy, DirectedRect,
+    Direction, Rect,
+};
 use crate::engine::wm::{
-    CapabilitySupport, ConfiguredWindowManager, DirectionalCapability, FocusedAppRecord,
-    FocusedWindowRecord, PrimitiveWindowManagerCapabilities, ResizeIntent,
-    WindowManagerCapabilities, WindowManagerCapabilityDescriptor, WindowManagerFeatures,
-    WindowManagerSession, WindowManagerSpec, WindowRecord, validate_declared_capabilities,
+    validate_declared_capabilities, CapabilitySupport, ConfiguredWindowManager,
+    DirectionalCapability, FocusedAppRecord, FocusedWindowRecord,
+    PrimitiveWindowManagerCapabilities, ResizeIntent, WindowManagerCapabilities,
+    WindowManagerCapabilityDescriptor, WindowManagerFeatures, WindowManagerSession,
+    WindowManagerSpec, WindowRecord,
 };
 use crate::logging;
 use tracing::debug;
@@ -442,7 +446,11 @@ where
             .map(|display_index| active_directed_rects_for_display(&topology, display_index))
             .filter(|rects| !rects.is_empty())
             .unwrap_or_else(|| active_directed_rects(&topology));
-        let Some(target_id) = select_closest_in_direction(&rects, focused.id, direction) else {
+        let strategy = config::macos_native_floating_focus_strategy()
+            .expect("macos_native floating focus strategy should be validated at config load");
+        let Some(target_id) =
+            select_closest_in_direction_with_strategy(&rects, focused.id, direction, strategy)
+        else {
             if let Some(target_space_id) =
                 adjacent_space_in_direction(&topology, focused.space_id, direction)
             {
@@ -2349,7 +2357,11 @@ impl DylibHandle {
     #[allow(dead_code)]
     fn resolve(&self, symbol: &CStr) -> Option<*mut c_void> {
         let raw = unsafe { dlsym(self.raw, symbol.as_ptr()) };
-        if raw.is_null() { None } else { Some(raw) }
+        if raw.is_null() {
+            None
+        } else {
+            Some(raw)
+        }
     }
 }
 
@@ -3496,13 +3508,11 @@ mod tests {
                 active_space_ids: HashSet::from([1]),
                 active_space_windows: HashMap::from([(
                     1,
-                    vec![
-                        raw_window(active_window_id)
-                            .with_visible_index(0)
-                            .with_pid(4242)
-                            .with_app_id("com.example.focused")
-                            .with_title("Focused window"),
-                    ],
+                    vec![raw_window(active_window_id)
+                        .with_visible_index(0)
+                        .with_pid(4242)
+                        .with_app_id("com.example.focused")
+                        .with_title("Focused window")],
                 )]),
                 inactive_space_window_ids: HashMap::from([(2, vec![21, 22])]),
                 focused_window_id: Some(active_window_id),
@@ -3520,23 +3530,19 @@ mod tests {
                 active_space_windows: HashMap::from([
                     (
                         1,
-                        vec![
-                            raw_window(11)
-                                .with_visible_index(2)
-                                .with_pid(1111)
-                                .with_app_id("com.example.left")
-                                .with_title("Left display"),
-                        ],
+                        vec![raw_window(11)
+                            .with_visible_index(2)
+                            .with_pid(1111)
+                            .with_app_id("com.example.left")
+                            .with_title("Left display")],
                     ),
                     (
                         3,
-                        vec![
-                            raw_window(31)
-                                .with_visible_index(0)
-                                .with_pid(3333)
-                                .with_app_id("com.example.right")
-                                .with_title("Right display"),
-                        ],
+                        vec![raw_window(31)
+                            .with_visible_index(0)
+                            .with_pid(3333)
+                            .with_app_id("com.example.right")
+                            .with_title("Right display")],
                     ),
                 ]),
                 inactive_space_window_ids: HashMap::from([(2, vec![21, 22])]),
@@ -5382,6 +5388,55 @@ mod tests {
         std::mem::take(&mut *calls.borrow_mut())
     }
 
+    struct InstalledConfigGuard {
+        _env: std::sync::MutexGuard<'static, ()>,
+        old: crate::config::Config,
+    }
+
+    impl Drop for InstalledConfigGuard {
+        fn drop(&mut self) {
+            crate::config::install(self.old.clone());
+        }
+    }
+
+    fn install_config(raw: &str) -> InstalledConfigGuard {
+        let env = crate::utils::env_guard();
+        let old = crate::config::snapshot();
+        let parsed: crate::config::Config =
+            toml::from_str(raw).expect("macOS native test config should parse");
+        crate::config::install(parsed);
+        InstalledConfigGuard {
+            _env: env,
+            old,
+        }
+    }
+
+    fn install_macos_native_focus_config(strategy: &str) -> InstalledConfigGuard {
+        install_config(&format!(
+            r#"
+[wm.macos_native]
+enabled = true
+floating_focus_strategy = "{strategy}"
+
+[wm.macos_native.mission_control_keyboard_shortcuts.move_left_a_space]
+keycode = "0x7B"
+ctrl = true
+fn = true
+shift = false
+option = false
+command = false
+
+[wm.macos_native.mission_control_keyboard_shortcuts.move_right_a_space]
+keycode = "0x7C"
+ctrl = true
+fn = true
+shift = false
+option = false
+command = false
+"#,
+        ))
+    }
+
     fn cf_test_array(values: &[CFTypeRef]) -> CfOwned {
         unsafe {
             CfOwned::from_create_rule(CFArrayCreate(
@@ -5584,16 +5639,12 @@ mod tests {
         let ctx = fake_context_with_spaces();
         let spaces = ctx.spaces().unwrap();
 
-        assert!(
-            spaces
-                .iter()
-                .any(|space| space.kind == SpaceKind::Desktop && space.is_active)
-        );
-        assert!(
-            spaces
-                .iter()
-                .any(|space| space.kind == SpaceKind::SplitView)
-        );
+        assert!(spaces
+            .iter()
+            .any(|space| space.kind == SpaceKind::Desktop && space.is_active));
+        assert!(spaces
+            .iter()
+            .any(|space| space.kind == SpaceKind::SplitView));
     }
 
     #[test]
@@ -5790,11 +5841,11 @@ mod tests {
 
     #[test]
     fn switch_adjacent_space_via_hotkey_posts_configured_shortcut_for_east() {
-        let old = crate::config::snapshot();
-        let parsed: crate::config::Config = toml::from_str(
+        let _config = install_config(
             r#"
 [wm.macos_native]
 enabled = true
+floating_focus_strategy = "overlap_then_gap"
 
 [wm.macos_native.mission_control_keyboard_shortcuts.move_left_a_space]
 keycode = "0x7B"
@@ -5813,8 +5864,7 @@ option = true
 command = true
 "#,
         )
-        .expect("config should parse");
-        crate::config::install(parsed);
+        ;
 
         let calls = Rc::new(RefCell::new(Vec::new()));
 
@@ -5826,8 +5876,6 @@ command = true
             Ok(())
         })
         .unwrap();
-
-        crate::config::install(old);
 
         let flags = K_CG_EVENT_FLAG_MASK_SHIFT
             | K_CG_EVENT_FLAG_MASK_ALTERNATE
@@ -6287,6 +6335,7 @@ command = true
 
     #[test]
     fn backend_focus_direction_selects_closest_neighbor_by_geometry() {
+        let _config = install_macos_native_focus_config("radial_center");
         let calls = Rc::new(RefCell::new(Vec::new()));
         let topology = RawTopologySnapshot {
             spaces: vec![raw_desktop_space(1)],
@@ -6341,7 +6390,120 @@ command = true
     }
 
     #[test]
+    fn backend_focus_direction_uses_radial_center_strategy() {
+        let _config = install_macos_native_focus_config("radial_center");
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let topology = RawTopologySnapshot {
+            spaces: vec![raw_desktop_space(1)],
+            active_space_ids: HashSet::from([1]),
+            active_space_windows: HashMap::from([(
+                1,
+                vec![
+                    raw_window(10)
+                        .with_visible_index(0)
+                        .with_pid(1010)
+                        .with_app_id("com.example.source")
+                        .with_title("source")
+                        .with_frame(Rect {
+                            x: 200,
+                            y: 100,
+                            w: 100,
+                            h: 100,
+                        }),
+                    raw_window(20)
+                        .with_pid(2020)
+                        .with_app_id("com.example.radial-target")
+                        .with_title("radial-target")
+                        .with_frame(Rect {
+                            x: 40,
+                            y: 80,
+                            w: 60,
+                            h: 60,
+                        }),
+                    raw_window(30)
+                        .with_pid(3030)
+                        .with_app_id("com.example.cross-edge-target")
+                        .with_title("cross-edge-target")
+                        .with_frame(Rect {
+                            x: 90,
+                            y: 150,
+                            w: 130,
+                            h: 130,
+                        }),
+                ],
+            )]),
+            inactive_space_window_ids: HashMap::new(),
+            focused_window_id: Some(10),
+        };
+        let api = FakeNativeApi::default()
+            .with_topology(topology)
+            .with_calls(calls.clone());
+        let adapter = MacosNativeAdapter::connect_with_api(api).unwrap();
+
+        adapter.focus_direction_inner(Direction::West).unwrap();
+
+        assert_eq!(take_calls(&calls), vec!["focus_window:20"]);
+    }
+
+    #[test]
+    fn backend_focus_direction_uses_cross_edge_gap_strategy() {
+        let _config = install_macos_native_focus_config("cross_edge_gap");
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let topology = RawTopologySnapshot {
+            spaces: vec![raw_desktop_space(1)],
+            active_space_ids: HashSet::from([1]),
+            active_space_windows: HashMap::from([(
+                1,
+                vec![
+                    raw_window(10)
+                        .with_visible_index(0)
+                        .with_pid(1010)
+                        .with_app_id("com.example.source")
+                        .with_title("source")
+                        .with_frame(Rect {
+                            x: 200,
+                            y: 100,
+                            w: 100,
+                            h: 100,
+                        }),
+                    raw_window(20)
+                        .with_pid(2020)
+                        .with_app_id("com.example.radial-target")
+                        .with_title("radial-target")
+                        .with_frame(Rect {
+                            x: 40,
+                            y: 80,
+                            w: 60,
+                            h: 60,
+                        }),
+                    raw_window(30)
+                        .with_pid(3030)
+                        .with_app_id("com.example.cross-edge-target")
+                        .with_title("cross-edge-target")
+                        .with_frame(Rect {
+                            x: 90,
+                            y: 150,
+                            w: 130,
+                            h: 130,
+                        }),
+                ],
+            )]),
+            inactive_space_window_ids: HashMap::new(),
+            focused_window_id: Some(10),
+        };
+        let api = FakeNativeApi::default()
+            .with_topology(topology)
+            .with_calls(calls.clone());
+        let adapter = MacosNativeAdapter::connect_with_api(api).unwrap();
+
+        adapter.focus_direction_inner(Direction::West).unwrap();
+
+        assert_eq!(take_calls(&calls), vec!["focus_window:30"]);
+    }
+
+    #[test]
     fn backend_focus_direction_ignores_non_normal_layer_windows_in_geometry() {
+        let _config = install_macos_native_focus_config("cross_edge_gap");
         let calls = Rc::new(RefCell::new(Vec::new()));
         let topology = RawTopologySnapshot {
             spaces: vec![raw_desktop_space(1)],
@@ -6397,6 +6559,7 @@ command = true
 
     #[test]
     fn backend_focus_direction_keeps_selected_target_when_next_snapshot_drops_it() {
+        let _config = install_macos_native_focus_config("radial_center");
         let calls = Rc::new(RefCell::new(Vec::new()));
         let first_topology = RawTopologySnapshot {
             spaces: vec![raw_desktop_space(1)],
@@ -6436,19 +6599,17 @@ command = true
             active_space_ids: HashSet::from([1]),
             active_space_windows: HashMap::from([(
                 1,
-                vec![
-                    raw_window(20)
-                        .with_visible_index(0)
-                        .with_pid(2020)
-                        .with_app_id("com.example.source")
-                        .with_title("source")
-                        .with_frame(Rect {
-                            x: 0,
-                            y: 0,
-                            w: 100,
-                            h: 100,
-                        }),
-                ],
+                vec![raw_window(20)
+                    .with_visible_index(0)
+                    .with_pid(2020)
+                    .with_app_id("com.example.source")
+                    .with_title("source")
+                    .with_frame(Rect {
+                        x: 0,
+                        y: 0,
+                        w: 100,
+                        h: 100,
+                    })],
             )]),
             inactive_space_window_ids: HashMap::new(),
             focused_window_id: Some(20),
@@ -6463,25 +6624,24 @@ command = true
 
     #[test]
     fn backend_focus_direction_uses_same_post_switch_snapshot_for_selection_and_focus() {
+        let _config = install_macos_native_focus_config("radial_center");
         let calls = Rc::new(RefCell::new(Vec::new()));
         let initial_topology = RawTopologySnapshot {
             spaces: vec![raw_desktop_space(1), raw_desktop_space(2)],
             active_space_ids: HashSet::from([1]),
             active_space_windows: HashMap::from([(
                 1,
-                vec![
-                    raw_window(10)
-                        .with_visible_index(0)
-                        .with_pid(1010)
-                        .with_app_id("com.example.source")
-                        .with_title("source")
-                        .with_frame(Rect {
-                            x: 0,
-                            y: 0,
-                            w: 100,
-                            h: 100,
-                        }),
-                ],
+                vec![raw_window(10)
+                    .with_visible_index(0)
+                    .with_pid(1010)
+                    .with_app_id("com.example.source")
+                    .with_title("source")
+                    .with_frame(Rect {
+                        x: 0,
+                        y: 0,
+                        w: 100,
+                        h: 100,
+                    })],
             )]),
             inactive_space_window_ids: HashMap::from([(2, vec![21, 22])]),
             focused_window_id: Some(10),
@@ -6491,19 +6651,17 @@ command = true
             active_space_ids: HashSet::from([2]),
             active_space_windows: HashMap::from([(
                 2,
-                vec![
-                    raw_window(21)
-                        .with_visible_index(0)
-                        .with_pid(2121)
-                        .with_app_id("com.example.visible")
-                        .with_title("visible")
-                        .with_frame(Rect {
-                            x: 0,
-                            y: 0,
-                            w: 100,
-                            h: 100,
-                        }),
-                ],
+                vec![raw_window(21)
+                    .with_visible_index(0)
+                    .with_pid(2121)
+                    .with_app_id("com.example.visible")
+                    .with_title("visible")
+                    .with_frame(Rect {
+                        x: 0,
+                        y: 0,
+                        w: 100,
+                        h: 100,
+                    })],
             )]),
             inactive_space_window_ids: HashMap::new(),
             focused_window_id: Some(21),
@@ -6513,19 +6671,17 @@ command = true
             active_space_ids: HashSet::from([2]),
             active_space_windows: HashMap::from([(
                 2,
-                vec![
-                    raw_window(22)
-                        .with_visible_index(0)
-                        .with_pid(2222)
-                        .with_app_id("com.example.drifted")
-                        .with_title("drifted")
-                        .with_frame(Rect {
-                            x: 240,
-                            y: 0,
-                            w: 100,
-                            h: 100,
-                        }),
-                ],
+                vec![raw_window(22)
+                    .with_visible_index(0)
+                    .with_pid(2222)
+                    .with_app_id("com.example.drifted")
+                    .with_title("drifted")
+                    .with_frame(Rect {
+                        x: 240,
+                        y: 0,
+                        w: 100,
+                        h: 100,
+                    })],
             )]),
             inactive_space_window_ids: HashMap::new(),
             focused_window_id: Some(22),
@@ -6551,8 +6707,9 @@ command = true
     }
 
     #[test]
-    fn backend_focus_direction_switches_then_focuses_window_in_previous_space_when_no_west_window_exists()
-     {
+    fn backend_focus_direction_switches_then_focuses_window_in_previous_space_when_no_west_window_exists(
+    ) {
+        let _config = install_macos_native_focus_config("radial_center");
         let calls = Rc::new(RefCell::new(Vec::new()));
         let topology = RawTopologySnapshot {
             spaces: vec![
@@ -6563,19 +6720,17 @@ command = true
             active_space_ids: HashSet::from([2]),
             active_space_windows: HashMap::from([(
                 2,
-                vec![
-                    raw_window(20)
-                        .with_visible_index(0)
-                        .with_pid(2020)
-                        .with_app_id("com.example.center")
-                        .with_title("center")
-                        .with_frame(crate::engine::topology::Rect {
-                            x: 120,
-                            y: 0,
-                            w: 100,
-                            h: 100,
-                        }),
-                ],
+                vec![raw_window(20)
+                    .with_visible_index(0)
+                    .with_pid(2020)
+                    .with_app_id("com.example.center")
+                    .with_title("center")
+                    .with_frame(crate::engine::topology::Rect {
+                        x: 120,
+                        y: 0,
+                        w: 100,
+                        h: 100,
+                    })],
             )]),
             inactive_space_window_ids: HashMap::from([(1, vec![10]), (3, vec![30])]),
             focused_window_id: Some(20),
@@ -6584,19 +6739,17 @@ command = true
             topology,
             switched_space_windows: HashMap::from([(
                 1,
-                vec![
-                    raw_window(10)
-                        .with_visible_index(0)
-                        .with_pid(1010)
-                        .with_app_id("com.example.left")
-                        .with_title("left")
-                        .with_frame(Rect {
-                            x: 0,
-                            y: 0,
-                            w: 100,
-                            h: 100,
-                        }),
-                ],
+                vec![raw_window(10)
+                    .with_visible_index(0)
+                    .with_pid(1010)
+                    .with_app_id("com.example.left")
+                    .with_title("left")
+                    .with_frame(Rect {
+                        x: 0,
+                        y: 0,
+                        w: 100,
+                        h: 100,
+                    })],
             )]),
             current_space_id: Rc::new(RefCell::new(2)),
             calls: calls.clone(),
@@ -6614,6 +6767,7 @@ command = true
     #[test]
     fn backend_focus_direction_switches_then_focuses_window_in_previous_space_on_same_display_only()
     {
+        let _config = install_macos_native_focus_config("radial_center");
         let calls = Rc::new(RefCell::new(Vec::new()));
         let topology = RawTopologySnapshot {
             spaces: vec![
@@ -6626,34 +6780,30 @@ command = true
             active_space_windows: HashMap::from([
                 (
                     2,
-                    vec![
-                        raw_window(200)
-                            .with_pid(2200)
-                            .with_app_id("com.example.left-display")
-                            .with_title("left display")
-                            .with_frame(crate::engine::topology::Rect {
-                                x: 0,
-                                y: 0,
-                                w: 100,
-                                h: 100,
-                            }),
-                    ],
+                    vec![raw_window(200)
+                        .with_pid(2200)
+                        .with_app_id("com.example.left-display")
+                        .with_title("left display")
+                        .with_frame(crate::engine::topology::Rect {
+                            x: 0,
+                            y: 0,
+                            w: 100,
+                            h: 100,
+                        })],
                 ),
                 (
                     11,
-                    vec![
-                        raw_window(1100)
-                            .with_visible_index(0)
-                            .with_pid(1111)
-                            .with_app_id("com.example.right-display")
-                            .with_title("right display")
-                            .with_frame(crate::engine::topology::Rect {
-                                x: 120,
-                                y: 0,
-                                w: 100,
-                                h: 100,
-                            }),
-                    ],
+                    vec![raw_window(1100)
+                        .with_visible_index(0)
+                        .with_pid(1111)
+                        .with_app_id("com.example.right-display")
+                        .with_title("right display")
+                        .with_frame(crate::engine::topology::Rect {
+                            x: 120,
+                            y: 0,
+                            w: 100,
+                            h: 100,
+                        })],
                 ),
             ]),
             inactive_space_window_ids: HashMap::from([(1, vec![100]), (10, vec![1000])]),
@@ -6663,19 +6813,17 @@ command = true
             topology,
             switched_space_windows: HashMap::from([(
                 10,
-                vec![
-                    raw_window(1000)
-                        .with_visible_index(0)
-                        .with_pid(1001)
-                        .with_app_id("com.example.other-display")
-                        .with_title("other display")
-                        .with_frame(Rect {
-                            x: 0,
-                            y: 0,
-                            w: 100,
-                            h: 100,
-                        }),
-                ],
+                vec![raw_window(1000)
+                    .with_visible_index(0)
+                    .with_pid(1001)
+                    .with_app_id("com.example.other-display")
+                    .with_title("other display")
+                    .with_frame(Rect {
+                        x: 0,
+                        y: 0,
+                        w: 100,
+                        h: 100,
+                    })],
             )]),
             current_space_id: Rc::new(RefCell::new(11)),
             calls: calls.clone(),
@@ -6691,27 +6839,26 @@ command = true
     }
 
     #[test]
-    fn backend_focus_direction_switches_then_focuses_rightmost_window_in_next_space_when_no_east_window_exists()
-     {
+    fn backend_focus_direction_switches_then_focuses_rightmost_window_in_next_space_when_no_east_window_exists(
+    ) {
+        let _config = install_macos_native_focus_config("radial_center");
         let calls = Rc::new(RefCell::new(Vec::new()));
         let topology = RawTopologySnapshot {
             spaces: vec![raw_desktop_space(1), raw_desktop_space(2)],
             active_space_ids: HashSet::from([1]),
             active_space_windows: HashMap::from([(
                 1,
-                vec![
-                    raw_window(10)
-                        .with_visible_index(0)
-                        .with_pid(1010)
-                        .with_app_id("com.example.source")
-                        .with_title("source")
-                        .with_frame(Rect {
-                            x: 0,
-                            y: 0,
-                            w: 100,
-                            h: 100,
-                        }),
-                ],
+                vec![raw_window(10)
+                    .with_visible_index(0)
+                    .with_pid(1010)
+                    .with_app_id("com.example.source")
+                    .with_title("source")
+                    .with_frame(Rect {
+                        x: 0,
+                        y: 0,
+                        w: 100,
+                        h: 100,
+                    })],
             )]),
             inactive_space_window_ids: HashMap::from([(2, vec![21, 22])]),
             focused_window_id: Some(10),
@@ -6758,25 +6905,24 @@ command = true
 
     #[test]
     fn backend_focus_direction_prefers_direct_focus_for_described_adjacent_space_window() {
+        let _config = install_macos_native_focus_config("radial_center");
         let calls = Rc::new(RefCell::new(Vec::new()));
         let topology = RawTopologySnapshot {
             spaces: vec![raw_desktop_space(1), raw_desktop_space(2)],
             active_space_ids: HashSet::from([1]),
             active_space_windows: HashMap::from([(
                 1,
-                vec![
-                    raw_window(10)
-                        .with_visible_index(0)
-                        .with_pid(1010)
-                        .with_app_id("com.example.source")
-                        .with_title("source")
-                        .with_frame(Rect {
-                            x: 0,
-                            y: 0,
-                            w: 100,
-                            h: 100,
-                        }),
-                ],
+                vec![raw_window(10)
+                    .with_visible_index(0)
+                    .with_pid(1010)
+                    .with_app_id("com.example.source")
+                    .with_title("source")
+                    .with_frame(Rect {
+                        x: 0,
+                        y: 0,
+                        w: 100,
+                        h: 100,
+                    })],
             )]),
             inactive_space_window_ids: HashMap::from([(2, vec![21, 22])]),
             focused_window_id: Some(10),
@@ -6824,25 +6970,24 @@ command = true
     #[test]
     fn backend_focus_direction_switches_then_focuses_edge_window_when_offspace_metadata_is_missing()
     {
+        let _config = install_macos_native_focus_config("radial_center");
         let calls = Rc::new(RefCell::new(Vec::new()));
         let topology = RawTopologySnapshot {
             spaces: vec![raw_desktop_space(1), raw_desktop_space(2)],
             active_space_ids: HashSet::from([1]),
             active_space_windows: HashMap::from([(
                 1,
-                vec![
-                    raw_window(10)
-                        .with_visible_index(0)
-                        .with_pid(1010)
-                        .with_app_id("com.example.source")
-                        .with_title("source")
-                        .with_frame(Rect {
-                            x: 0,
-                            y: 0,
-                            w: 100,
-                            h: 100,
-                        }),
-                ],
+                vec![raw_window(10)
+                    .with_visible_index(0)
+                    .with_pid(1010)
+                    .with_app_id("com.example.source")
+                    .with_title("source")
+                    .with_frame(Rect {
+                        x: 0,
+                        y: 0,
+                        w: 100,
+                        h: 100,
+                    })],
             )]),
             inactive_space_window_ids: HashMap::from([(2, vec![21, 22])]),
             focused_window_id: Some(10),
@@ -6891,25 +7036,24 @@ command = true
 
     #[test]
     fn backend_focus_direction_can_switch_adjacent_space_without_direct_switch_primitive() {
+        let _config = install_macos_native_focus_config("radial_center");
         let calls = Rc::new(RefCell::new(Vec::new()));
         let topology = RawTopologySnapshot {
             spaces: vec![raw_desktop_space(1), raw_desktop_space(2)],
             active_space_ids: HashSet::from([1]),
             active_space_windows: HashMap::from([(
                 1,
-                vec![
-                    raw_window(10)
-                        .with_visible_index(0)
-                        .with_pid(1010)
-                        .with_app_id("com.example.source")
-                        .with_title("source")
-                        .with_frame(Rect {
-                            x: 0,
-                            y: 0,
-                            w: 100,
-                            h: 100,
-                        }),
-                ],
+                vec![raw_window(10)
+                    .with_visible_index(0)
+                    .with_pid(1010)
+                    .with_app_id("com.example.source")
+                    .with_title("source")
+                    .with_frame(Rect {
+                        x: 0,
+                        y: 0,
+                        w: 100,
+                        h: 100,
+                    })],
             )]),
             inactive_space_window_ids: HashMap::from([(2, vec![21, 22])]),
             focused_window_id: Some(10),
@@ -6954,8 +7098,9 @@ command = true
     }
 
     #[test]
-    fn backend_focus_direction_uses_exact_switch_for_empty_adjacent_space_when_hotkey_would_skip_it()
-     {
+    fn backend_focus_direction_uses_exact_switch_for_empty_adjacent_space_when_hotkey_would_skip_it(
+    ) {
+        let _config = install_macos_native_focus_config("radial_center");
         let calls = Rc::new(RefCell::new(Vec::new()));
         let topology = RawTopologySnapshot {
             spaces: vec![
@@ -6966,19 +7111,17 @@ command = true
             active_space_ids: HashSet::from([3]),
             active_space_windows: HashMap::from([(
                 3,
-                vec![
-                    raw_window(30)
-                        .with_visible_index(0)
-                        .with_pid(3030)
-                        .with_app_id("com.example.center")
-                        .with_title("center")
-                        .with_frame(crate::engine::topology::Rect {
-                            x: 240,
-                            y: 0,
-                            w: 100,
-                            h: 100,
-                        }),
-                ],
+                vec![raw_window(30)
+                    .with_visible_index(0)
+                    .with_pid(3030)
+                    .with_app_id("com.example.center")
+                    .with_title("center")
+                    .with_frame(crate::engine::topology::Rect {
+                        x: 240,
+                        y: 0,
+                        w: 100,
+                        h: 100,
+                    })],
             )]),
             inactive_space_window_ids: HashMap::from([(1, vec![10]), (2, vec![])]),
             focused_window_id: Some(30),
@@ -6987,19 +7130,17 @@ command = true
             topology,
             switched_space_windows: HashMap::from([(
                 1,
-                vec![
-                    raw_window(10)
-                        .with_visible_index(0)
-                        .with_pid(1010)
-                        .with_app_id("com.example.left")
-                        .with_title("left")
-                        .with_frame(crate::engine::topology::Rect {
-                            x: 0,
-                            y: 0,
-                            w: 100,
-                            h: 100,
-                        }),
-                ],
+                vec![raw_window(10)
+                    .with_visible_index(0)
+                    .with_pid(1010)
+                    .with_app_id("com.example.left")
+                    .with_title("left")
+                    .with_frame(crate::engine::topology::Rect {
+                        x: 0,
+                        y: 0,
+                        w: 100,
+                        h: 100,
+                    })],
             )]),
             current_space_id: Rc::new(RefCell::new(3)),
             adjacent_hotkey_skip_target_space_id: 1,
@@ -7014,6 +7155,7 @@ command = true
 
     #[test]
     fn backend_focus_direction_ignores_ghost_inactive_window_ids_for_empty_adjacent_space() {
+        let _config = install_macos_native_focus_config("radial_center");
         let calls = Rc::new(RefCell::new(Vec::new()));
         let topology = RawTopologySnapshot {
             spaces: vec![
@@ -7024,19 +7166,17 @@ command = true
             active_space_ids: HashSet::from([1]),
             active_space_windows: HashMap::from([(
                 1,
-                vec![
-                    raw_window(10)
-                        .with_visible_index(0)
-                        .with_pid(1010)
-                        .with_app_id("com.example.source")
-                        .with_title("source")
-                        .with_frame(crate::engine::topology::Rect {
-                            x: 0,
-                            y: 0,
-                            w: 100,
-                            h: 100,
-                        }),
-                ],
+                vec![raw_window(10)
+                    .with_visible_index(0)
+                    .with_pid(1010)
+                    .with_app_id("com.example.source")
+                    .with_title("source")
+                    .with_frame(crate::engine::topology::Rect {
+                        x: 0,
+                        y: 0,
+                        w: 100,
+                        h: 100,
+                    })],
             )]),
             inactive_space_window_ids: HashMap::from([(2, vec![31, 32]), (3, vec![])]),
             focused_window_id: Some(10),
@@ -7273,19 +7413,17 @@ command = true
 
         assert_eq!(
             parsed,
-            vec![
-                raw_window(11)
-                    .with_pid(101)
-                    .with_title("alpha")
-                    .with_level(5)
-                    .with_visible_index(0)
-                    .with_frame(Rect {
-                        x: 10,
-                        y: 20,
-                        w: 300,
-                        h: 400,
-                    }),
-            ]
+            vec![raw_window(11)
+                .with_pid(101)
+                .with_title("alpha")
+                .with_level(5)
+                .with_visible_index(0)
+                .with_frame(Rect {
+                    x: 10,
+                    y: 20,
+                    w: 300,
+                    h: 400,
+                }),]
         );
     }
 

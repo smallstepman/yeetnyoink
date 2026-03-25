@@ -130,10 +130,27 @@
 
           wmConfigModule =
             let
+              floatingFocusStrategyType = types.enum [
+                "radial_center"
+                "trailing_edge_parallel"
+                "leading_edge_parallel"
+                "cross_edge_gap"
+                "overlap_then_gap"
+                "ray_angle"
+              ];
+
               enabledWmBackendModule = backendName: {
-                options.enabled = mkOption {
-                  type = types.bool;
-                  description = "Whether to enable the ${backendName} backend.";
+                options = {
+                  enabled = mkOption {
+                    type = types.bool;
+                    description = "Whether to enable the ${backendName} backend.";
+                  };
+
+                  floating_focus_strategy = mkOption {
+                    type = types.nullOr floatingFocusStrategyType;
+                    default = null;
+                    description = "Optional floating-window directional-focus strategy for the ${backendName} backend.";
+                  };
                 };
               };
 
@@ -181,6 +198,11 @@
                   enabled = mkOption {
                     type = types.bool;
                     description = "Whether to enable the macOS-native Spaces-aware backend.";
+                  };
+
+                  floating_focus_strategy = mkOption {
+                    type = floatingFocusStrategyType;
+                    description = "Floating-window directional-focus strategy for the macOS-native backend.";
                   };
 
                   mission_control_keyboard_shortcuts = mkOption {
