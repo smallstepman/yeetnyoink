@@ -20,7 +20,11 @@
 /// [wm.niri]
 /// enabled = true
 /// ```
-use crate::engine::topology::{Direction, FloatingFocusStrategy};
+use crate::engine::{
+    floating_focus_mode_for_backend,
+    topology::{Direction, FloatingFocusStrategy},
+    FloatingFocusMode,
+};
 use anyhow::{anyhow, bail, Context, Result};
 use etcetera::base_strategy::{choose_base_strategy, BaseStrategy};
 use serde::{de::DeserializeOwned, Deserialize, Deserializer, Serialize};
@@ -93,6 +97,17 @@ impl Default for WmConfig {
 }
 
 impl WmConfig {
+    fn present_backends(&self) -> [Option<WmBackend>; 6] {
+        [
+            self.macos_native.as_ref().map(|_| WmBackend::MacosNative),
+            self.niri.as_ref().map(|_| WmBackend::Niri),
+            self.i3.as_ref().map(|_| WmBackend::I3),
+            self.hyprland.as_ref().map(|_| WmBackend::Hyprland),
+            self.paneru.as_ref().map(|_| WmBackend::Paneru),
+            self.yabai.as_ref().map(|_| WmBackend::Yabai),
+        ]
+    }
+
     fn configured_backends(&self) -> [Option<WmBackend>; 6] {
         [
             self.macos_native
@@ -126,15 +141,76 @@ impl WmConfig {
     }
 
     fn validate(&self) -> Result<()> {
+        let mut present = self.present_backends().into_iter().flatten();
+        let Some(backend) = present.next() else {
+            bail!("config must define exactly one window manager table");
+        };
+        if present.next().is_some() {
+            bail!("config must define exactly one window manager table");
+        }
+
+        let (enabled, strategy) = match backend {
+            WmBackend::MacosNative => {
+                let cfg = self
+                    .macos_native
+                    .as_ref()
+                    .expect("present_backends must only return configured backends");
+                (cfg.enabled, cfg.floating_focus_strategy)
+            }
+            WmBackend::Niri => {
+                let cfg = self
+                    .niri
+                    .as_ref()
+                    .expect("present_backends must only return configured backends");
+                (cfg.enabled, cfg.floating_focus_strategy)
+            }
+            WmBackend::I3 => {
+                let cfg = self
+                    .i3
+                    .as_ref()
+                    .expect("present_backends must only return configured backends");
+                (cfg.enabled, cfg.floating_focus_strategy)
+            }
+            WmBackend::Hyprland => {
+                let cfg = self
+                    .hyprland
+                    .as_ref()
+                    .expect("present_backends must only return configured backends");
+                (cfg.enabled, cfg.floating_focus_strategy)
+            }
+            WmBackend::Paneru => {
+                let cfg = self
+                    .paneru
+                    .as_ref()
+                    .expect("present_backends must only return configured backends");
+                (cfg.enabled, cfg.floating_focus_strategy)
+            }
+            WmBackend::Yabai => {
+                let cfg = self
+                    .yabai
+                    .as_ref()
+                    .expect("present_backends must only return configured backends");
+                (cfg.enabled, cfg.floating_focus_strategy)
+            }
+        };
+        if !enabled {
+            bail!(
+                "window manager table `wm.{}` must have `enabled = true`",
+                backend.as_str()
+            );
+        }
+
+        validate_floating_focus_strategy_mode(
+            backend,
+            floating_focus_mode_for_backend(backend),
+            strategy,
+        )?;
+
         if let Some(macos_native) = &self.macos_native {
             macos_native.validate()?;
         }
 
-        if self.selected_backend().is_some() {
-            return Ok(());
-        }
-
-        bail!("config must enable exactly one window manager backend")
+        Ok(())
     }
 }
 
@@ -192,13 +268,34 @@ pub struct EnabledWmConfig {
 #[serde(deny_unknown_fields)]
 pub struct MacosNativeWmConfig {
     pub enabled: bool,
-    pub floating_focus_strategy: FloatingFocusStrategy,
+    pub floating_focus_strategy: Option<FloatingFocusStrategy>,
     pub mission_control_keyboard_shortcuts: MissionControlKeyboardShortcutsConfig,
 }
 
 impl MacosNativeWmConfig {
     fn validate(&self) -> Result<()> {
         self.mission_control_keyboard_shortcuts.validate()
+    }
+}
+
+fn validate_floating_focus_strategy_mode(
+    backend: WmBackend,
+    mode: FloatingFocusMode,
+    strategy: Option<FloatingFocusStrategy>,
+) -> Result<()> {
+    match (mode, strategy) {
+        (FloatingFocusMode::FloatingOnly, None) => bail!(
+            "window manager table `wm.{}` requires `floating_focus_strategy` for {:?}",
+            backend.as_str(),
+            mode
+        ),
+        (FloatingFocusMode::TilingOnly, Some(strategy)) => bail!(
+            "window manager table `wm.{}` does not allow `floating_focus_strategy = {:?}` for {:?}",
+            backend.as_str(),
+            strategy,
+            mode
+        ),
+        _ => Ok(()),
     }
 }
 
@@ -1269,7 +1366,7 @@ pub fn macos_native_floating_focus_strategy() -> Option<FloatingFocusStrategy> {
         .macos_native
         .as_ref()
         .filter(|cfg| cfg.enabled)
-        .map(|cfg| cfg.floating_focus_strategy)
+        .and_then(|cfg| cfg.floating_focus_strategy)
 }
 
 pub fn macos_native_mission_control_shortcut(
@@ -1573,6 +1670,21 @@ fn check_allowed(cfg: &InternalPaneDirectionConfig, direction: Direction) -> boo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn write_temp_config(contents: &str) -> std::path::PathBuf {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time should be after unix epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "yeetnyoink-config-test-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).expect("temp dir should be created");
+        let config_path = root.join("config.toml");
+        std::fs::write(&config_path, contents).expect("config file should be writable");
+        config_path
+    }
 
     #[test]
     fn parses_terminal_editor_and_mux_controls() {
@@ -2130,18 +2242,7 @@ command = false
 
     #[test]
     fn wm_config_requires_macos_native_floating_focus_strategy() {
-        let unique = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("system time should be after unix epoch")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "yeetnyoink-config-wm-macos-floating-focus-required-{}-{unique}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&root).expect("temp dir should be created");
-        let config_path = root.join("config.toml");
-        std::fs::write(
-            &config_path,
+        let config_path = write_temp_config(
             r#"
 [wm.macos_native]
 enabled = true
@@ -2162,14 +2263,12 @@ shift = false
 option = false
 command = false
 "#,
-        )
-        .expect("config file should be writable");
+        );
 
         let old = snapshot();
-        let err = prepare_with_path(Some(&config_path))
+        let err = prepare_with_path(Some(config_path.as_path()))
             .expect_err("macOS native config should require floating focus strategy");
         install(old);
-        let _ = std::fs::remove_dir_all(&root);
 
         let message = format!("{err:#}");
         assert!(message.contains("floating_focus_strategy"), "{message}");
@@ -2207,7 +2306,7 @@ command = false
             parsed
                 .macos_native
                 .as_ref()
-                .map(|cfg| cfg.floating_focus_strategy),
+                .and_then(|cfg| cfg.floating_focus_strategy),
             Some(crate::engine::topology::FloatingFocusStrategy::RadialCenter)
         );
     }
@@ -2227,36 +2326,37 @@ floating_focus_strategy = "diagonal_telepathy"
     }
 
     #[test]
-    fn wm_config_optional_backends_can_omit_or_set_floating_focus_strategy() {
+    fn wm_config_rejects_floating_focus_strategy_for_tiling_only_backend() {
+        let config_path = write_temp_config(
+            r#"
+[wm.niri]
+enabled = true
+floating_focus_strategy = "ray_angle"
+"#,
+        );
+
+        let old = snapshot();
+        let err = prepare_with_path(Some(config_path.as_path())).unwrap_err();
+        install(old);
+
+        assert!(format!("{err:#}").contains("TilingOnly"));
+    }
+
+    #[test]
+    fn wm_config_allows_missing_floating_focus_strategy_for_tiling_only_backend() {
         let parsed = toml::from_str::<WmConfig>(
             r#"
 [niri]
 enabled = true
 "#,
         )
-        .expect("optional backends should not require a floating focus strategy");
+        .expect("tiling-only backends should allow omitting a floating focus strategy");
         assert_eq!(
             parsed
                 .niri
                 .as_ref()
                 .and_then(|cfg| cfg.floating_focus_strategy),
             None
-        );
-
-        let parsed = toml::from_str::<WmConfig>(
-            r#"
-[niri]
-enabled = true
-floating_focus_strategy = "ray_angle"
-"#,
-        )
-        .expect("optional backends should accept floating focus strategy when provided");
-        assert_eq!(
-            parsed
-                .niri
-                .as_ref()
-                .and_then(|cfg| cfg.floating_focus_strategy),
-            Some(crate::engine::topology::FloatingFocusStrategy::RayAngle)
         );
     }
 
@@ -2283,18 +2383,7 @@ enabled = true
 
     #[test]
     fn macos_native_floating_focus_strategy_getter_returns_selected_strategy() {
-        let unique = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("system time should be after unix epoch")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "yeetnyoink-config-wm-macos-floating-focus-getter-{}-{unique}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&root).expect("temp dir should be created");
-        let config_path = root.join("config.toml");
-        std::fs::write(
-            &config_path,
+        let config_path = write_temp_config(
             r#"
 [wm.macos_native]
 enabled = true
@@ -2316,53 +2405,112 @@ shift = false
 option = false
 command = false
 "#,
-        )
-        .expect("config file should be writable");
+        );
 
         let old = snapshot();
-        prepare_with_path(Some(&config_path))
+        prepare_with_path(Some(config_path.as_path()))
             .expect("macOS native config with floating focus strategy should load");
         assert_eq!(
             macos_native_floating_focus_strategy(),
             Some(crate::engine::topology::FloatingFocusStrategy::RadialCenter)
         );
         install(old);
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
-    fn prepare_with_path_rejects_multiple_configured_window_managers() {
-        let unique = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("system time should be after unix epoch")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "yeetnyoink-config-wm-validation-{}-{unique}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&root).expect("temp dir should be created");
-        let config_path = root.join("config.toml");
-        std::fs::write(
-            &config_path,
+    fn wm_config_rejects_multiple_wm_tables_even_if_only_one_is_enabled() {
+        let config_path = write_temp_config(
             r#"
 [wm.niri]
 enabled = true
 
 [wm.yabai]
-enabled = true
+enabled = false
 "#,
-        )
-        .expect("config file should be writable");
+        );
 
         let old = snapshot();
-        let err = prepare_with_path(Some(&config_path))
-            .expect_err("multiple configured window managers should be rejected");
+        let err = prepare_with_path(Some(config_path.as_path()))
+            .expect_err("multiple window manager tables should be rejected");
         install(old);
-        let _ = std::fs::remove_dir_all(&root);
 
-        assert!(err
-            .to_string()
-            .contains("enable exactly one window manager backend"));
+        assert!(format!("{err:#}").contains("exactly one window manager table"));
+    }
+
+    #[test]
+    fn wm_config_rejects_missing_window_manager_table() {
+        let err = toml::from_str::<WmConfig>("")
+            .expect("empty wm config should deserialize")
+            .validate()
+            .expect_err("missing wm tables should be rejected");
+
+        assert!(format!("{err:#}").contains("exactly one window manager table"));
+    }
+
+    #[test]
+    fn wm_config_rejects_present_window_manager_table_when_disabled() {
+        let config_path = write_temp_config(
+            r#"
+[wm.yabai]
+enabled = false
+"#,
+        );
+
+        let old = snapshot();
+        let err = prepare_with_path(Some(config_path.as_path()))
+            .expect_err("present wm table must be enabled");
+        install(old);
+
+        let message = format!("{err:#}");
+        assert!(message.contains("enabled"), "{message}");
+    }
+
+    #[test]
+    fn wm_config_accepts_macos_native_when_floating_focus_strategy_is_present() {
+        let config_path = write_temp_config(
+            r#"
+[wm.macos_native]
+enabled = true
+floating_focus_strategy = "radial_center"
+
+[wm.macos_native.mission_control_keyboard_shortcuts.move_left_a_space]
+keycode = "0x7B"
+ctrl = true
+fn = true
+shift = false
+option = false
+command = false
+
+[wm.macos_native.mission_control_keyboard_shortcuts.move_right_a_space]
+keycode = "0x7C"
+ctrl = true
+fn = true
+shift = false
+option = false
+command = false
+"#,
+        );
+
+        let old = snapshot();
+        prepare_with_path(Some(config_path.as_path()))
+            .expect("macOS native config should load when strategy is present");
+        install(old);
+    }
+
+    #[test]
+    fn floating_focus_strategy_mode_allows_tiling_and_floating_with_optional_strategy() {
+        assert!(validate_floating_focus_strategy_mode(
+            WmBackend::Yabai,
+            FloatingFocusMode::TilingAndFloating,
+            None
+        )
+        .is_ok());
+        assert!(validate_floating_focus_strategy_mode(
+            WmBackend::Yabai,
+            FloatingFocusMode::TilingAndFloating,
+            Some(crate::engine::topology::FloatingFocusStrategy::RayAngle)
+        )
+        .is_ok());
     }
 
     #[test]
