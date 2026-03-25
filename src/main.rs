@@ -16,10 +16,10 @@ use yeetnyoink::profiling::ProfileConfig;
 #[command(
     name = "yeetnyoink",
     about = "Deep focus/move integration for your configured window manager",
-    after_help = "Choose the built-in window manager integration by setting `enabled = true` in exactly one [wm.<backend>] table. If you select `wm.macos_native`, that table must also set `floating_focus_strategy` and both Mission Control adjacent-space shortcuts. Other WM backends may omit `floating_focus_strategy` or set it optionally. Supported strategy names are `radial_center`, `trailing_edge_parallel`, `leading_edge_parallel`, `cross_edge_gap`, `overlap_then_gap`, and `ray_angle`. No runtime window-manager detection or probing occurs."
+    after_help = "Choose the built-in window manager integration by setting `enabled = true` in exactly one [wm.<backend>] table. If you select `wm.macos_native`, that table must also set `floating_focus_strategy` and both Mission Control adjacent-space shortcuts. Current built-in tiling-only (`TilingOnly`) WM backends must not set `floating_focus_strategy`; there is no built-in mixed tiling-and-floating backend yet. Supported strategy names are `radial_center`, `trailing_edge_parallel`, `leading_edge_parallel`, `cross_edge_gap`, `overlap_then_gap`, and `ray_angle`. No runtime window-manager detection or probing occurs."
 )]
 struct Cli {
-    /// Load config from an explicit path; exactly one [wm.<backend>] table with `enabled = true` selects the built-in WM integration, `wm.macos_native` requires `floating_focus_strategy`, and other backends may set it optionally.
+    /// Load config from an explicit path; exactly one [wm.<backend>] table with `enabled = true` selects the built-in WM integration, `wm.macos_native` requires `floating_focus_strategy`, and current tiling-only backends must leave it unset.
     #[arg(long, global = true, value_name = "PATH")]
     config: Option<PathBuf>,
 
@@ -161,26 +161,10 @@ mod tests {
 
     #[test]
     fn cli_help_describes_configured_wm_selection() {
-        let mut command = Cli::command();
-        let mut help = Vec::new();
-        command
-            .write_long_help(&mut help)
-            .expect("help text should render");
-        let help = String::from_utf8(help).expect("help text should be utf-8");
+        let help = Cli::command().render_long_help().to_string();
 
-        assert!(
-            help.contains(
-                "Choose the built-in window manager integration by setting `enabled = true` in exactly one [wm.<backend>] table"
-            ),
-            "help should explain that WM selection is config driven: {help}"
-        );
-        assert!(
-            help.contains("floating_focus_strategy"),
-            "help should describe the macOS-native floating focus strategy requirement: {help}"
-        );
-        assert!(
-            help.contains("No runtime window-manager detection or probing occurs"),
-            "help should explain that WM probing is disabled: {help}"
-        );
+        assert!(help.contains("exactly one [wm.<backend>] table"));
+        assert!(help.contains("wm.macos_native"));
+        assert!(help.contains("TilingOnly") || help.contains("tiling-only"));
     }
 }

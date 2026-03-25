@@ -71,13 +71,15 @@ enabled = true
 tab_axis = "vertical"
 ```
 
-If you choose `wm.macos_native`, set `wm.macos_native.enabled = true`, choose a required
-`wm.macos_native.floating_focus_strategy` (`radial_center`, `trailing_edge_parallel`,
-`leading_edge_parallel`, `cross_edge_gap`, `overlap_then_gap`, or `ray_angle`), and configure
-both `wm.macos_native.mission_control_keyboard_shortcuts.move_left_a_space` and
+Enable exactly one built-in WM table with `enabled = true`. If you choose `wm.macos_native`, that
+table must set `wm.macos_native.floating_focus_strategy`
+(`radial_center`, `trailing_edge_parallel`, `leading_edge_parallel`, `cross_edge_gap`,
+`overlap_then_gap`, or `ray_angle`) and configure both
+`wm.macos_native.mission_control_keyboard_shortcuts.move_left_a_space` and
 `.move_right_a_space` with `keycode = "0x..."` plus `shift`/`ctrl`/`option`/`command`/`fn`
-booleans. Other WM backends may omit `floating_focus_strategy` entirely or set it optionally to
-use one of the same named strategies for floating-window directional focus.
+booleans. Current built-in tiling-only WM backends (`wm.niri`, `wm.i3`, `wm.hyprland`,
+`wm.paneru`, and `wm.yabai`) must not set `floating_focus_strategy`. There is no built-in mixed
+tiling-and-floating backend yet.
 
 Terminal-hosted editors use `app.editor.<editor>.ui.terminal` to describe which terminal UI they
 run inside and which mux backend to use there. Direct graphical editors can additionally describe

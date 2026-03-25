@@ -106,11 +106,12 @@ app = "wezterm"
 mux_backend = "inherit"
 ```
 
-`wm.macos_native` uses the same per-backend table shape, but it additionally requires
+Exactly one `wm.<backend>` table should be live (`enabled = true`) at a time. `wm.macos_native`
+uses the same per-backend table shape, but it additionally requires
 `floating_focus_strategy` plus the Mission Control `move_left_a_space` /
 `move_right_a_space` shortcut blocks because adjacent-Space transitions are driven through the
-configured macOS keyboard shortcuts. Other WM backends may omit `floating_focus_strategy` or set
-it optionally to use the same named floating-focus strategies.
+configured macOS keyboard shortcuts. Current built-in tiling-only backends must not set
+`floating_focus_strategy`; there is no built-in mixed tiling-and-floating backend yet.
 
 Config discovery order:
 1. `--config <path>` CLI flag (explicit path)

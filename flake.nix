@@ -149,7 +149,7 @@
                   floating_focus_strategy = mkOption {
                     type = types.nullOr floatingFocusStrategyType;
                     default = null;
-                    description = "Optional floating-window directional-focus strategy for the ${backendName} backend.";
+                    description = "Floating-window directional-focus strategy for the ${backendName} backend. Current built-in tiling-only backends must leave this unset.";
                   };
                 };
               };
@@ -201,8 +201,9 @@
                   };
 
                   floating_focus_strategy = mkOption {
-                    type = floatingFocusStrategyType;
-                    description = "Floating-window directional-focus strategy for the macOS-native backend.";
+                    type = types.nullOr floatingFocusStrategyType;
+                    default = null;
+                    description = "Floating-window directional-focus strategy for the macOS-native backend. Runtime validation requires this when `enabled = true`.";
                   };
 
                   mission_control_keyboard_shortcuts = mkOption {
@@ -225,12 +226,12 @@
               };
             in {
               options = {
-                macos_native = optionalSubmoduleOption macosNativeWmConfigModule "macOS-native Spaces-aware backend config.";
-                niri = optionalSubmoduleOption (enabledWmBackendModule "niri") "niri backend config.";
-                i3 = optionalSubmoduleOption (enabledWmBackendModule "i3") "i3 backend config.";
-                hyprland = optionalSubmoduleOption (enabledWmBackendModule "hyprland") "Hyprland backend config.";
-                paneru = optionalSubmoduleOption (enabledWmBackendModule "paneru") "Paneru backend config.";
-                yabai = optionalSubmoduleOption (enabledWmBackendModule "yabai") "yabai backend config.";
+                macos_native = optionalSubmoduleOption macosNativeWmConfigModule "macOS-native Spaces-aware backend config. When enabled, runtime validation requires `floating_focus_strategy` plus both Mission Control adjacent-space shortcuts.";
+                niri = optionalSubmoduleOption (enabledWmBackendModule "niri") "niri backend config. Current built-in backend is tiling-only, so leave `floating_focus_strategy` unset.";
+                i3 = optionalSubmoduleOption (enabledWmBackendModule "i3") "i3 backend config. Current built-in backend is tiling-only, so leave `floating_focus_strategy` unset.";
+                hyprland = optionalSubmoduleOption (enabledWmBackendModule "hyprland") "Hyprland backend config. Current built-in backend is tiling-only, so leave `floating_focus_strategy` unset.";
+                paneru = optionalSubmoduleOption (enabledWmBackendModule "paneru") "Paneru backend config. Current built-in backend is tiling-only, so leave `floating_focus_strategy` unset.";
+                yabai = optionalSubmoduleOption (enabledWmBackendModule "yabai") "yabai backend config. Current built-in backend is tiling-only, so leave `floating_focus_strategy` unset.";
               };
             };
 
