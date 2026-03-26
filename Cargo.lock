@@ -1128,6 +1128,7 @@ dependencies = [
  "niri-ipc",
  "serde",
  "serde_json",
+ "thiserror",
  "toml",
  "tracing",
  "tracing-chrome",
