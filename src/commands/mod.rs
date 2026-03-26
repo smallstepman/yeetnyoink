@@ -13,8 +13,8 @@ use crate::config::selected_wm_backend;
 use crate::engine::actions::focus::attempt_focused_app_focus_from_record;
 use crate::engine::actions::orchestrator::{ActionKind, ActionRequest, Orchestrator};
 use crate::engine::topology::Direction;
-use crate::engine::transfer::bridge::runtime_domains_for_window_manager;
 use crate::engine::transfer::ErasedDomain;
+use crate::engine::transfer::bridge::runtime_domains_for_window_manager;
 use crate::engine::wm::connect_selected;
 use crate::logging;
 
@@ -53,11 +53,28 @@ fn execute_connected_action(kind: ActionKind, dir: Direction) -> Result<()> {
 }
 
 fn try_fast_focus_path(dir: Direction) -> Result<FastFocusPath> {
+    let _span = tracing::debug_span!("commands.focus.fast_path", ?dir).entered();
     let backend = selected_wm_backend();
     let spec = spec_for_backend(backend);
-    match spec.focused_app_record() {
+    match {
+        let _span =
+            tracing::debug_span!("commands.focus.fast_path.focused_app_record", ?backend).entered();
+        spec.focused_app_record()
+    } {
         Ok(Some(focused)) => {
-            if attempt_focused_app_focus_from_record(focused, dir)? {
+            let owner_pid = focused.pid.get();
+            let app_id = focused.app_id.clone();
+            let handled = {
+                let _span = tracing::debug_span!(
+                    "commands.focus.fast_path.attempt",
+                    app_id = app_id.as_str(),
+                    pid = owner_pid,
+                    ?dir
+                )
+                .entered();
+                attempt_focused_app_focus_from_record(focused, dir)?
+            };
+            if handled {
                 Ok(FastFocusPath::Handled)
             } else {
                 Ok(FastFocusPath::NotHandled)
@@ -117,7 +134,7 @@ mod tests {
 
     use anyhow::Result;
 
-    use super::{execute_focus_with_fast_path, load_runtime_domains_for_action, FastFocusPath};
+    use super::{FastFocusPath, execute_focus_with_fast_path, load_runtime_domains_for_action};
     use crate::engine::actions::context::is_no_focused_window_error;
     use crate::engine::actions::orchestrator::ActionKind;
     use crate::engine::topology::Direction;

@@ -67,7 +67,19 @@ pub trait TopologyHandler {
     fn can_focus(&self, dir: Direction, pid: u32) -> Result<bool>;
 
     fn focus_if_possible(&self, dir: Direction, pid: u32) -> Result<bool> {
-        if self.can_focus(dir, pid)? {
+        let _span = tracing::debug_span!(
+            "topology.focus_if_possible",
+            handler = std::any::type_name::<Self>(),
+            pid,
+            ?dir
+        )
+        .entered();
+        let can_focus = {
+            let _span = tracing::debug_span!("topology.focus_if_possible.can_focus").entered();
+            self.can_focus(dir, pid)?
+        };
+        if can_focus {
+            let _span = tracing::debug_span!("topology.focus_if_possible.focus").entered();
             self.focus(dir, pid)?;
             Ok(true)
         } else {

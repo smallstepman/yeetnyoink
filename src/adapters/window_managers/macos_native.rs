@@ -653,6 +653,7 @@ mod macos_window_manager_api {
         pub(crate) fn copy_system_wide_ax_element(
             _api: &RealNativeApi,
         ) -> Result<CfOwned, MacosNativeProbeError> {
+            let _span = tracing::debug_span!("macos_native.ax.system_wide_element").entered();
             unsafe { CfOwned::from_create_rule(AXUIElementCreateSystemWide() as CFTypeRef) }.ok_or(
                 MacosNativeProbeError::MissingTopology("AXUIElementCreateSystemWide"),
             )
@@ -663,6 +664,11 @@ mod macos_window_manager_api {
             element: AXUIElementRef,
             attribute_name: &str,
         ) -> Result<Option<CfOwned>, MacosNativeProbeError> {
+            let _span = tracing::debug_span!(
+                "macos_native.ax.copy_attribute_value",
+                attribute = attribute_name
+            )
+            .entered();
             let attribute = cf_string(attribute_name)?;
             let mut value = ptr::null();
             let status = unsafe {
@@ -1915,11 +1921,14 @@ mod macos_window_manager_api {
         }
 
         pub(crate) fn stable_app_id_from_pid(pid: u32) -> Option<String> {
+            let _span = tracing::debug_span!("macos_native.app_id_from_pid", pid).entered();
             let lsappinfo_output = lsappinfo_bundle_identifier_output(pid)?;
             parse_lsappinfo_bundle_identifier(&lsappinfo_output)
         }
 
         fn lsappinfo_bundle_identifier_output(pid: u32) -> Option<String> {
+            let _span =
+                tracing::debug_span!("macos_native.app_id_from_pid.lsappinfo", pid).entered();
             let application_specifier = format!("#{pid}");
             let output = std::process::Command::new("lsappinfo")
                 .args(["info", "-only", "bundleid", application_specifier.as_str()])
@@ -2883,16 +2892,23 @@ mod macos_window_manager_api {
 
         fn focused_app_record(&self) -> Result<FocusedAppRecord, MacosNativeProbeError> {
             let application = {
-                let _span = tracing::debug_span!("macos_native.ax.focused_application").entered();
+                let _span = tracing::debug_span!("macos_native.focused_app_record.application_ax")
+                    .entered();
                 ax::copy_focused_application_ax(self)?
                     .ok_or(MacosNativeProbeError::MissingFocusedWindow)?
             };
             let pid = {
-                let _span = tracing::debug_span!("macos_native.ax.application_pid").entered();
+                let _span = tracing::debug_span!("macos_native.focused_app_record.application_pid")
+                    .entered();
                 ax::ax_pid(self, &application)?
             };
+            let app_id = {
+                let _span =
+                    tracing::debug_span!("macos_native.focused_app_record.app_id", pid).entered();
+                stable_app_id_from_pid(pid).unwrap_or_default()
+            };
             Ok(FocusedAppRecord {
-                app_id: stable_app_id_from_pid(pid).unwrap_or_default(),
+                app_id,
                 title: String::new(),
                 pid: ProcessId::new(pid).ok_or(MacosNativeProbeError::MissingFocusedWindow)?,
             })
@@ -3076,25 +3092,43 @@ impl WindowManagerSpec for MacosNativeSpec {
     }
 
     fn focused_app_record(&self) -> anyhow::Result<Option<FocusedAppRecord>> {
-        let api = api::RealNativeApi::new();
-        if !api::MacosNativeApi::ax_is_trusted(&api) {
+        let api = {
+            let _span = tracing::debug_span!("macos_native.fast_focus.real_api_new").entered();
+            api::RealNativeApi::new()
+        };
+        if {
+            let _span = tracing::debug_span!("macos_native.fast_focus.ax_is_trusted").entered();
+            !api::MacosNativeApi::ax_is_trusted(&api)
+        } {
             return Err(anyhow::anyhow!(
                 "Accessibility permission is required for macOS native support"
             ));
         }
-        if !api::MacosNativeApi::minimal_topology_ready(&api) {
+        if {
+            let _span =
+                tracing::debug_span!("macos_native.fast_focus.minimal_topology_ready").entered();
+            !api::MacosNativeApi::minimal_topology_ready(&api)
+        } {
             return Err(anyhow::anyhow!(
                 "macOS native topology precondition is unavailable: main SkyLight connection"
             ));
         }
-        match api::MacosNativeApi::focused_app_record(&api) {
+        match {
+            let _span =
+                tracing::debug_span!("macos_native.fast_focus.focused_app_record").entered();
+            api::MacosNativeApi::focused_app_record(&api)
+        } {
             Ok(focused) => Ok(Some(focused)),
             Err(err) => {
                 logging::debug(format!(
                     "macos_native: focused-app fast path failed; falling back to focused-window probe: {err}"
                 ));
-                let focused =
-                    api::MacosNativeApi::focused_window_record(&api).map_err(map_probe_error)?;
+                let focused = {
+                    let _span =
+                        tracing::debug_span!("macos_native.fast_focus.focused_window_fallback")
+                            .entered();
+                    api::MacosNativeApi::focused_window_record(&api).map_err(map_probe_error)?
+                };
                 Ok(Some(FocusedAppRecord {
                     app_id: focused.app_id.unwrap_or_default(),
                     title: focused.title.unwrap_or_default(),
@@ -3445,45 +3479,78 @@ where
     }
 
     fn focus_direction(&mut self, direction: Direction) -> anyhow::Result<()> {
-        let topology = self.ctx.api.topology_snapshot().map_err(map_probe_error)?;
-        let focused = api::focused_window_from_topology(&topology).map_err(map_probe_error)?;
-        let rects = api::display_index_for_space(&topology, focused.space_id)
-            .map(|display_index| api::active_directed_rects_for_display(&topology, display_index))
-            .filter(|rects| !rects.is_empty())
-            .unwrap_or_else(|| api::active_directed_rects(&topology));
+        let _span = tracing::debug_span!("macos_native.focus_direction", ?direction).entered();
+        let topology = {
+            let _span =
+                tracing::debug_span!("macos_native.focus_direction.topology_snapshot").entered();
+            self.ctx.api.topology_snapshot().map_err(map_probe_error)?
+        };
+        let focused = {
+            let _span =
+                tracing::debug_span!("macos_native.focus_direction.focused_window").entered();
+            api::focused_window_from_topology(&topology).map_err(map_probe_error)?
+        };
+        let rects = {
+            let _span = tracing::debug_span!(
+                "macos_native.focus_direction.candidate_rects",
+                focused_window = focused.id,
+                focused_space = focused.space_id
+            )
+            .entered();
+            api::display_index_for_space(&topology, focused.space_id)
+                .map(|display_index| {
+                    api::active_directed_rects_for_display(&topology, display_index)
+                })
+                .filter(|rects| !rects.is_empty())
+                .unwrap_or_else(|| api::active_directed_rects(&topology))
+        };
         let strategy = config::macos_native_floating_focus_strategy()
             .expect("macos_native floating focus strategy should be validated at config load");
-        let Some(target_id) = select_closest_in_direction_with_strategy(
-            &rects,
-            focused.id,
-            direction,
-            Some(strategy),
-        ) else {
+        let target_id = {
+            let _span = tracing::debug_span!(
+                "macos_native.focus_direction.select_target",
+                focused_window = focused.id,
+                rect_count = rects.len(),
+                ?direction
+            )
+            .entered();
+            select_closest_in_direction_with_strategy(&rects, focused.id, direction, Some(strategy))
+        };
+        let Some(target_id) = target_id else {
             let Some(target_space_id) =
                 api::adjacent_space_in_direction(&topology, focused.space_id, direction)
             else {
                 bail!("macos_native: no window to focus {direction}");
             };
 
-            let direct_off_space_focus = (|| -> Result<bool, MacosNativeOperationError> {
-                let windows = self.ctx.api.windows_in_space(target_space_id)?;
-                let Some(target_window_id) = api::best_window_id_from_windows(direction, &windows)
-                else {
-                    return Ok(false);
-                };
-                let Some(pid) = windows
-                    .iter()
-                    .find(|window| window.id == target_window_id)
-                    .and_then(|window| window.pid)
-                else {
-                    return Ok(false);
-                };
+            let direct_off_space_focus = {
+                let _span = tracing::debug_span!(
+                    "macos_native.focus_direction.direct_off_space_focus",
+                    target_space = target_space_id,
+                    ?direction
+                )
+                .entered();
+                (|| -> Result<bool, MacosNativeOperationError> {
+                    let windows = self.ctx.api.windows_in_space(target_space_id)?;
+                    let Some(target_window_id) =
+                        api::best_window_id_from_windows(direction, &windows)
+                    else {
+                        return Ok(false);
+                    };
+                    let Some(pid) = windows
+                        .iter()
+                        .find(|window| window.id == target_window_id)
+                        .and_then(|window| window.pid)
+                    else {
+                        return Ok(false);
+                    };
 
-                self.ctx
-                    .api
-                    .focus_window_with_known_pid(target_window_id, pid)?;
-                Ok(true)
-            })();
+                    self.ctx
+                        .api
+                        .focus_window_with_known_pid(target_window_id, pid)?;
+                    Ok(true)
+                })()
+            };
             match direct_off_space_focus {
                 Ok(true) => return Ok(()),
                 Ok(false) => {}
@@ -3630,12 +3697,16 @@ where
                 }
             }
 
-            let switched_topology = self
-                .ctx
-                .api
-                .topology_snapshot()
-                .map_err(MacosNativeOperationError::from)
-                .map_err(anyhow::Error::new)?;
+            let switched_topology = {
+                let _span =
+                    tracing::debug_span!("macos_native.focus_direction.post_switch_topology")
+                        .entered();
+                self.ctx
+                    .api
+                    .topology_snapshot()
+                    .map_err(MacosNativeOperationError::from)
+                    .map_err(anyhow::Error::new)?
+            };
             let target_space_windows = switched_topology
                 .active_space_windows
                 .get(&target_space_id)
@@ -3663,6 +3734,13 @@ where
                     logging::debug(format!(
                         "macos_native: focusing post-switch target window {target_window_id} in active space via known pid {pid}"
                     ));
+                    let _span = tracing::debug_span!(
+                        "macos_native.focus_direction.final_focus",
+                        target_window = target_window_id,
+                        target_space = target_space_id,
+                        pid
+                    )
+                    .entered();
                     self.ctx
                         .api
                         .focus_window_in_active_space_with_known_pid(target_window_id, pid)
@@ -3671,6 +3749,12 @@ where
                     logging::debug(format!(
                         "macos_native: focusing window {target_window_id} via description lookup"
                     ));
+                    let _span = tracing::debug_span!(
+                        "macos_native.focus_direction.final_focus",
+                        target_window = target_window_id,
+                        target_space = target_space_id
+                    )
+                    .entered();
                     self.ctx
                         .api
                         .focus_window(target_window_id)
@@ -3684,6 +3768,12 @@ where
             logging::debug(format!(
                 "macos_native: focusing window {target_id} via known pid {pid}"
             ));
+            let _span = tracing::debug_span!(
+                "macos_native.focus_direction.final_focus",
+                target_window = target_id,
+                pid
+            )
+            .entered();
             self.ctx
                 .api
                 .focus_window_with_known_pid(target_id, pid)
@@ -3692,6 +3782,11 @@ where
             logging::debug(format!(
                 "macos_native: focusing window {target_id} via description lookup"
             ));
+            let _span = tracing::debug_span!(
+                "macos_native.focus_direction.final_focus",
+                target_window = target_id
+            )
+            .entered();
             self.ctx
                 .api
                 .focus_window(target_id)
