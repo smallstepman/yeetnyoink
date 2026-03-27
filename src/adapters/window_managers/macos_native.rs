@@ -16,13 +16,13 @@ use macos_window_manager_api::{
     MacosNativeProbeError, RealNativeApi, active_directed_rects, active_window_by_id,
     ax_backed_same_pid_split_view_target_in_direction, classify_space,
     ensure_supported_target_space, focused_window_from_topology, space_id_for_window,
-    space_transition_window_ids, window_ids_for_space, window_snapshots_from_topology,
+    space_transition_window_ids, window_ids_for_space,
 };
 
 mod macos_window_manager_api {
     use crate::engine::runtime::ProcessId;
     use crate::engine::topology::{Direction, FloatingFocusStrategy, Rect};
-    use crate::engine::wm::{FocusedAppRecord, FocusedWindowRecord};
+    use crate::engine::wm::{FocusedAppRecord, FocusedWindowRecord, WindowRecord};
     use crate::logging;
     use std::{
         collections::{HashMap, HashSet},
@@ -2674,6 +2674,24 @@ mod macos_window_manager_api {
                     .ok_or(MacosNativeProbeError::MissingFocusedWindow)?,
             })
         }
+        fn window_records(&self) -> Result<Vec<WindowRecord>, MacosNativeProbeError> {
+            let topology = self.topology_snapshot()?;
+            let focused_window_id = focused_window_from_topology(&topology)
+                .ok()
+                .map(|window| window.id);
+
+            Ok(window_snapshots_from_topology(&topology)
+                .into_iter()
+                .map(|window| WindowRecord {
+                    id: window.id,
+                    app_id: window.app_id,
+                    title: window.title,
+                    pid: window.pid.and_then(ProcessId::new),
+                    is_focused: focused_window_id == Some(window.id),
+                    original_tile_index: window.order_index.unwrap_or(0),
+                })
+                .collect())
+        }
         fn ax_window_ids_for_pid(&self, _pid: u32) -> Result<Vec<u64>, MacosNativeOperationError> {
             Ok(Vec::new())
         }
@@ -3477,22 +3495,7 @@ where
     }
 
     fn windows(&mut self) -> anyhow::Result<Vec<WindowRecord>> {
-        let topology = self.ctx.api.topology_snapshot().map_err(map_probe_error)?;
-        let focused_window_id = focused_window_from_topology(&topology)
-            .ok()
-            .map(|window| window.id);
-
-        Ok(window_snapshots_from_topology(&topology)
-            .into_iter()
-            .map(|window| WindowRecord {
-                id: window.id,
-                app_id: window.app_id,
-                title: window.title,
-                pid: window.pid.and_then(ProcessId::new),
-                is_focused: focused_window_id == Some(window.id),
-                original_tile_index: window.order_index.unwrap_or(0),
-            })
-            .collect())
+        self.ctx.api.window_records().map_err(map_probe_error)
     }
 
     fn focus_direction(&mut self, direction: Direction) -> anyhow::Result<()> {
@@ -3509,8 +3512,7 @@ where
             let plan = if let Some(target_window_id) =
                 macos_window_manager_api::directional_focus_target_in_active_topology(
                     &topology, &focused, direction, strategy,
-                )
-            {
+                ) {
                 DirectionalFocusPlan::InSpace {
                     target_window_id,
                     target_pid: macos_window_manager_api::active_window_pid_from_topology(
@@ -6729,6 +6731,27 @@ mod tests {
             })
         }
 
+        fn window_records(&self) -> Result<Vec<WindowRecord>, MacosNativeProbeError> {
+            Ok(vec![
+                WindowRecord {
+                    id: 20,
+                    app_id: Some("focused.app".to_string()),
+                    title: Some("focused".to_string()),
+                    pid: ProcessId::new(2020),
+                    is_focused: true,
+                    original_tile_index: 0,
+                },
+                WindowRecord {
+                    id: 21,
+                    app_id: Some("other.app".to_string()),
+                    title: Some("other".to_string()),
+                    pid: ProcessId::new(2021),
+                    is_focused: false,
+                    original_tile_index: 1,
+                },
+            ])
+        }
+
         fn switch_space(&self, _space_id: u64) -> Result<(), MacosNativeOperationError> {
             Ok(())
         }
@@ -7233,6 +7256,28 @@ command = false
     }
 
     #[test]
+    fn source_keeps_raw_snapshot_types_inside_backend() {
+        let implementation = implementation_source();
+        let api_module_idx = implementation
+            .find("mod macos_window_manager_api {")
+            .expect("implementation should define mod macos_window_manager_api");
+        let root_prefix = &implementation[..api_module_idx];
+
+        assert!(
+            !root_prefix.contains("RawTopologySnapshot"),
+            "root production prelude should not import RawTopologySnapshot"
+        );
+        assert!(
+            !root_prefix.contains("WindowSnapshot"),
+            "root production prelude should not import WindowSnapshot"
+        );
+        assert!(
+            !root_prefix.contains("window_snapshots_from_topology"),
+            "root production prelude should not import raw snapshot conversion helpers"
+        );
+    }
+
+    #[test]
     fn source_imports_semantic_backend_plan_types() {
         let implementation = implementation_source();
         let api_module_idx = implementation
@@ -7641,7 +7686,8 @@ command = false
         let fake_validate_source = &implementation[fake_validate_start..fake_validate_end];
 
         assert!(
-            implementation.contains("fn validate_environment_with_api<A: MacosNativeApi + ?Sized>("),
+            implementation
+                .contains("fn validate_environment_with_api<A: MacosNativeApi + ?Sized>("),
             "backend should expose a shared validation helper"
         );
         assert!(
@@ -7793,6 +7839,36 @@ command = false
         assert_eq!(focused.app_id.as_deref(), Some("focused.app"));
         assert_eq!(focused.title.as_deref(), Some("focused"));
         assert_eq!(focused.original_tile_index, 0);
+    }
+
+    #[test]
+    fn adapter_windows_use_record_fast_path() {
+        let mut adapter =
+            MacosNativeAdapter::connect_with_api(FocusedWindowRecordFastPathApi).unwrap();
+
+        let windows = WindowManagerSession::windows(&mut adapter).unwrap();
+
+        assert_eq!(
+            windows,
+            vec![
+                WindowRecord {
+                    id: 20,
+                    app_id: Some("focused.app".to_string()),
+                    title: Some("focused".to_string()),
+                    pid: ProcessId::new(2020),
+                    is_focused: true,
+                    original_tile_index: 0,
+                },
+                WindowRecord {
+                    id: 21,
+                    app_id: Some("other.app".to_string()),
+                    title: Some("other".to_string()),
+                    pid: ProcessId::new(2021),
+                    is_focused: false,
+                    original_tile_index: 1,
+                },
+            ]
+        );
     }
 
     #[test]
@@ -8913,7 +8989,10 @@ command = true
 
         WindowManagerSession::focus_direction(&mut adapter, Direction::West).unwrap();
 
-        assert_eq!(std::mem::take(&mut *calls.lock().unwrap()), vec!["focus_window_with_known_pid:999:4613"]);
+        assert_eq!(
+            std::mem::take(&mut *calls.lock().unwrap()),
+            vec!["focus_window_with_known_pid:999:4613"]
+        );
         assert_eq!(*topology_snapshot_calls.lock().unwrap(), 1);
     }
 
