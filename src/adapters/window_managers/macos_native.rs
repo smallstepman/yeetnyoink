@@ -25,9 +25,75 @@ mod macos_window_manager_api {
     use std::{
         collections::{HashMap, HashSet},
         ffi::{CString, c_void},
+        sync::Arc,
         time::Instant,
     };
     use tracing::debug;
+
+    #[allow(dead_code)]
+    pub(crate) type NativeSpaceId = u64;
+    #[allow(dead_code)]
+    pub(crate) type NativeWindowId = u64;
+
+    #[allow(dead_code)]
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub(crate) struct NativeDesktopSnapshot {
+        pub(crate) spaces: Vec<NativeSpaceSnapshot>,
+        pub(crate) active_space_ids: HashSet<NativeSpaceId>,
+        pub(crate) windows: Vec<NativeWindowSnapshot>,
+        pub(crate) focused_window_id: Option<NativeWindowId>,
+    }
+
+    #[allow(dead_code)]
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub(crate) struct NativeSpaceSnapshot {
+        pub(crate) id: NativeSpaceId,
+        pub(crate) display_index: usize,
+        pub(crate) active: bool,
+        pub(crate) kind: desktop_topology_snapshot::SpaceKind,
+    }
+
+    #[allow(dead_code)]
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub(crate) struct NativeWindowSnapshot {
+        pub(crate) id: NativeWindowId,
+        pub(crate) pid: Option<u32>,
+        pub(crate) app_id: Option<String>,
+        pub(crate) title: Option<String>,
+        pub(crate) bounds: Option<NativeBounds>,
+        pub(crate) space_id: NativeSpaceId,
+        pub(crate) order_index: Option<usize>,
+    }
+
+    #[allow(dead_code)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) struct NativeBounds {
+        pub(crate) x: i32,
+        pub(crate) y: i32,
+        pub(crate) width: i32,
+        pub(crate) height: i32,
+    }
+
+    #[allow(dead_code)]
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+    pub(crate) struct MissionControlModifiers {
+        pub(crate) control: bool,
+        pub(crate) option: bool,
+        pub(crate) command: bool,
+        pub(crate) shift: bool,
+        pub(crate) function: bool,
+    }
+
+    #[allow(dead_code)]
+    pub(crate) struct NativeBackendOptions {
+        pub(crate) mission_control: MissionControlModifiers,
+        pub(crate) diagnostics: Option<Arc<dyn NativeDiagnostics>>,
+    }
+
+    #[allow(dead_code)]
+    pub(crate) trait NativeDiagnostics: Send + Sync {
+        fn debug(&self, message: &str);
+    }
 
     pub(super) mod foundation {
         use super::{MacosNativeOperationError, MacosNativeProbeError};
@@ -7063,6 +7129,24 @@ command = false
         assert!(
             !implementation.contains("use macos_window_manager_api::{\n    RawTopologySnapshot")
         );
+    }
+
+    #[test]
+    fn source_declares_backend_owned_native_transport_types() {
+        let implementation = implementation_source();
+        for required in [
+            "pub(crate) struct NativeDesktopSnapshot",
+            "pub(crate) struct NativeSpaceSnapshot",
+            "pub(crate) struct NativeWindowSnapshot",
+            "pub(crate) struct NativeBounds",
+            "pub(crate) struct NativeBackendOptions",
+            "pub(crate) trait NativeDiagnostics",
+        ] {
+            assert!(
+                implementation.contains(required),
+                "expected backend boundary to declare {required}"
+            );
+        }
     }
 
     #[test]
