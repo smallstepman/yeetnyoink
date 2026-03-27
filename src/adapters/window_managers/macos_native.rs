@@ -3477,14 +3477,14 @@ where
         let _span = tracing::debug_span!("macos_native.focus_direction", ?direction).entered();
         let strategy = config::macos_native_floating_focus_strategy()
             .expect("macos_native floating focus strategy should be validated at config load");
-        let plan = {
+        let (plan, planning_topology, planning_focused) = {
             let _span =
                 tracing::debug_span!("macos_native.focus_direction.plan", ?direction, ?strategy)
                     .entered();
             let topology = self.ctx.api.topology_snapshot().map_err(map_probe_error)?;
             let focused = focused_window_from_topology(&topology).map_err(map_probe_error)?;
 
-            if let Some(target_window_id) =
+            let plan = if let Some(target_window_id) =
                 macos_window_manager_api::directional_focus_target_in_active_topology(
                     &topology, &focused, direction, strategy,
                 )
@@ -3509,7 +3509,9 @@ where
                 }
             } else {
                 DirectionalFocusPlan::None
-            }
+            };
+
+            (plan, topology, focused)
         };
 
         match plan {
@@ -3517,18 +3519,6 @@ where
                 target_window_id: target_id,
                 target_pid,
             } => {
-                let topology = {
-                    let _span =
-                        tracing::debug_span!("macos_native.focus_direction.topology_snapshot")
-                            .entered();
-                    self.ctx.api.topology_snapshot().map_err(map_probe_error)?
-                };
-                let focused = {
-                    let _span = tracing::debug_span!("macos_native.focus_direction.focused_window")
-                        .entered();
-                    focused_window_from_topology(&topology).map_err(map_probe_error)?
-                };
-
                 if let Some(pid) = target_pid {
                     logging::debug(format!(
                         "macos_native: focusing window {target_id} via known pid {pid}"
@@ -3541,8 +3531,8 @@ where
                     .entered();
                     focus_direction_target_with_ax_fallback(
                         &self.ctx.api,
-                        &topology,
-                        &focused,
+                        &planning_topology,
+                        &planning_focused,
                         direction,
                         target_id,
                         pid,
@@ -3567,12 +3557,6 @@ where
                 target_space_id,
                 direction,
             } => {
-                let topology = {
-                    let _span =
-                        tracing::debug_span!("macos_native.focus_direction.topology_snapshot")
-                            .entered();
-                    self.ctx.api.topology_snapshot().map_err(map_probe_error)?
-                };
                 let direct_off_space_focus = {
                     let _span = tracing::debug_span!(
                         "macos_native.focus_direction.direct_off_space_focus",
@@ -3669,10 +3653,10 @@ where
                         }
                     };
 
-                ensure_supported_target_space(&topology, target_space_id)
+                ensure_supported_target_space(&planning_topology, target_space_id)
                     .map_err(anyhow::Error::new)?;
                 let (source_focus_window_id, target_window_ids) =
-                    space_transition_window_ids(&topology, target_space_id);
+                    space_transition_window_ids(&planning_topology, target_space_id);
                 logging::debug(format!(
                     "macos_native: switching to space {target_space_id} source_focus={:?} target_windows={}",
                     source_focus_window_id,
@@ -6014,6 +5998,121 @@ mod tests {
             _target_frame: Rect,
         ) -> Result<(), MacosNativeOperationError> {
             Ok(())
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    struct SequencedSamePidAxFallbackApi {
+        planning_topology: RawTopologySnapshot,
+        execution_topology: RawTopologySnapshot,
+        ax_backed_window_ids: Vec<u64>,
+        calls: Arc<Mutex<Vec<String>>>,
+        topology_snapshot_calls: Arc<Mutex<usize>>,
+    }
+
+    impl SequencedSamePidAxFallbackApi {
+        fn current_topology(&self) -> RawTopologySnapshot {
+            if *self.topology_snapshot_calls.lock().unwrap() > 0 {
+                self.execution_topology.clone()
+            } else {
+                self.planning_topology.clone()
+            }
+        }
+    }
+
+    impl MacosNativeApi for SequencedSamePidAxFallbackApi {
+        fn has_symbol(&self, _symbol: &'static str) -> bool {
+            true
+        }
+
+        fn ax_is_trusted(&self) -> bool {
+            true
+        }
+
+        fn minimal_topology_ready(&self) -> bool {
+            true
+        }
+
+        fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
+            Ok(self.current_topology().spaces)
+        }
+
+        fn active_space_ids(&self) -> Result<HashSet<u64>, MacosNativeProbeError> {
+            Ok(self.current_topology().active_space_ids)
+        }
+
+        fn active_space_windows(
+            &self,
+            space_id: u64,
+        ) -> Result<Vec<RawWindow>, MacosNativeProbeError> {
+            Ok(self
+                .current_topology()
+                .active_space_windows
+                .get(&space_id)
+                .cloned()
+                .unwrap_or_default())
+        }
+
+        fn inactive_space_window_ids(
+            &self,
+        ) -> Result<HashMap<u64, Vec<u64>>, MacosNativeProbeError> {
+            Ok(self.current_topology().inactive_space_window_ids)
+        }
+
+        fn focused_window_id(&self) -> Result<Option<u64>, MacosNativeProbeError> {
+            Ok(self.current_topology().focused_window_id)
+        }
+
+        fn ax_window_ids_for_pid(&self, _pid: u32) -> Result<Vec<u64>, MacosNativeOperationError> {
+            Ok(self.ax_backed_window_ids.clone())
+        }
+
+        fn switch_space(&self, _space_id: u64) -> Result<(), MacosNativeOperationError> {
+            Ok(())
+        }
+
+        fn focus_window(&self, window_id: u64) -> Result<(), MacosNativeOperationError> {
+            Err(MacosNativeOperationError::MissingWindow(window_id))
+        }
+
+        fn focus_window_with_known_pid(
+            &self,
+            window_id: u64,
+            pid: u32,
+        ) -> Result<(), MacosNativeOperationError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("focus_window_with_known_pid:{window_id}:{pid}"));
+            if self.ax_backed_window_ids.contains(&window_id) {
+                Ok(())
+            } else {
+                Err(MacosNativeOperationError::MissingWindow(window_id))
+            }
+        }
+
+        fn move_window_to_space(
+            &self,
+            _window_id: u64,
+            _space_id: u64,
+        ) -> Result<(), MacosNativeOperationError> {
+            Ok(())
+        }
+
+        fn swap_window_frames(
+            &self,
+            _source_window_id: u64,
+            _source_frame: Rect,
+            _target_window_id: u64,
+            _target_frame: Rect,
+        ) -> Result<(), MacosNativeOperationError> {
+            Ok(())
+        }
+
+        fn topology_snapshot(&self) -> Result<RawTopologySnapshot, MacosNativeProbeError> {
+            let snapshot = self.current_topology();
+            *self.topology_snapshot_calls.lock().unwrap() += 1;
+            Ok(snapshot)
         }
     }
 
@@ -8651,6 +8750,103 @@ command = true
             take_calls(&calls),
             vec!["focus_window_with_known_pid:999:4613"]
         );
+    }
+
+    #[test]
+    fn focus_direction_uses_planning_snapshot_for_same_pid_ax_fallback() {
+        let _config = install_macos_native_focus_config("overlap_then_gap");
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let topology_snapshot_calls = Arc::new(Mutex::new(0));
+        let planning_topology = RawTopologySnapshot {
+            spaces: vec![raw_split_space(1, &[11, 12])],
+            active_space_ids: HashSet::from([1]),
+            active_space_windows: HashMap::from([(
+                1,
+                vec![
+                    raw_window(998)
+                        .with_visible_index(0)
+                        .with_pid(4613)
+                        .with_app_id("com.github.wez.wezterm")
+                        .with_title("stale-left")
+                        .with_frame(Rect {
+                            x: 0,
+                            y: 0,
+                            w: 120,
+                            h: 120,
+                        }),
+                    raw_window(999)
+                        .with_visible_index(1)
+                        .with_pid(4613)
+                        .with_app_id("com.github.wez.wezterm")
+                        .with_title("actual-left")
+                        .with_frame(Rect {
+                            x: 12,
+                            y: 0,
+                            w: 108,
+                            h: 120,
+                        }),
+                    raw_window(410)
+                        .with_visible_index(2)
+                        .with_pid(4613)
+                        .with_app_id("com.github.wez.wezterm")
+                        .with_title("focused-right")
+                        .with_frame(Rect {
+                            x: 220,
+                            y: 0,
+                            w: 120,
+                            h: 120,
+                        }),
+                ],
+            )]),
+            inactive_space_window_ids: HashMap::new(),
+            focused_window_id: Some(410),
+        };
+        let execution_topology = RawTopologySnapshot {
+            spaces: vec![raw_desktop_space(1)],
+            active_space_ids: HashSet::from([1]),
+            active_space_windows: HashMap::from([(
+                1,
+                vec![
+                    raw_window(998)
+                        .with_visible_index(0)
+                        .with_pid(4613)
+                        .with_app_id("com.github.wez.wezterm")
+                        .with_title("stale-left")
+                        .with_frame(Rect {
+                            x: 0,
+                            y: 0,
+                            w: 120,
+                            h: 120,
+                        }),
+                    raw_window(999)
+                        .with_visible_index(1)
+                        .with_pid(4613)
+                        .with_app_id("com.github.wez.wezterm")
+                        .with_title("actual-left")
+                        .with_frame(Rect {
+                            x: 12,
+                            y: 0,
+                            w: 108,
+                            h: 120,
+                        }),
+                ],
+            )]),
+            inactive_space_window_ids: HashMap::new(),
+            focused_window_id: Some(999),
+        };
+        let api = SequencedSamePidAxFallbackApi {
+            planning_topology,
+            execution_topology,
+            ax_backed_window_ids: vec![999, 410],
+            calls: calls.clone(),
+            topology_snapshot_calls: topology_snapshot_calls.clone(),
+        };
+        let mut adapter = MacosNativeAdapter::connect_with_api(api).unwrap();
+
+        WindowManagerSession::focus_direction(&mut adapter, Direction::West).unwrap();
+
+        assert_eq!(std::mem::take(&mut *calls.lock().unwrap()), vec!["focus_window_with_known_pid:999:4613"]);
+        assert_eq!(*topology_snapshot_calls.lock().unwrap(), 1);
     }
 
     #[test]
