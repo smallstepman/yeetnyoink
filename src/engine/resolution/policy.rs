@@ -1,6 +1,6 @@
 use crate::adapters::apps::{
-    unsupported_operation, AppAdapter, AppKind, MergeExecutionMode, MergePreparation, MoveDecision,
-    TearResult, TopologyHandler,
+    AppAdapter, AppKind, MergeExecutionMode, MergePreparation, MoveDecision, TearResult,
+    TopologyHandler, unsupported_operation,
 };
 use crate::config::AppSection;
 
@@ -83,6 +83,19 @@ impl TopologyHandler for PolicyBoundApp {
             }
         }
         delegate_to_inner!(self, TopologyHandler::can_focus(dir, pid))
+    }
+
+    fn focus_if_possible(
+        &self,
+        dir: crate::engine::topology::Direction,
+        pid: u32,
+    ) -> anyhow::Result<bool> {
+        if let Some(policy) = self.pane_policy() {
+            if !policy.focus_allowed(dir) {
+                return Ok(false);
+            }
+        }
+        delegate_to_inner!(self, TopologyHandler::focus_if_possible(dir, pid))
     }
 
     fn move_decision(
@@ -238,9 +251,12 @@ pub(crate) fn bind_app_policy(app: Box<dyn AppAdapter>) -> Box<dyn AppAdapter> {
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
-    use crate::adapters::apps::{emacs, wezterm, AppAdapter, AppKind};
+    use crate::adapters::apps::{AppAdapter, AppKind, TearResult, emacs, wezterm};
+    use crate::engine::contracts::{AppCapabilities, TopologyHandler};
+    use crate::engine::topology::Direction;
 
     use super::bind_app_policy;
 
@@ -268,6 +284,61 @@ mod tests {
 
     fn restore_config(old: crate::config::Config) {
         crate::config::install(old);
+    }
+
+    #[derive(Default)]
+    struct FocusCounters {
+        can_focus: AtomicUsize,
+        focus: AtomicUsize,
+        focus_if_possible: AtomicUsize,
+    }
+
+    struct FocusIfPossibleStub {
+        counters: Arc<FocusCounters>,
+    }
+
+    impl TopologyHandler for FocusIfPossibleStub {
+        fn can_focus(&self, _dir: Direction, _pid: u32) -> anyhow::Result<bool> {
+            self.counters.can_focus.fetch_add(1, Ordering::Relaxed);
+            Ok(true)
+        }
+
+        fn focus_if_possible(&self, _dir: Direction, _pid: u32) -> anyhow::Result<bool> {
+            self.counters
+                .focus_if_possible
+                .fetch_add(1, Ordering::Relaxed);
+            Ok(true)
+        }
+
+        fn focus(&self, _dir: Direction, _pid: u32) -> anyhow::Result<()> {
+            self.counters.focus.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+
+        fn move_out(&self, _dir: Direction, _pid: u32) -> anyhow::Result<TearResult> {
+            anyhow::bail!("not needed for this test")
+        }
+
+        fn move_internal(&self, _dir: Direction, _pid: u32) -> anyhow::Result<()> {
+            anyhow::bail!("not needed for this test")
+        }
+    }
+
+    impl AppAdapter for FocusIfPossibleStub {
+        fn adapter_name(&self) -> &'static str {
+            "focus-if-possible-stub"
+        }
+
+        fn kind(&self) -> AppKind {
+            AppKind::Terminal
+        }
+
+        fn capabilities(&self) -> AppCapabilities {
+            AppCapabilities {
+                focus: true,
+                ..AppCapabilities::none()
+            }
+        }
     }
 
     #[test]
@@ -332,5 +403,21 @@ resize.internal_panes.enabled = false
         let wrapped = bind_app_policy(Box::new(emacs::EmacsBackend));
         // kind is a delegation — policy wrapper must not change it
         assert_eq!(wrapped.kind(), AppKind::Editor);
+    }
+
+    #[test]
+    fn focus_if_possible_delegates_to_inner_override() {
+        let counters = Arc::new(FocusCounters::default());
+        let wrapped = bind_app_policy(Box::new(FocusIfPossibleStub {
+            counters: Arc::clone(&counters),
+        }));
+
+        assert!(
+            TopologyHandler::focus_if_possible(wrapped.as_ref(), Direction::East, 123)
+                .expect("focus_if_possible should succeed")
+        );
+        assert_eq!(counters.focus_if_possible.load(Ordering::Relaxed), 1);
+        assert_eq!(counters.can_focus.load(Ordering::Relaxed), 0);
+        assert_eq!(counters.focus.load(Ordering::Relaxed), 0);
     }
 }

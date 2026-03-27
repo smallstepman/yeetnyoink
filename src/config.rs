@@ -21,13 +21,12 @@
 /// enabled = true
 /// ```
 use crate::engine::{
-    floating_focus_mode_for_backend,
+    FloatingFocusMode, floating_focus_mode_for_backend,
     topology::{Direction, FloatingFocusStrategy},
-    FloatingFocusMode,
 };
-use anyhow::{anyhow, bail, Context, Result};
-use etcetera::base_strategy::{choose_base_strategy, BaseStrategy};
-use serde::{de::DeserializeOwned, Deserialize, Deserializer, Serialize};
+use anyhow::{Context, Result, anyhow, bail};
+use etcetera::base_strategy::{BaseStrategy, choose_base_strategy};
+use serde::{Deserialize, Deserializer, Serialize, de::DeserializeOwned};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{OnceLock, RwLock};
@@ -1671,6 +1670,10 @@ fn check_allowed(cfg: &InternalPaneDirectionConfig, direction: Direction) -> boo
 mod tests {
     use super::*;
 
+    fn config_guard() -> std::sync::MutexGuard<'static, ()> {
+        crate::utils::env_guard()
+    }
+
     fn write_temp_config(contents: &str) -> std::path::PathBuf {
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -2265,6 +2268,7 @@ command = false
 "#,
         );
 
+        let _guard = config_guard();
         let old = snapshot();
         let err = prepare_with_path(Some(config_path.as_path()))
             .expect_err("macOS native config should require floating focus strategy");
@@ -2335,6 +2339,7 @@ floating_focus_strategy = "ray_angle"
 "#,
         );
 
+        let _guard = config_guard();
         let old = snapshot();
         let err = prepare_with_path(Some(config_path.as_path())).unwrap_err();
         install(old);
@@ -2407,6 +2412,7 @@ command = false
 "#,
         );
 
+        let _guard = config_guard();
         let old = snapshot();
         prepare_with_path(Some(config_path.as_path()))
             .expect("macOS native config with floating focus strategy should load");
@@ -2429,6 +2435,7 @@ enabled = false
 "#,
         );
 
+        let _guard = config_guard();
         let old = snapshot();
         let err = prepare_with_path(Some(config_path.as_path()))
             .expect_err("multiple window manager tables should be rejected");
@@ -2456,6 +2463,7 @@ enabled = false
 "#,
         );
 
+        let _guard = config_guard();
         let old = snapshot();
         let err = prepare_with_path(Some(config_path.as_path()))
             .expect_err("present wm table must be enabled");
@@ -2491,6 +2499,7 @@ command = false
 "#,
         );
 
+        let _guard = config_guard();
         let old = snapshot();
         prepare_with_path(Some(config_path.as_path()))
             .expect("macOS native config should load when strategy is present");
@@ -2499,18 +2508,22 @@ command = false
 
     #[test]
     fn floating_focus_strategy_mode_allows_tiling_and_floating_with_optional_strategy() {
-        assert!(validate_floating_focus_strategy_mode(
-            WmBackend::Yabai,
-            FloatingFocusMode::TilingAndFloating,
-            None
-        )
-        .is_ok());
-        assert!(validate_floating_focus_strategy_mode(
-            WmBackend::Yabai,
-            FloatingFocusMode::TilingAndFloating,
-            Some(crate::engine::topology::FloatingFocusStrategy::RayAngle)
-        )
-        .is_ok());
+        assert!(
+            validate_floating_focus_strategy_mode(
+                WmBackend::Yabai,
+                FloatingFocusMode::TilingAndFloating,
+                None
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_floating_focus_strategy_mode(
+                WmBackend::Yabai,
+                FloatingFocusMode::TilingAndFloating,
+                Some(crate::engine::topology::FloatingFocusStrategy::RayAngle)
+            )
+            .is_ok()
+        );
     }
 
     #[test]
@@ -2551,15 +2564,17 @@ command = false
         )
         .expect("config file should be writable");
 
+        let _guard = config_guard();
         let old = snapshot();
         let err = prepare_with_path(Some(&config_path))
             .expect_err("invalid macOS-native keycodes should be rejected");
         install(old);
         let _ = std::fs::remove_dir_all(&root);
 
-        assert!(err
-            .to_string()
-            .contains("invalid macOS Mission Control keycode"));
+        assert!(
+            err.to_string()
+                .contains("invalid macOS Mission Control keycode")
+        );
     }
 }
 
