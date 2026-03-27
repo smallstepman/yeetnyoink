@@ -2596,28 +2596,34 @@ mod macos_window_manager_api {
         }
     }
 
+    pub(super) fn validate_environment_with_api<A: MacosNativeApi + ?Sized>(
+        api: &A,
+    ) -> Result<(), MacosNativeConnectError> {
+        for symbol in REQUIRED_PRIVATE_SYMBOLS {
+            if !api.has_symbol(symbol) {
+                return Err(MacosNativeConnectError::MissingRequiredSymbol(symbol));
+            }
+        }
+
+        if !api.ax_is_trusted() {
+            return Err(MacosNativeConnectError::MissingAccessibilityPermission);
+        }
+
+        if !api.minimal_topology_ready() {
+            return Err(MacosNativeConnectError::MissingTopologyPrecondition(
+                "main SkyLight connection",
+            ));
+        }
+
+        Ok(())
+    }
+
     pub(crate) trait MacosNativeApi {
         fn has_symbol(&self, symbol: &'static str) -> bool;
         fn ax_is_trusted(&self) -> bool;
         fn minimal_topology_ready(&self) -> bool;
         fn validate_environment(&self) -> Result<(), MacosNativeConnectError> {
-            for symbol in REQUIRED_PRIVATE_SYMBOLS {
-                if !self.has_symbol(symbol) {
-                    return Err(MacosNativeConnectError::MissingRequiredSymbol(symbol));
-                }
-            }
-
-            if !self.ax_is_trusted() {
-                return Err(MacosNativeConnectError::MissingAccessibilityPermission);
-            }
-
-            if !self.minimal_topology_ready() {
-                return Err(MacosNativeConnectError::MissingTopologyPrecondition(
-                    "main SkyLight connection",
-                ));
-            }
-
-            Ok(())
+            validate_environment_with_api(self)
         }
         fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError>;
         fn active_space_ids(&self) -> Result<HashSet<u64>, MacosNativeProbeError>;
@@ -4723,23 +4729,7 @@ mod tests {
                 return Err(err);
             }
 
-            for symbol in REQUIRED_PRIVATE_SYMBOLS {
-                if !self.has_symbol(symbol) {
-                    return Err(MacosNativeConnectError::MissingRequiredSymbol(symbol));
-                }
-            }
-
-            if !self.ax_is_trusted() {
-                return Err(MacosNativeConnectError::MissingAccessibilityPermission);
-            }
-
-            if !self.minimal_topology_ready() {
-                return Err(MacosNativeConnectError::MissingTopologyPrecondition(
-                    "main SkyLight connection",
-                ));
-            }
-
-            Ok(())
+            macos_window_manager_api::validate_environment_with_api(self)
         }
 
         fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
@@ -7632,6 +7622,36 @@ command = false
             MacosNativeConnectError::MissingTopologyPrecondition("main SkyLight connection")
         );
         assert!(err.to_string().contains("main SkyLight connection"));
+    }
+
+    #[test]
+    fn source_fake_validation_delegates_to_shared_helper() {
+        let implementation = include_str!("macos_native.rs");
+        let fake_impl_start = implementation
+            .find("impl MacosNativeApi for FakeNativeApi {")
+            .expect("implementation should define the fake api trait impl");
+        let fake_validate_start = implementation[fake_impl_start..]
+            .find("fn validate_environment(&self) -> Result<(), MacosNativeConnectError> {")
+            .map(|idx| fake_impl_start + idx)
+            .expect("fake api impl should override validate_environment");
+        let fake_validate_end = implementation[fake_validate_start..]
+            .find("\n\n        fn managed_spaces(")
+            .map(|idx| fake_validate_start + idx)
+            .expect("fake validate_environment should appear before managed_spaces");
+        let fake_validate_source = &implementation[fake_validate_start..fake_validate_end];
+
+        assert!(
+            implementation.contains("fn validate_environment_with_api<A: MacosNativeApi + ?Sized>("),
+            "backend should expose a shared validation helper"
+        );
+        assert!(
+            fake_validate_source.contains("validate_environment_with_api(self)"),
+            "fake validate_environment should delegate to the shared helper when not overriding"
+        );
+        assert!(
+            !fake_validate_source.contains("REQUIRED_PRIVATE_SYMBOLS"),
+            "fake validate_environment should not duplicate required symbol checks"
+        );
     }
 
     #[test]
