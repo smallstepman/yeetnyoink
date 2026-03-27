@@ -2726,6 +2726,10 @@ mod macos_window_manager_api {
         }
     }
 
+    pub(crate) enum DirectionalFocusPlan {
+        None,
+    }
+
     #[derive(Debug)]
     pub(crate) struct RealNativeApi {
         skylight: Option<DylibHandle>,
@@ -6893,6 +6897,33 @@ command = false
                 .all(|segment| !segment.contains("api::")),
             "implementation should not reference the removed api alias"
         );
+    }
+
+    #[test]
+    fn source_keeps_raw_macos_backend_items_private() {
+        let implementation = implementation_source();
+        let api_module_idx = implementation
+            .find("mod macos_window_manager_api {")
+            .expect("implementation should define mod macos_window_manager_api");
+        let root_prefix = &implementation[..api_module_idx];
+
+        for forbidden in [
+            "RawTopologySnapshot",
+            "WindowSnapshot",
+            "SpaceKind",
+            "REQUIRED_PRIVATE_SYMBOLS",
+            "SPACE_SWITCH_SETTLE_TIMEOUT",
+            "SPACE_SWITCH_POLL_INTERVAL",
+            "SPACE_SWITCH_STABLE_TARGET_POLLS",
+            "active_window_pid_from_topology",
+            "best_window_id_from_windows",
+            "directional_focus_target_in_active_topology",
+        ] {
+            assert!(
+                !root_prefix.contains(forbidden),
+                "root production prelude should not import raw backend item {forbidden}"
+            );
+        }
     }
 
     #[test]
