@@ -31,9 +31,9 @@ mod macos_window_manager_api {
     use tracing::debug;
 
     #[allow(dead_code)]
-    pub(crate) type NativeSpaceId = u64;
+    type NativeSpaceId = u64;
     #[allow(dead_code)]
-    pub(crate) type NativeWindowId = u64;
+    type NativeWindowId = u64;
 
     #[allow(dead_code)]
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -7134,6 +7134,21 @@ command = false
     #[test]
     fn source_declares_backend_owned_native_transport_types() {
         let implementation = implementation_source();
+        for required in ["type NativeSpaceId = u64;", "type NativeWindowId = u64;"] {
+            assert!(
+                implementation.contains(required),
+                "expected backend boundary to declare private backend-owned id alias {required}"
+            );
+        }
+        for forbidden in [
+            "pub(crate) type NativeSpaceId = u64;",
+            "pub(crate) type NativeWindowId = u64;",
+        ] {
+            assert!(
+                !implementation.contains(forbidden),
+                "expected backend boundary to keep id aliases private: {forbidden}"
+            );
+        }
         for required in [
             "pub(crate) struct NativeDesktopSnapshot",
             "pub(crate) struct NativeSpaceSnapshot",
