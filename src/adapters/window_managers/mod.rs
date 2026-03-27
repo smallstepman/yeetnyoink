@@ -40,7 +40,6 @@ use crate::adapters::window_managers::paneru::PANERU_SPEC;
 #[cfg(target_os = "macos")]
 use crate::adapters::window_managers::yabai::YABAI_SPEC;
 use crate::config::WmBackend;
-use crate::engine::wm::configured::WindowManagerSpec;
 #[cfg(not(target_os = "linux"))]
 pub(crate) use crate::engine::wm::configured::UNSUPPORTED_HYPRLAND_SPEC;
 #[cfg(not(target_os = "linux"))]
@@ -53,6 +52,7 @@ pub(crate) use crate::engine::wm::configured::UNSUPPORTED_NIRI_SPEC;
 pub(crate) use crate::engine::wm::configured::UNSUPPORTED_PANERU_SPEC;
 #[cfg(not(target_os = "macos"))]
 pub(crate) use crate::engine::wm::configured::UNSUPPORTED_YABAI_SPEC;
+use crate::engine::wm::configured::WindowManagerSpec;
 
 pub fn spec_for_backend(backend: WmBackend) -> &'static dyn WindowManagerSpec {
     match backend {
@@ -228,17 +228,5 @@ mod tests {
         assert_eq!(capabilities.tear_out.west, CapabilitySupport::Composed);
         assert!(capabilities.primitives.move_column);
         assert!(capabilities.primitives.consume_into_column_and_move);
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn macos_native_space_kind_symbols_are_exposed() {
-        use crate::adapters::window_managers::macos_native::SpaceKind;
-
-        assert_eq!(SpaceKind::Desktop.as_str(), "desktop");
-        assert_eq!(
-            SpaceKind::StageManagerOpaque.as_str(),
-            "stage_manager_opaque"
-        );
     }
 }

@@ -3,7 +3,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use niri_ipc::socket::Socket;
 use niri_ipc::{Action, Request, Response, SizeChange, Window, Workspace, WorkspaceReferenceArg};
 use serde::{Deserialize, Serialize};
@@ -14,18 +14,17 @@ use crate::engine::runtime::ProcessId;
 use crate::engine::topology::Direction;
 use crate::engine::topology::{DomainId, LeafId, Rect};
 use crate::engine::transfer::PaneState;
-use crate::engine::transfer::{decode_native_window_ref, encode_native_window_ref};
 use crate::engine::transfer::{
     DomainLeafSnapshot, DomainSnapshot, ErasedDomain, TilingDomain, TopologyModifierImpl,
     TopologyProvider,
 };
+use crate::engine::transfer::{decode_native_window_ref, encode_native_window_ref};
 use crate::engine::wm::{
-    validate_declared_capabilities, CapabilitySupport, ConfiguredWindowManager,
-    DirectionalCapability, FloatingFocusMode, FocusedWindowRecord,
-    PrimitiveWindowManagerCapabilities, ResizeIntent, WindowCycleProvider, WindowCycleRequest,
-    WindowManagerCapabilities, WindowManagerCapabilityDescriptor, WindowManagerDomainFactory,
-    WindowManagerFeatures, WindowManagerSession, WindowManagerSpec, WindowRecord,
-    WindowTearOutComposer,
+    CapabilitySupport, ConfiguredWindowManager, DirectionalCapability, FloatingFocusMode,
+    FocusedWindowRecord, PrimitiveWindowManagerCapabilities, ResizeIntent, WindowCycleProvider,
+    WindowCycleRequest, WindowManagerCapabilities, WindowManagerCapabilityDescriptor,
+    WindowManagerDomainFactory, WindowManagerFeatures, WindowManagerSession, WindowManagerSpec,
+    WindowRecord, WindowTearOutComposer, validate_declared_capabilities,
 };
 use crate::logging;
 

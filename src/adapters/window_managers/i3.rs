@@ -1,15 +1,14 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
 use crate::config::WmBackend;
 use crate::engine::runtime::{self, CommandContext, ProcessId};
 use crate::engine::topology::Direction;
 use crate::engine::wm::{
-    validate_declared_capabilities, CapabilitySupport, ConfiguredWindowManager,
-    DirectionalCapability, FloatingFocusMode, FocusedWindowRecord,
-    PrimitiveWindowManagerCapabilities, ResizeIntent, WindowManagerCapabilities,
-    WindowManagerCapabilityDescriptor, WindowManagerFeatures, WindowManagerSession,
-    WindowManagerSpec, WindowRecord,
+    CapabilitySupport, ConfiguredWindowManager, DirectionalCapability, FloatingFocusMode,
+    FocusedWindowRecord, PrimitiveWindowManagerCapabilities, ResizeIntent,
+    WindowManagerCapabilities, WindowManagerCapabilityDescriptor, WindowManagerFeatures,
+    WindowManagerSession, WindowManagerSpec, WindowRecord, validate_declared_capabilities,
 };
 
 pub struct I3Adapter;
@@ -301,7 +300,7 @@ fn focused_leaf(node: &I3Node) -> Option<&I3Node> {
 
 #[cfg(test)]
 mod tests {
-    use super::{collect_windows, focused_leaf, I3Node};
+    use super::{I3Node, collect_windows, focused_leaf};
 
     #[test]
     fn extracts_window_leaves_and_focus_from_tree() {
@@ -346,9 +345,11 @@ mod tests {
         collect_windows(&tree, &mut windows);
         assert_eq!(windows.len(), 2);
         assert!(windows.iter().any(|window| window.id == 10));
-        assert!(windows
-            .iter()
-            .any(|window| window.id == 11 && window.is_focused));
+        assert!(
+            windows
+                .iter()
+                .any(|window| window.id == 11 && window.is_focused)
+        );
         assert_eq!(
             focused_leaf(&tree).map(|node| node.id),
             Some(11),
