@@ -2601,6 +2601,22 @@ mod macos_window_manager_api {
         fn ax_is_trusted(&self) -> bool;
         fn minimal_topology_ready(&self) -> bool;
         fn validate_environment(&self) -> Result<(), MacosNativeConnectError> {
+            for symbol in REQUIRED_PRIVATE_SYMBOLS {
+                if !self.has_symbol(symbol) {
+                    return Err(MacosNativeConnectError::MissingRequiredSymbol(symbol));
+                }
+            }
+
+            if !self.ax_is_trusted() {
+                return Err(MacosNativeConnectError::MissingAccessibilityPermission);
+            }
+
+            if !self.minimal_topology_ready() {
+                return Err(MacosNativeConnectError::MissingTopologyPrecondition(
+                    "main SkyLight connection",
+                ));
+            }
+
             Ok(())
         }
         fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError>;
@@ -3980,21 +3996,7 @@ where
     A: MacosNativeApi,
 {
     pub(crate) fn connect_with_api(api: A) -> Result<Self, MacosNativeConnectError> {
-        for symbol in macos_window_manager_api::REQUIRED_PRIVATE_SYMBOLS {
-            if !api.has_symbol(symbol) {
-                return Err(MacosNativeConnectError::MissingRequiredSymbol(symbol));
-            }
-        }
-
-        if !api.ax_is_trusted() {
-            return Err(MacosNativeConnectError::MissingAccessibilityPermission);
-        }
-
-        if !api.minimal_topology_ready() {
-            return Err(MacosNativeConnectError::MissingTopologyPrecondition(
-                "main SkyLight connection",
-            ));
-        }
+        api.validate_environment()?;
 
         Ok(Self { api })
     }
@@ -4717,7 +4719,27 @@ mod tests {
         }
 
         fn validate_environment(&self) -> Result<(), MacosNativeConnectError> {
-            self.validate_environment_override.map_or(Ok(()), Err)
+            if let Some(err) = self.validate_environment_override {
+                return Err(err);
+            }
+
+            for symbol in REQUIRED_PRIVATE_SYMBOLS {
+                if !self.has_symbol(symbol) {
+                    return Err(MacosNativeConnectError::MissingRequiredSymbol(symbol));
+                }
+            }
+
+            if !self.ax_is_trusted() {
+                return Err(MacosNativeConnectError::MissingAccessibilityPermission);
+            }
+
+            if !self.minimal_topology_ready() {
+                return Err(MacosNativeConnectError::MissingTopologyPrecondition(
+                    "main SkyLight connection",
+                ));
+            }
+
+            Ok(())
         }
 
         fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
@@ -7018,6 +7040,17 @@ command = false
             .expect("macos_native.rs source should include a test module")
     }
 
+    fn outer_context_production_source() -> &'static str {
+        let source = include_str!("macos_native.rs");
+        let impl_start = source
+            .find("impl<A> MacosNativeContext<A>")
+            .expect("implementation should define the outer MacosNativeContext impl");
+        let tests_start = source
+            .find("#[cfg(test)]\nmod tests {")
+            .expect("macos_native.rs source should include a test module");
+        &source[impl_start..tests_start]
+    }
+
     fn first_non_import_item_start(implementation: &str) -> usize {
         let mut offset = 0;
         let mut in_import_block = false;
@@ -7197,6 +7230,16 @@ command = false
                 "root production prelude should not import raw backend item {forbidden}"
             );
         }
+    }
+
+    #[test]
+    fn source_keeps_required_private_symbols_inside_backend() {
+        let outer_context_source = outer_context_production_source();
+
+        assert!(
+            !outer_context_source.contains("REQUIRED_PRIVATE_SYMBOLS"),
+            "outer production MacosNativeContext impl should not reference REQUIRED_PRIVATE_SYMBOLS directly"
+        );
     }
 
     #[test]
@@ -7571,7 +7614,12 @@ command = false
             MacosNativeConnectError::MissingRequiredSymbol("SLSCopyManagedDisplaySpaces"),
         );
 
-        MacosNativeContext::connect_with_api(api).unwrap();
+        let err = MacosNativeContext::connect_with_api(api).unwrap_err();
+
+        assert_eq!(
+            err,
+            MacosNativeConnectError::MissingRequiredSymbol("SLSCopyManagedDisplaySpaces")
+        );
     }
 
     #[test]
