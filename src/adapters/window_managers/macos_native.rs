@@ -26,8 +26,6 @@ mod macos_window_manager_api {
         sync::Arc,
         time::Instant,
     };
-    use tracing::debug;
-
     #[allow(dead_code)]
     type NativeSpaceId = u64;
     #[allow(dead_code)]
@@ -3769,15 +3767,15 @@ mod macos_window_manager_api {
             let Some(active_space_id) =
                 skylight::borrowed_active_space_for_display(self, space_id)?
             else {
-                debug!(
+                self.debug(format!(
                     "macos_native: no active same-display space available to describe inactive-space windows target_space={space_id}"
-                );
+                ));
                 return Ok(windows);
             };
-            debug!(
+            self.debug(format!(
                 "macos_native: temporarily adding inactive-space windows to active space for description target_space={} active_space={} window_ids={:?}",
                 space_id, active_space_id, window_ids
-            );
+            ));
             match skylight::modify_windows_in_spaces(self, &window_ids, &[active_space_id], true) {
                 Ok(true) => {
                     windows = window_server::window_descriptions_for_space_without_visible_order(
@@ -3789,25 +3787,25 @@ mod macos_window_manager_api {
                         &[active_space_id],
                         false,
                     ) {
-                        debug!(
+                        self.debug(format!(
                             "macos_native: failed to remove temporarily borrowed windows from active space active_space={} window_ids={:?}: {}",
                             active_space_id, window_ids, error
-                        );
+                        ));
                     }
-                    debug!(
+                    self.debug(format!(
                         "macos_native: borrowed inactive-space descriptions target_space={} active_space={} described_windows={}",
                         space_id,
                         active_space_id,
                         windows.len()
-                    );
+                    ));
                     Ok(windows)
                 }
                 Ok(false) => Ok(windows),
                 Err(error) => {
-                    debug!(
+                    self.debug(format!(
                         "macos_native: add-windows-to-spaces fallback failed target_space={} active_space={} window_ids={:?}: {}",
                         space_id, active_space_id, window_ids, error
-                    );
+                    ));
                     Ok(windows)
                 }
             }
@@ -9068,8 +9066,8 @@ command = false
             "pub(crate) struct NativeWindowSnapshot",
             "pub(crate) struct NativeBounds",
             "pub(crate) struct MissionControlModifiers",
+            "pub(crate) struct MissionControlHotkey",
             "pub(crate) struct NativeBackendOptions",
-            "mission_control: MissionControlModifiers",
             "diagnostics: Option<Arc<dyn NativeDiagnostics>>",
             "pub(crate) trait NativeDiagnostics",
         ] {
@@ -9082,6 +9080,15 @@ command = false
                 "expected backend boundary declaration to stay inside macos_window_manager_api: {required}"
             );
         }
+        assert!(
+            api_module_source.contains("mission_control: MissionControlModifiers"),
+            "expected backend boundary to keep MissionControlHotkey sourced by native modifiers"
+        );
+        assert!(
+            implementation.contains("MissionControlHotkey {")
+                && implementation.contains("mission_control: MissionControlModifiers {"),
+            "expected adapter edge to be able to construct backend-owned mission control hotkeys"
+        );
     }
 
     #[test]
@@ -9092,6 +9099,8 @@ command = false
             "MissionControlShortcutConfig",
             "use crate::logging",
             "crate::logging::",
+            "use tracing::debug;",
+            "debug!(",
         ] {
             assert!(
                 !backend.contains(forbidden),
