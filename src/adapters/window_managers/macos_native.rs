@@ -12,15 +12,14 @@ use anyhow::{Context, bail};
 
 use macos_window_manager_api::{
     DirectionalFocusPlan, MacosNativeApi, MacosNativeConnectError, MacosNativeOperationError,
-    MacosNativeProbeError, NativeBounds, NativeDesktopSnapshot, NativeWindowSnapshot,
-    RealNativeApi,
+    MacosNativeProbeError, MissionControlHotkey, MissionControlModifiers, NativeBackendOptions,
+    NativeBounds, NativeDesktopSnapshot, NativeDiagnostics, NativeWindowSnapshot, RealNativeApi,
 };
 
 mod macos_window_manager_api {
     use crate::engine::runtime::ProcessId;
     use crate::engine::topology::{Direction, FloatingFocusStrategy, Rect};
     use crate::engine::wm::{FocusedAppRecord, FocusedWindowRecord, WindowRecord};
-    use crate::logging;
     use std::{
         collections::{HashMap, HashSet},
         ffi::{CString, c_void},
@@ -84,8 +83,16 @@ mod macos_window_manager_api {
     }
 
     #[allow(dead_code)]
-    pub(crate) struct NativeBackendOptions {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) struct MissionControlHotkey {
+        pub(crate) key_code: u16,
         pub(crate) mission_control: MissionControlModifiers,
+    }
+
+    #[allow(dead_code)]
+    pub(crate) struct NativeBackendOptions {
+        pub(crate) west_space_hotkey: MissionControlHotkey,
+        pub(crate) east_space_hotkey: MissionControlHotkey,
         pub(crate) diagnostics: Option<Arc<dyn NativeDiagnostics>>,
     }
 
@@ -95,8 +102,10 @@ mod macos_window_manager_api {
     }
 
     pub(super) mod foundation {
-        use super::{MacosNativeOperationError, MacosNativeProbeError};
-        use crate::config::{self, MissionControlShortcutConfig};
+        use super::{
+            MacosNativeOperationError, MacosNativeProbeError, MissionControlHotkey,
+            MissionControlModifiers, NativeBackendOptions,
+        };
         use crate::engine::topology::Direction;
         use core_foundation::{
             array::CFArray,
@@ -308,12 +317,12 @@ mod macos_window_manager_api {
                 Some(value.as_CFTypeRef())
             }
         }
-        fn mission_control_shortcut_flags(shortcut: &MissionControlShortcutConfig) -> CGEventFlags {
+        fn mission_control_shortcut_flags(shortcut: &MissionControlModifiers) -> CGEventFlags {
             let mut flags = 0;
             if shortcut.shift {
                 flags |= K_CG_EVENT_FLAG_MASK_SHIFT;
             }
-            if shortcut.ctrl {
+            if shortcut.control {
                 flags |= K_CG_EVENT_FLAG_MASK_CONTROL;
             }
             if shortcut.option {
@@ -322,35 +331,38 @@ mod macos_window_manager_api {
             if shortcut.command {
                 flags |= K_CG_EVENT_FLAG_MASK_COMMAND;
             }
-            if shortcut.r#fn {
+            if shortcut.function {
                 flags |= K_CG_EVENT_FLAG_MASK_SECONDARY_FN;
             }
             flags
         }
 
+        fn mission_control_shortcut(
+            options: &NativeBackendOptions,
+            direction: Direction,
+        ) -> Result<MissionControlHotkey, MacosNativeOperationError> {
+            match direction {
+                Direction::West => Ok(options.west_space_hotkey),
+                Direction::East => Ok(options.east_space_hotkey),
+                Direction::North | Direction::South => Err(MacosNativeOperationError::CallFailed(
+                    "adjacent_space_hotkey_direction",
+                )),
+            }
+        }
+
         fn configured_mission_control_shortcut(
+            options: &NativeBackendOptions,
             direction: Direction,
         ) -> Result<(CGKeyCode, CGEventFlags), MacosNativeOperationError> {
-            let shortcut = match direction {
-                Direction::West | Direction::East => {
-                    config::macos_native_mission_control_shortcut(direction).ok_or(
-                        MacosNativeOperationError::CallFailed("adjacent_space_hotkey_config"),
-                    )?
-                }
-                Direction::North | Direction::South => {
-                    return Err(MacosNativeOperationError::CallFailed(
-                        "adjacent_space_hotkey_direction",
-                    ));
-                }
-            };
-
-            let key_code = shortcut.parse_keycode().map_err(|_| {
-                MacosNativeOperationError::CallFailed("adjacent_space_hotkey_config")
-            })? as CGKeyCode;
-            Ok((key_code, mission_control_shortcut_flags(&shortcut)))
+            let shortcut = mission_control_shortcut(options, direction)?;
+            Ok((
+                shortcut.key_code as CGKeyCode,
+                mission_control_shortcut_flags(&shortcut.mission_control),
+            ))
         }
 
         pub(crate) fn switch_adjacent_space_via_hotkey<PostKeyEvent>(
+            options: &NativeBackendOptions,
             direction: Direction,
             mut post_key_event: PostKeyEvent,
         ) -> Result<(), MacosNativeOperationError>
@@ -358,7 +370,7 @@ mod macos_window_manager_api {
             PostKeyEvent:
                 FnMut(CGKeyCode, bool, CGEventFlags) -> Result<(), MacosNativeOperationError>,
         {
-            let (key_code, flags) = configured_mission_control_shortcut(direction)?;
+            let (key_code, flags) = configured_mission_control_shortcut(options, direction)?;
 
             post_key_event(key_code, true, flags)?;
             post_key_event(key_code, false, flags)
@@ -639,7 +651,6 @@ mod macos_window_manager_api {
             MacosNativeApi, MacosNativeOperationError, MacosNativeProbeError, RealNativeApi,
         };
         use crate::engine::topology::Rect;
-        use crate::logging;
         use std::{
             ffi::{c_int, c_void},
             ptr,
@@ -877,7 +888,7 @@ mod macos_window_manager_api {
                     ax_window_id(api, &candidate).ok()
                 })
                 .collect::<Vec<_>>();
-            logging::debug(format!(
+            api.debug(&format!(
                 "macos_native: target window {window_id} missing from AXWindows for pid {pid}; ax_window_ids={ax_window_ids:?} focused_window_id={:?}",
                 MacosNativeApi::focused_window_id(api).ok().flatten()
             ));
@@ -1624,7 +1635,7 @@ mod macos_window_manager_api {
         }
 
         pub(crate) fn copy_window_descriptions_raw(
-            _api: &RealNativeApi,
+            api: &RealNativeApi,
             window_ids: CFArrayRef,
         ) -> Result<CfOwned, MacosNativeProbeError> {
             // Keep this raw for now: current callers build CFNumber-object arrays for this flow,
@@ -1642,7 +1653,7 @@ mod macos_window_manager_api {
 
             let target_window_ids = skylight::parse_window_ids(window_ids)?;
             let fallback = copy_matching_onscreen_window_descriptions_raw(&target_window_ids)?;
-            crate::logging::debug(format!(
+            api.debug(&format!(
                 "macos_native: falling back to onscreen descriptions requested_ids={} fallback_descriptions={}",
                 target_window_ids.len(),
                 cf_array_count(fallback.as_type_ref() as CFArrayRef)
@@ -2768,6 +2779,7 @@ mod macos_window_manager_api {
         fn has_symbol(&self, symbol: &'static str) -> bool;
         fn ax_is_trusted(&self) -> bool;
         fn minimal_topology_ready(&self) -> bool;
+        fn debug(&self, _message: &str) {}
         fn validate_environment(&self) -> Result<(), MacosNativeConnectError> {
             validate_environment_with_api(self)
         }
@@ -2935,7 +2947,7 @@ mod macos_window_manager_api {
                     target_pid,
                 } => {
                     if let Some(pid) = *target_pid {
-                        logging::debug(format!(
+                        self.debug(&format!(
                             "macos_native: focusing window {target_window_id} via known pid {pid}"
                         ));
                         focus_direction_target_with_ax_fallback(
@@ -2947,7 +2959,7 @@ mod macos_window_manager_api {
                             pid,
                         )
                     } else {
-                        logging::debug(format!(
+                        self.debug(&format!(
                             "macos_native: focusing window {target_window_id} via description lookup"
                         ));
                         self.focus_window(*target_window_id)
@@ -2980,7 +2992,7 @@ mod macos_window_manager_api {
                         Ok(true) => return Ok(()),
                         Ok(false) => {}
                         Err(err) => {
-                            logging::debug(format!(
+                            self.debug(&format!(
                                 "macos_native: direct off-space focus for space {target_space_id} failed ({err}); falling back to switch-then-focus"
                             ));
                         }
@@ -2988,13 +3000,13 @@ mod macos_window_manager_api {
 
                     let (source_focus_window_id, target_window_ids) =
                         space_transition_window_ids(planning_topology, *target_space_id);
-                    logging::debug(format!(
+                    self.debug(&format!(
                         "macos_native: switching to space {target_space_id} source_focus={:?} target_windows={}",
                         source_focus_window_id,
                         target_window_ids.len()
                     ));
                     if target_window_ids.is_empty() {
-                        logging::debug(format!(
+                        self.debug(&format!(
                             "macos_native: using exact space switch for empty adjacent space {target_space_id}"
                         ));
                         self.switch_space(*target_space_id)?;
@@ -3019,7 +3031,7 @@ mod macos_window_manager_api {
                                         !active_space_ids.contains(target_space_id)
                                     }
                                     Err(probe_err) => {
-                                        logging::debug(format!(
+                                        self.debug(&format!(
                                             "macos_native: failed to re-check active spaces after adjacent hotkey switch failure for space {target_space_id} ({probe_err}); retrying exact space switch"
                                         ));
                                         true
@@ -3036,21 +3048,21 @@ mod macos_window_manager_api {
                                             && !target_window_ids
                                                 .is_disjoint(&onscreen_window_ids) =>
                                     {
-                                        logging::debug(format!(
+                                        self.debug(&format!(
                                             "macos_native: adjacent hotkey left target-space window ids visible while target space {target_space_id} is still inactive; treating target ids as unreliable for exact-switch retry"
                                         ));
                                         HashSet::new()
                                     }
                                     Ok(_) => target_window_ids.clone(),
                                     Err(probe_err) => {
-                                        logging::debug(format!(
+                                        self.debug(&format!(
                                             "macos_native: failed to inspect onscreen windows after adjacent hotkey switch failure for space {target_space_id} ({probe_err}); preserving target ids for exact-switch retry"
                                         ));
                                         target_window_ids.clone()
                                     }
                                 };
 
-                                logging::debug(format!(
+                                self.debug(&format!(
                                     "macos_native: adjacent hotkey did not activate target space {target_space_id}; retrying exact space switch"
                                 ));
                                 self.switch_space(*target_space_id)?;
@@ -3070,7 +3082,7 @@ mod macos_window_manager_api {
                         .get(target_space_id)
                         .cloned()
                         .unwrap_or_default();
-                    logging::debug(format!(
+                    self.debug(&format!(
                         "macos_native: switched topology for space {target_space_id} raw_target_ids={:?} described_target_ids={:?}",
                         window_ids_for_space(&switched_topology, *target_space_id),
                         target_space_windows
@@ -3085,11 +3097,11 @@ mod macos_window_manager_api {
                             .iter()
                             .find(|window| window.id == target_window_id)
                             .and_then(|window| window.pid);
-                        logging::debug(format!(
+                        self.debug(&format!(
                             "macos_native: selected post-switch target window {target_window_id} pid={target_pid:?} direction={direction}"
                         ));
                         if let Some(pid) = target_pid {
-                            logging::debug(format!(
+                            self.debug(&format!(
                                 "macos_native: focusing post-switch target window {target_window_id} in active space via known pid {pid}"
                             ));
                             self.focus_window_in_active_space_with_known_pid(
@@ -3097,7 +3109,7 @@ mod macos_window_manager_api {
                                 pid,
                             )?;
                         } else {
-                            logging::debug(format!(
+                            self.debug(&format!(
                                 "macos_native: focusing window {target_window_id} via description lookup"
                             ));
                             self.focus_window(target_window_id)?;
@@ -3120,7 +3132,7 @@ mod macos_window_manager_api {
             if !topology.active_space_ids.contains(&target_space_id) {
                 let (source_focus_window_id, target_window_ids) =
                     space_transition_window_ids(&topology, target_space_id);
-                logging::debug(format!(
+                self.debug(&format!(
                     "macos_native: switching to space {target_space_id} source_focus={:?} target_windows={}",
                     source_focus_window_id,
                     target_window_ids.len()
@@ -3138,18 +3150,18 @@ mod macos_window_manager_api {
             let focus_topology = refreshed_topology.as_ref().unwrap_or(&topology);
             if let Some(pid) = active_window_pid_from_topology(focus_topology, window_id) {
                 if refreshed_topology.is_some() {
-                    logging::debug(format!(
+                    self.debug(&format!(
                         "macos_native: focusing window {window_id} in active space via known pid {pid}"
                     ));
                     self.focus_window_in_active_space_with_known_pid(window_id, pid)
                 } else {
-                    logging::debug(format!(
+                    self.debug(&format!(
                         "macos_native: focusing window {window_id} via known pid {pid}"
                     ));
                     self.focus_window_with_known_pid(window_id, pid)
                 }
             } else {
-                logging::debug(format!(
+                self.debug(&format!(
                     "macos_native: focusing window {window_id} via description lookup"
                 ));
                 self.focus_window(window_id)
@@ -3258,14 +3270,14 @@ mod macos_window_manager_api {
                 && target_visible
                 && (source_focus_hidden || stable_target_polls >= SPACE_SWITCH_STABLE_TARGET_POLLS)
             {
-                logging::debug(format!(
+                api.debug(&format!(
                     "macos_native: space {space_id} presentation settled after {polls} poll(s)"
                 ));
                 return Ok(());
             }
 
             if Instant::now() >= deadline {
-                logging::debug(format!(
+                api.debug(&format!(
                     "macos_native: space {space_id} did not settle after {polls} poll(s) target_active={target_active} source_focus_hidden={source_focus_hidden} target_visible={target_visible}"
                 ));
                 return Err(MacosNativeOperationError::CallFailed(
@@ -3297,14 +3309,14 @@ mod macos_window_manager_api {
 
         let (source_focus_window_id, target_window_ids) =
             super::outer_space_transition_window_ids(snapshot, space_id);
-        logging::debug(format!(
+        api.debug(&format!(
             "macos_native: switching to space {space_id} source_focus={:?} target_windows={}",
             source_focus_window_id,
             target_window_ids.len()
         ));
         if let Some(direction) = adjacent_direction {
             if target_window_ids.is_empty() {
-                logging::debug(format!(
+                api.debug(&format!(
                     "macos_native: using exact space switch for empty adjacent space {space_id}"
                 ));
                 api.switch_space(space_id)?;
@@ -3328,7 +3340,7 @@ mod macos_window_manager_api {
                     let target_still_inactive = match api.active_space_ids() {
                         Ok(active_space_ids) => !active_space_ids.contains(&space_id),
                         Err(probe_err) => {
-                            logging::debug(format!(
+                            api.debug(&format!(
                                 "macos_native: failed to re-check active spaces after adjacent hotkey switch failure for space {space_id} ({probe_err}); retrying exact space switch"
                             ));
                             true
@@ -3344,21 +3356,21 @@ mod macos_window_manager_api {
                             if !target_window_ids.is_empty()
                                 && !target_window_ids.is_disjoint(&onscreen_window_ids) =>
                         {
-                            logging::debug(format!(
+                            api.debug(&format!(
                                 "macos_native: adjacent hotkey left target-space window ids visible while target space {space_id} is still inactive; treating target ids as unreliable for exact-switch retry"
                             ));
                             HashSet::new()
                         }
                         Ok(_) => target_window_ids.clone(),
                         Err(probe_err) => {
-                            logging::debug(format!(
+                            api.debug(&format!(
                                 "macos_native: failed to inspect onscreen windows after adjacent hotkey switch failure for space {space_id} ({probe_err}); preserving target ids for exact-switch retry"
                             ));
                             target_window_ids.clone()
                         }
                     };
 
-                    logging::debug(format!(
+                    api.debug(&format!(
                         "macos_native: adjacent hotkey did not activate target space {space_id}; retrying exact space switch"
                     ));
                     api.switch_space(space_id)?;
@@ -3595,7 +3607,7 @@ mod macos_window_manager_api {
                 )
                 .filter(|candidate| *candidate != target_id)
                 {
-                    logging::debug(format!(
+                    api.debug(&format!(
                         "macos_native: preflighting split-view target {target_id} to AX-backed sibling {remapped_target_id} for pid {pid}"
                     ));
                     focus_target_id = remapped_target_id;
@@ -3625,7 +3637,7 @@ mod macos_window_manager_api {
                 .filter(|candidate| *candidate != focus_target_id) else {
                     return Err(MacosNativeOperationError::MissingWindow(focus_target_id));
                 };
-                logging::debug(format!(
+                api.debug(&format!(
                     "macos_native: remapping split-view target {focus_target_id} to AX-backed sibling {remapped_target_id} for pid {pid}"
                 ));
                 api.focus_window_with_known_pid(remapped_target_id, pid)
@@ -3634,17 +3646,18 @@ mod macos_window_manager_api {
         }
     }
 
-    #[derive(Debug)]
     pub(crate) struct RealNativeApi {
         skylight: Option<DylibHandle>,
         hiservices: Option<DylibHandle>,
+        options: NativeBackendOptions,
     }
 
     impl RealNativeApi {
-        pub(crate) fn new() -> Self {
+        pub(crate) fn new(options: NativeBackendOptions) -> Self {
             Self {
                 skylight: DylibHandle::open(SKYLIGHT_FRAMEWORK_PATH),
                 hiservices: DylibHandle::open(HISERVICES_FRAMEWORK_PATH),
+                options,
             }
         }
 
@@ -3661,11 +3674,21 @@ mod macos_window_manager_api {
                         .and_then(|handle| handle.resolve(symbol.as_c_str()))
                 })
         }
+
+        fn debug(&self, message: impl AsRef<str>) {
+            if let Some(diagnostics) = self.options.diagnostics.as_ref() {
+                diagnostics.debug(message.as_ref());
+            }
+        }
     }
 
     impl MacosNativeApi for RealNativeApi {
         fn has_symbol(&self, symbol: &'static str) -> bool {
             self.resolve_symbol(symbol).is_some()
+        }
+
+        fn debug(&self, message: &str) {
+            RealNativeApi::debug(self, message);
         }
 
         fn ax_is_trusted(&self) -> bool {
@@ -3826,12 +3849,16 @@ mod macos_window_manager_api {
             direction: Direction,
             _space_id: u64,
         ) -> Result<(), MacosNativeOperationError> {
-            logging::debug(format!(
+            self.debug(&format!(
                 "macos_native: switching adjacent space via mission-control hotkey direction={direction}"
             ));
-            switch_adjacent_space_via_hotkey(direction, |key_code, key_down, flags| {
-                window_server::post_keyboard_event(self, key_code, key_down, flags)
-            })
+            switch_adjacent_space_via_hotkey(
+                &self.options,
+                direction,
+                |key_code, key_down, flags| {
+                    window_server::post_keyboard_event(self, key_code, key_down, flags)
+                },
+            )
         }
 
         fn focus_window(&self, window_id: u64) -> Result<(), MacosNativeOperationError> {
@@ -3861,7 +3888,7 @@ mod macos_window_manager_api {
                     let deadline = Instant::now() + AX_RAISE_SETTLE_TIMEOUT;
                     loop {
                         if self.focused_window_id().ok() == Some(Some(window_id)) {
-                            logging::debug(format!(
+                            self.debug(&format!(
                                 "macos_native: treating missing AX raise target {window_id} as success after focus confirmation"
                             ));
                             return Ok(());
@@ -3871,7 +3898,7 @@ mod macos_window_manager_api {
                         }
                         std::thread::sleep(AX_RAISE_RETRY_INTERVAL);
                     }
-                    logging::debug(format!(
+                    self.debug(&format!(
                         "macos_native: AX raise still missing target {window_id} after retries; focused_window_id={:?}",
                         self.focused_window_id().ok().flatten()
                     ));
@@ -3905,7 +3932,7 @@ mod macos_window_manager_api {
                     let deadline = Instant::now() + AX_RAISE_SETTLE_TIMEOUT;
                     loop {
                         if self.focused_window_id().ok() == Some(Some(window_id)) {
-                            logging::debug(format!(
+                            self.debug(&format!(
                                 "macos_native: treating missing active-space AX raise target {window_id} as success after focus confirmation"
                             ));
                             return Ok(());
@@ -3915,7 +3942,7 @@ mod macos_window_manager_api {
                         }
                         std::thread::sleep(AX_RAISE_RETRY_INTERVAL);
                     }
-                    logging::debug(format!(
+                    self.debug(&format!(
                         "macos_native: active-space AX raise still missing target {window_id} after retries; focused_window_id={:?}",
                         self.focused_window_id().ok().flatten()
                     ));
@@ -4226,7 +4253,7 @@ impl MacosNativeApiFactory for RealNativeApiFactory {
     type Api = RealNativeApi;
 
     fn create(&self) -> Self::Api {
-        RealNativeApi::new()
+        RealNativeApi::new(native_backend_options_from_config())
     }
 }
 
@@ -4450,6 +4477,40 @@ where
         api.validate_environment()?;
 
         Ok(Self { api })
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TracingDiagnostics;
+
+impl NativeDiagnostics for TracingDiagnostics {
+    fn debug(&self, message: &str) {
+        logging::debug(message.to_owned());
+    }
+}
+
+fn mission_control_hotkey_from_config(direction: Direction) -> MissionControlHotkey {
+    let shortcut = config::macos_native_mission_control_shortcut(direction)
+        .expect("macos_native mission control shortcuts should be validated at config load");
+    MissionControlHotkey {
+        key_code: shortcut.parse_keycode().expect(
+            "macos_native mission control shortcut keycodes should be validated at config load",
+        ),
+        mission_control: MissionControlModifiers {
+            control: shortcut.ctrl,
+            option: shortcut.option,
+            command: shortcut.command,
+            shift: shortcut.shift,
+            function: shortcut.r#fn,
+        },
+    }
+}
+
+fn native_backend_options_from_config() -> NativeBackendOptions {
+    NativeBackendOptions {
+        west_space_hotkey: mission_control_hotkey_from_config(Direction::West),
+        east_space_hotkey: mission_control_hotkey_from_config(Direction::East),
+        diagnostics: Some(std::sync::Arc::new(TracingDiagnostics)),
     }
 }
 
@@ -8589,6 +8650,27 @@ mod tests {
         std::mem::take(&mut *calls.borrow_mut())
     }
 
+    fn mission_control_hotkey(
+        key_code: u16,
+        modifiers: MissionControlModifiers,
+    ) -> MissionControlHotkey {
+        MissionControlHotkey {
+            key_code,
+            mission_control: modifiers,
+        }
+    }
+
+    fn backend_options_with_hotkeys(
+        west: MissionControlHotkey,
+        east: MissionControlHotkey,
+    ) -> NativeBackendOptions {
+        NativeBackendOptions {
+            west_space_hotkey: west,
+            east_space_hotkey: east,
+            diagnostics: None,
+        }
+    }
+
     struct InstalledConfigGuard {
         _env: std::sync::MutexGuard<'static, ()>,
         old: crate::config::Config,
@@ -8751,6 +8833,10 @@ command = false
     fn macos_window_manager_api_source(implementation: &str) -> &str {
         let (module_start, module_end) = macos_window_manager_api_span(implementation);
         &implementation[module_start..module_end]
+    }
+
+    fn backend_module_source() -> &'static str {
+        macos_window_manager_api_source(implementation_source())
     }
 
     #[test]
@@ -8994,6 +9080,22 @@ command = false
             assert!(
                 !root_prefix.contains(required) && !root_suffix.contains(required),
                 "expected backend boundary declaration to stay inside macos_window_manager_api: {required}"
+            );
+        }
+    }
+
+    #[test]
+    fn source_backend_module_avoids_repo_config_and_logging_imports() {
+        let backend = backend_module_source();
+        for forbidden in [
+            "use crate::config",
+            "MissionControlShortcutConfig",
+            "use crate::logging",
+            "crate::logging::",
+        ] {
+            assert!(
+                !backend.contains(forbidden),
+                "backend module should not depend on {forbidden}"
             );
         }
     }
@@ -10150,33 +10252,32 @@ command = false
 
     #[test]
     fn switch_adjacent_space_via_hotkey_posts_configured_shortcut_for_east() {
-        let _config = install_config(
-            r#"
-[wm.macos_native]
-enabled = true
-floating_focus_strategy = "overlap_then_gap"
-
-[wm.macos_native.mission_control_keyboard_shortcuts.move_left_a_space]
-keycode = "0x7B"
-ctrl = true
-fn = true
-shift = false
-option = false
-command = false
-
-[wm.macos_native.mission_control_keyboard_shortcuts.move_right_a_space]
-keycode = "0x1A"
-ctrl = false
-fn = false
-shift = true
-option = true
-command = true
-"#,
+        let options = backend_options_with_hotkeys(
+            mission_control_hotkey(
+                0x7B,
+                MissionControlModifiers {
+                    control: true,
+                    option: false,
+                    command: false,
+                    shift: false,
+                    function: true,
+                },
+            ),
+            mission_control_hotkey(
+                0x1A,
+                MissionControlModifiers {
+                    control: false,
+                    option: true,
+                    command: true,
+                    shift: true,
+                    function: false,
+                },
+            ),
         );
 
         let calls = Rc::new(RefCell::new(Vec::new()));
 
-        switch_adjacent_space_via_hotkey(Direction::East, |key_code, key_down, flags| {
+        switch_adjacent_space_via_hotkey(&options, Direction::East, |key_code, key_down, flags| {
             calls.borrow_mut().push(format!(
                 "key:{key_code}:{}:{flags}",
                 if key_down { "down" } else { "up" }
@@ -10199,7 +10300,12 @@ command = true
 
     #[test]
     fn switch_adjacent_space_via_hotkey_rejects_vertical_directions() {
-        let err = switch_adjacent_space_via_hotkey(Direction::North, |_, _, _| Ok(())).unwrap_err();
+        let options = backend_options_with_hotkeys(
+            mission_control_hotkey(0x7B, MissionControlModifiers::default()),
+            mission_control_hotkey(0x7C, MissionControlModifiers::default()),
+        );
+        let err = switch_adjacent_space_via_hotkey(&options, Direction::North, |_, _, _| Ok(()))
+            .unwrap_err();
 
         assert_eq!(
             err,
