@@ -12,7 +12,7 @@ use anyhow::{Context, bail};
 
 use macos_window_manager_api::{
     DirectionalFocusPlan, MacosNativeApi, MacosNativeConnectError, MacosNativeProbeError,
-    RealNativeApi,
+    NativeDesktopSnapshot, RealNativeApi,
 };
 
 mod macos_window_manager_api {
@@ -687,6 +687,7 @@ mod macos_window_manager_api {
                 attribute: *const c_void,
                 value: CFTypeRef,
             ) -> OSStatus;
+            #[allow(dead_code)]
             pub(crate) fn AXUIElementGetPid(element: AXUIElementRef, pid: *mut c_int) -> OSStatus;
             pub(crate) fn AXValueCreate(
                 value_type: AXValueType,
@@ -777,6 +778,7 @@ mod macos_window_manager_api {
             )
         }
 
+        #[allow(dead_code)]
         pub(crate) fn ax_pid(
             _api: &RealNativeApi,
             element: &CfOwned,
@@ -2801,6 +2803,7 @@ mod macos_window_manager_api {
                 self.focused_window_id()?,
             )
         }
+        #[allow(dead_code)]
         fn focused_window_record(&self) -> Result<FocusedWindowRecord, MacosNativeProbeError> {
             let focused = self.focused_window_snapshot()?;
             Ok(FocusedWindowRecord {
@@ -2811,6 +2814,7 @@ mod macos_window_manager_api {
                 original_tile_index: focused.order_index.unwrap_or(0),
             })
         }
+        #[allow(dead_code)]
         fn focused_app_record(&self) -> Result<FocusedAppRecord, MacosNativeProbeError> {
             let focused = self.focused_window_record()?;
             Ok(FocusedAppRecord {
@@ -3395,7 +3399,9 @@ mod macos_window_manager_api {
         }
 
         fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
-            Ok(native_desktop_snapshot_from_topology(&self.topology_snapshot()?))
+            Ok(native_desktop_snapshot_from_topology(
+                &self.topology_snapshot()?,
+            ))
         }
 
         fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
@@ -3970,32 +3976,11 @@ impl WindowManagerSpec for MacosNativeSpec {
                 "macOS native topology precondition is unavailable: main SkyLight connection"
             ));
         }
-        match {
-            let _span =
-                tracing::debug_span!("macos_native.fast_focus.focused_app_record").entered();
-            MacosNativeApi::focused_app_record(&api)
-        } {
-            Ok(focused) => Ok(Some(focused)),
-            Err(err) => {
-                logging::debug(format!(
-                    "macos_native: focused-app fast path failed; falling back to focused-window probe: {err}"
-                ));
-                let focused = {
-                    let _span =
-                        tracing::debug_span!("macos_native.fast_focus.focused_window_fallback")
-                            .entered();
-                    MacosNativeApi::focused_window_record(&api).map_err(map_probe_error)?
-                };
-                Ok(Some(FocusedAppRecord {
-                    app_id: focused.app_id.unwrap_or_default(),
-                    title: focused.title.unwrap_or_default(),
-                    pid: focused
-                        .pid
-                        .ok_or(MacosNativeProbeError::MissingFocusedWindow)
-                        .map_err(map_probe_error)?,
-                }))
-            }
-        }
+        let snapshot = {
+            let _span = tracing::debug_span!("macos_native.fast_focus.desktop_snapshot").entered();
+            api.desktop_snapshot().map_err(map_probe_error)?
+        };
+        focused_app_record_from_native(&snapshot)
     }
 }
 
@@ -4054,14 +4039,13 @@ where
     }
 
     fn focused_window(&mut self) -> anyhow::Result<FocusedWindowRecord> {
-        self.ctx
-            .api
-            .focused_window_record()
-            .map_err(map_probe_error)
+        let snapshot = self.ctx.api.desktop_snapshot().map_err(map_probe_error)?;
+        focused_window_record_from_native(&snapshot)
     }
 
     fn windows(&mut self) -> anyhow::Result<Vec<WindowRecord>> {
-        self.ctx.api.window_records().map_err(map_probe_error)
+        let snapshot = self.ctx.api.desktop_snapshot().map_err(map_probe_error)?;
+        Ok(window_records_from_native(&snapshot))
     }
 
     fn focus_direction(&mut self, direction: Direction) -> anyhow::Result<()> {
@@ -4128,6 +4112,63 @@ fn map_probe_error(err: MacosNativeProbeError) -> anyhow::Error {
         MacosNativeProbeError::MissingFocusedWindow => anyhow::anyhow!("no focused window"),
         other => anyhow::Error::new(other),
     }
+}
+
+fn process_id_from_native(pid: Option<u32>) -> Option<ProcessId> {
+    pid.and_then(ProcessId::new)
+}
+
+fn window_records_from_native(snapshot: &NativeDesktopSnapshot) -> Vec<WindowRecord> {
+    snapshot
+        .windows
+        .iter()
+        .map(|window| WindowRecord {
+            id: window.id,
+            app_id: window.app_id.clone(),
+            title: window.title.clone(),
+            pid: process_id_from_native(window.pid),
+            is_focused: snapshot.focused_window_id == Some(window.id),
+            original_tile_index: window.order_index.unwrap_or(0),
+        })
+        .collect()
+}
+
+fn focused_window_record_from_native(
+    snapshot: &NativeDesktopSnapshot,
+) -> anyhow::Result<FocusedWindowRecord> {
+    let focused_window_id = snapshot
+        .focused_window_id
+        .ok_or(MacosNativeProbeError::MissingFocusedWindow)
+        .map_err(map_probe_error)?;
+    let focused = snapshot
+        .windows
+        .iter()
+        .find(|window| window.id == focused_window_id)
+        .ok_or(MacosNativeProbeError::MissingFocusedWindow)
+        .map_err(map_probe_error)?;
+
+    Ok(FocusedWindowRecord {
+        id: focused.id,
+        app_id: focused.app_id.clone(),
+        title: focused.title.clone(),
+        pid: process_id_from_native(focused.pid),
+        original_tile_index: focused.order_index.unwrap_or(0),
+    })
+}
+
+fn focused_app_record_from_native(
+    snapshot: &NativeDesktopSnapshot,
+) -> anyhow::Result<Option<FocusedAppRecord>> {
+    let focused = focused_window_record_from_native(snapshot)?;
+
+    Ok(Some(FocusedAppRecord {
+        app_id: focused.app_id.unwrap_or_default(),
+        title: focused.title.unwrap_or_default(),
+        pid: focused
+            .pid
+            .ok_or(MacosNativeProbeError::MissingFocusedWindow)
+            .map_err(map_probe_error)?,
+    }))
 }
 
 impl<A> MacosNativeAdapter<A>
@@ -4493,7 +4534,9 @@ mod tests {
         }
 
         fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
-            Ok(native_desktop_snapshot_from_topology(&self.topology_snapshot()?))
+            Ok(native_desktop_snapshot_from_topology(
+                &self.topology_snapshot()?,
+            ))
         }
 
         fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
@@ -4579,7 +4622,9 @@ mod tests {
         }
 
         fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
-            Ok(native_desktop_snapshot_from_topology(&self.topology_snapshot()?))
+            Ok(native_desktop_snapshot_from_topology(
+                &self.topology_snapshot()?,
+            ))
         }
 
         fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
@@ -4658,7 +4703,9 @@ mod tests {
         }
 
         fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
-            Ok(native_desktop_snapshot_from_topology(&self.topology_snapshot()?))
+            Ok(native_desktop_snapshot_from_topology(
+                &self.topology_snapshot()?,
+            ))
         }
 
         fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
@@ -4759,7 +4806,9 @@ mod tests {
         }
 
         fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
-            Ok(native_desktop_snapshot_from_topology(&self.topology_snapshot()?))
+            Ok(native_desktop_snapshot_from_topology(
+                &self.topology_snapshot()?,
+            ))
         }
 
         fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
@@ -4881,7 +4930,9 @@ mod tests {
         }
 
         fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
-            Ok(native_desktop_snapshot_from_topology(&self.topology_snapshot()?))
+            Ok(native_desktop_snapshot_from_topology(
+                &self.topology_snapshot()?,
+            ))
         }
 
         fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
@@ -5027,7 +5078,9 @@ mod tests {
         }
 
         fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
-            Ok(native_desktop_snapshot_from_topology(&self.topology_snapshot()?))
+            Ok(native_desktop_snapshot_from_topology(
+                &self.topology_snapshot()?,
+            ))
         }
 
         fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
@@ -5170,7 +5223,9 @@ mod tests {
         }
 
         fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
-            Ok(native_desktop_snapshot_from_topology(&self.topology_snapshot()?))
+            Ok(native_desktop_snapshot_from_topology(
+                &self.topology_snapshot()?,
+            ))
         }
 
         fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
@@ -5321,7 +5376,9 @@ mod tests {
         }
 
         fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
-            Ok(native_desktop_snapshot_from_topology(&self.topology_snapshot()?))
+            Ok(native_desktop_snapshot_from_topology(
+                &self.topology_snapshot()?,
+            ))
         }
 
         fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
@@ -5444,7 +5501,9 @@ mod tests {
         }
 
         fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
-            Ok(native_desktop_snapshot_from_topology(&self.topology_snapshot()?))
+            Ok(native_desktop_snapshot_from_topology(
+                &self.topology_snapshot()?,
+            ))
         }
 
         fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
@@ -5573,7 +5632,9 @@ mod tests {
         }
 
         fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
-            Ok(native_desktop_snapshot_from_topology(&self.topology_snapshot()?))
+            Ok(native_desktop_snapshot_from_topology(
+                &self.topology_snapshot()?,
+            ))
         }
 
         fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
@@ -5693,7 +5754,9 @@ mod tests {
         }
 
         fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
-            Ok(native_desktop_snapshot_from_topology(&self.topology_snapshot()?))
+            Ok(native_desktop_snapshot_from_topology(
+                &self.topology_snapshot()?,
+            ))
         }
 
         fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
@@ -5811,7 +5874,9 @@ mod tests {
         }
 
         fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
-            Ok(native_desktop_snapshot_from_topology(&self.topology_snapshot()?))
+            Ok(native_desktop_snapshot_from_topology(
+                &self.topology_snapshot()?,
+            ))
         }
 
         fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
@@ -5887,7 +5952,9 @@ mod tests {
         }
 
         fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
-            Ok(native_desktop_snapshot_from_topology(&self.topology_snapshot()?))
+            Ok(native_desktop_snapshot_from_topology(
+                &self.topology_snapshot()?,
+            ))
         }
 
         fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
@@ -5999,7 +6066,9 @@ mod tests {
         }
 
         fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
-            Ok(native_desktop_snapshot_from_topology(&self.topology_snapshot()?))
+            Ok(native_desktop_snapshot_from_topology(
+                &self.topology_snapshot()?,
+            ))
         }
 
         fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
@@ -6107,7 +6176,9 @@ mod tests {
         }
 
         fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
-            Ok(native_desktop_snapshot_from_topology(&self.topology_snapshot()?))
+            Ok(native_desktop_snapshot_from_topology(
+                &self.topology_snapshot()?,
+            ))
         }
 
         fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
@@ -6218,7 +6289,9 @@ mod tests {
         }
 
         fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
-            Ok(native_desktop_snapshot_from_topology(&self.topology_snapshot()?))
+            Ok(native_desktop_snapshot_from_topology(
+                &self.topology_snapshot()?,
+            ))
         }
 
         fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
@@ -6357,7 +6430,9 @@ mod tests {
         }
 
         fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
-            Ok(native_desktop_snapshot_from_topology(&self.topology_snapshot()?))
+            Ok(native_desktop_snapshot_from_topology(
+                &self.topology_snapshot()?,
+            ))
         }
 
         fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
@@ -6479,7 +6554,9 @@ mod tests {
         }
 
         fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
-            Ok(native_desktop_snapshot_from_topology(&self.topology_snapshot()?))
+            Ok(native_desktop_snapshot_from_topology(
+                &self.topology_snapshot()?,
+            ))
         }
 
         fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
@@ -6692,7 +6769,98 @@ mod tests {
         }
     }
 
+    struct SnapshotOnlyApi {
+        snapshot: NativeDesktopSnapshot,
+    }
+
+    impl SnapshotOnlyApi {
+        fn new(snapshot: NativeDesktopSnapshot) -> Self {
+            Self { snapshot }
+        }
+    }
+
     struct FocusedWindowRecordFastPathApi;
+
+    impl MacosNativeApi for SnapshotOnlyApi {
+        fn has_symbol(&self, _symbol: &'static str) -> bool {
+            true
+        }
+
+        fn ax_is_trusted(&self) -> bool {
+            true
+        }
+
+        fn minimal_topology_ready(&self) -> bool {
+            true
+        }
+
+        fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
+            Ok(self.snapshot.clone())
+        }
+
+        fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
+            panic!("snapshot-only api must not query managed_spaces")
+        }
+
+        fn active_space_ids(&self) -> Result<HashSet<u64>, MacosNativeProbeError> {
+            panic!("snapshot-only api must not query active_space_ids")
+        }
+
+        fn active_space_windows(
+            &self,
+            _space_id: u64,
+        ) -> Result<Vec<RawWindow>, MacosNativeProbeError> {
+            panic!("snapshot-only api must not query active_space_windows")
+        }
+
+        fn inactive_space_window_ids(
+            &self,
+        ) -> Result<HashMap<u64, Vec<u64>>, MacosNativeProbeError> {
+            panic!("snapshot-only api must not query inactive_space_window_ids")
+        }
+
+        fn focused_window_snapshot(&self) -> Result<WindowSnapshot, MacosNativeProbeError> {
+            panic!("snapshot-only api must not query focused_window_snapshot")
+        }
+
+        fn focused_window_record(&self) -> Result<FocusedWindowRecord, MacosNativeProbeError> {
+            panic!("snapshot-only api must not query focused_window_record")
+        }
+
+        fn focused_app_record(&self) -> Result<FocusedAppRecord, MacosNativeProbeError> {
+            panic!("snapshot-only api must not query focused_app_record")
+        }
+
+        fn window_records(&self) -> Result<Vec<WindowRecord>, MacosNativeProbeError> {
+            panic!("snapshot-only api must not query window_records")
+        }
+
+        fn switch_space(&self, _space_id: u64) -> Result<(), MacosNativeOperationError> {
+            Ok(())
+        }
+
+        fn focus_window(&self, _window_id: u64) -> Result<(), MacosNativeOperationError> {
+            Ok(())
+        }
+
+        fn move_window_to_space(
+            &self,
+            _window_id: u64,
+            _space_id: u64,
+        ) -> Result<(), MacosNativeOperationError> {
+            Ok(())
+        }
+
+        fn swap_window_frames(
+            &self,
+            _source_window_id: u64,
+            _source_frame: Rect,
+            _target_window_id: u64,
+            _target_frame: Rect,
+        ) -> Result<(), MacosNativeOperationError> {
+            Ok(())
+        }
+    }
 
     impl MacosNativeApi for FocusedWindowRecordFastPathApi {
         fn has_symbol(&self, _symbol: &'static str) -> bool {
@@ -8011,6 +8179,48 @@ command = false
         assert_eq!(focused.app_id.as_deref(), Some("focused.app"));
         assert_eq!(focused.title.as_deref(), Some("focused"));
         assert_eq!(focused.order_index, Some(0));
+    }
+
+    #[test]
+    fn focused_window_and_windows_are_derived_from_native_snapshot() {
+        let mut adapter =
+            MacosNativeAdapter::connect_with_api(SnapshotOnlyApi::new(NativeDesktopSnapshot {
+                spaces: vec![NativeSpaceSnapshot {
+                    id: 1,
+                    display_index: 0,
+                    active: true,
+                    kind: SpaceKind::Desktop,
+                }],
+                active_space_ids: HashSet::from([1]),
+                windows: vec![
+                    NativeWindowSnapshot {
+                        id: 101,
+                        pid: Some(4001),
+                        app_id: Some("focused.app".to_string()),
+                        title: Some("Focused".to_string()),
+                        bounds: None,
+                        space_id: 1,
+                        order_index: Some(0),
+                    },
+                    NativeWindowSnapshot {
+                        id: 102,
+                        pid: Some(4002),
+                        app_id: Some("other.app".to_string()),
+                        title: Some("Other".to_string()),
+                        bounds: None,
+                        space_id: 1,
+                        order_index: Some(1),
+                    },
+                ],
+                focused_window_id: Some(101),
+            }))
+            .unwrap();
+
+        let focused = WindowManagerSession::focused_window(&mut adapter).unwrap();
+        let windows = WindowManagerSession::windows(&mut adapter).unwrap();
+
+        assert_eq!(focused.id, 101);
+        assert_eq!(windows.len(), 2);
     }
 
     #[test]
