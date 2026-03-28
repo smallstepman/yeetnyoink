@@ -2,11 +2,10 @@ use crate::config::{self, WmBackend};
 use crate::engine::runtime::{self, CommandContext, ProcessId};
 use crate::engine::topology::Direction;
 use crate::engine::wm::{
-    validate_declared_capabilities, CapabilitySupport, ConfiguredWindowManager,
-    DirectionalCapability, FloatingFocusMode, FocusedAppRecord, FocusedWindowRecord,
-    PrimitiveWindowManagerCapabilities, ResizeIntent, WindowManagerCapabilities,
-    WindowManagerCapabilityDescriptor, WindowManagerFeatures, WindowManagerSession,
-    WindowManagerSpec, WindowRecord,
+    CapabilitySupport, ConfiguredWindowManager, DirectionalCapability, FloatingFocusMode,
+    FocusedAppRecord, FocusedWindowRecord, PrimitiveWindowManagerCapabilities, ResizeIntent,
+    WindowManagerCapabilities, WindowManagerCapabilityDescriptor, WindowManagerFeatures,
+    WindowManagerSession, WindowManagerSpec, WindowRecord, validate_declared_capabilities,
 };
 use crate::logging;
 use anyhow::{Context, bail};
@@ -4167,7 +4166,6 @@ fn resolved_focused_native_window(
         if let Some(window) = snapshot
             .windows
             .iter()
-            .filter(is_active_window)
             .find(|window| window.id == focused_window_id)
         {
             return Ok(window);
@@ -7336,6 +7334,19 @@ command = false
             .expect("macos_native.rs source should include a test module")
     }
 
+    fn contains_identifier(source: &str, identifier: &str) -> bool {
+        source.match_indices(identifier).any(|(start, matched)| {
+            let before = source[..start].chars().next_back();
+            let after = source[start + matched.len()..].chars().next();
+
+            !before.is_some_and(is_identifier_char) && !after.is_some_and(is_identifier_char)
+        })
+    }
+
+    fn is_identifier_char(ch: char) -> bool {
+        ch == '_' || ch.is_ascii_alphanumeric()
+    }
+
     fn outer_context_production_source() -> &'static str {
         let source = include_str!("macos_native.rs");
         let impl_start = source
@@ -7546,8 +7557,13 @@ command = false
             "best_window_id_from_windows",
             "directional_focus_target_in_active_topology",
         ] {
+            let present = if forbidden == "WindowSnapshot" {
+                contains_identifier(root_prefix, forbidden)
+            } else {
+                root_prefix.contains(forbidden)
+            };
             assert!(
-                !root_prefix.contains(forbidden),
+                !present,
                 "root production prelude should not import raw backend item {forbidden}"
             );
         }
@@ -7576,7 +7592,7 @@ command = false
             "root production prelude should not import RawTopologySnapshot"
         );
         assert!(
-            !root_prefix.contains("WindowSnapshot"),
+            !contains_identifier(root_prefix, "WindowSnapshot"),
             "root production prelude should not import WindowSnapshot"
         );
         assert!(
@@ -7734,8 +7750,13 @@ command = false
             "ax_backed_same_pid_split_view_target_in_direction",
             "classify_space(",
         ] {
+            let present = if forbidden == "WindowSnapshot" {
+                contains_identifier(outer_source, forbidden)
+            } else {
+                outer_source.contains(forbidden)
+            };
             assert!(
-                !outer_source.contains(forbidden),
+                !present,
                 "outer production adapter code should not reference raw focus fallback detail {forbidden}"
             );
         }
@@ -7769,9 +7790,8 @@ command = false
         let implementation = implementation_source();
 
         assert!(
-            implementation.contains(
-                "validate_declared_capabilities::<MacosNativeAdapter<F::Api>>()?;"
-            ),
+            implementation
+                .contains("validate_declared_capabilities::<MacosNativeAdapter<F::Api>>()?;"),
             "WindowManagerSpec::connect should validate declared capabilities before connecting"
         );
         assert!(
@@ -8363,11 +8383,67 @@ command = false
 
         assert_eq!(focused.id, 101);
         assert_eq!(
-            windows.iter().find(|window| window.id == 101).map(|window| window.is_focused),
+            windows
+                .iter()
+                .find(|window| window.id == 101)
+                .map(|window| window.is_focused),
             Some(true)
         );
         assert_eq!(
-            windows.iter().find(|window| window.id == 102).map(|window| window.is_focused),
+            windows
+                .iter()
+                .find(|window| window.id == 102)
+                .map(|window| window.is_focused),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn focused_window_and_windows_use_explicit_native_snapshot_focus_without_active_space_hints() {
+        let mut adapter =
+            MacosNativeAdapter::connect_with_api(SnapshotOnlyApi::new(NativeDesktopSnapshot {
+                spaces: Vec::new(),
+                active_space_ids: HashSet::new(),
+                windows: vec![
+                    NativeWindowSnapshot {
+                        id: 101,
+                        pid: Some(4001),
+                        app_id: Some("focused.app".to_string()),
+                        title: Some("Focused".to_string()),
+                        bounds: None,
+                        space_id: 99,
+                        order_index: Some(1),
+                    },
+                    NativeWindowSnapshot {
+                        id: 102,
+                        pid: Some(4002),
+                        app_id: Some("other.app".to_string()),
+                        title: Some("Other".to_string()),
+                        bounds: None,
+                        space_id: 100,
+                        order_index: Some(0),
+                    },
+                ],
+                focused_window_id: Some(101),
+            }))
+            .unwrap();
+
+        let focused = WindowManagerSession::focused_window(&mut adapter).unwrap();
+        let windows = WindowManagerSession::windows(&mut adapter).unwrap();
+
+        assert_eq!(focused.id, 101);
+        assert_eq!(
+            windows
+                .iter()
+                .find(|window| window.id == 101)
+                .map(|window| window.is_focused),
+            Some(true)
+        );
+        assert_eq!(
+            windows
+                .iter()
+                .find(|window| window.id == 102)
+                .map(|window| window.is_focused),
             Some(false)
         );
     }
