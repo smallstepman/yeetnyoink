@@ -513,6 +513,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
 
 [[package]]
+name = "macos_window_manager"
+version = "0.1.0"
+dependencies = [
+ "accessibility-sys",
+ "core-foundation",
+ "core-graphics",
+ "thiserror",
+ "tracing",
+]
+
+[[package]]
 name = "matchers"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1125,6 +1136,7 @@ dependencies = [
  "core-graphics",
  "etcetera",
  "inferno",
+ "macos_window_manager",
  "niri-ipc",
  "serde",
  "serde_json",
