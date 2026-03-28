@@ -3959,28 +3959,7 @@ impl WindowManagerSpec for MacosNativeSpec {
             let _span = tracing::debug_span!("macos_native.fast_focus.real_api_new").entered();
             RealNativeApi::new()
         };
-        if {
-            let _span = tracing::debug_span!("macos_native.fast_focus.ax_is_trusted").entered();
-            !MacosNativeApi::ax_is_trusted(&api)
-        } {
-            return Err(anyhow::anyhow!(
-                "Accessibility permission is required for macOS native support"
-            ));
-        }
-        if {
-            let _span =
-                tracing::debug_span!("macos_native.fast_focus.minimal_topology_ready").entered();
-            !MacosNativeApi::minimal_topology_ready(&api)
-        } {
-            return Err(anyhow::anyhow!(
-                "macOS native topology precondition is unavailable: main SkyLight connection"
-            ));
-        }
-        let snapshot = {
-            let _span = tracing::debug_span!("macos_native.fast_focus.desktop_snapshot").entered();
-            api.desktop_snapshot().map_err(map_probe_error)?
-        };
-        focused_app_record_from_native(&snapshot)
+        focused_app_record_with_api(&api)
     }
 }
 
@@ -4112,6 +4091,33 @@ fn map_probe_error(err: MacosNativeProbeError) -> anyhow::Error {
         MacosNativeProbeError::MissingFocusedWindow => anyhow::anyhow!("no focused window"),
         other => anyhow::Error::new(other),
     }
+}
+
+fn focused_app_record_with_api<A: MacosNativeApi + ?Sized>(
+    api: &A,
+) -> anyhow::Result<Option<FocusedAppRecord>> {
+    if {
+        let _span = tracing::debug_span!("macos_native.fast_focus.ax_is_trusted").entered();
+        !MacosNativeApi::ax_is_trusted(api)
+    } {
+        return Err(anyhow::anyhow!(
+            "Accessibility permission is required for macOS native support"
+        ));
+    }
+    if {
+        let _span =
+            tracing::debug_span!("macos_native.fast_focus.minimal_topology_ready").entered();
+        !MacosNativeApi::minimal_topology_ready(api)
+    } {
+        return Err(anyhow::anyhow!(
+            "macOS native topology precondition is unavailable: main SkyLight connection"
+        ));
+    }
+    let snapshot = {
+        let _span = tracing::debug_span!("macos_native.fast_focus.desktop_snapshot").entered();
+        api.desktop_snapshot().map_err(map_probe_error)?
+    };
+    focused_app_record_from_native(&snapshot)
 }
 
 fn process_id_from_native(pid: Option<u32>) -> Option<ProcessId> {
@@ -8221,6 +8227,39 @@ command = false
 
         assert_eq!(focused.id, 101);
         assert_eq!(windows.len(), 2);
+    }
+
+    #[test]
+    fn focused_app_record_is_derived_from_native_snapshot() {
+        let focused = focused_app_record_with_api(&SnapshotOnlyApi::new(NativeDesktopSnapshot {
+            spaces: vec![NativeSpaceSnapshot {
+                id: 1,
+                display_index: 0,
+                active: true,
+                kind: SpaceKind::Desktop,
+            }],
+            active_space_ids: HashSet::from([1]),
+            windows: vec![NativeWindowSnapshot {
+                id: 101,
+                pid: Some(4001),
+                app_id: Some("focused.app".to_string()),
+                title: Some("Focused".to_string()),
+                bounds: None,
+                space_id: 1,
+                order_index: Some(0),
+            }],
+            focused_window_id: Some(101),
+        }))
+        .unwrap();
+
+        assert_eq!(
+            focused,
+            Some(FocusedAppRecord {
+                app_id: "focused.app".to_string(),
+                title: "Focused".to_string(),
+                pid: ProcessId::new(4001).unwrap(),
+            })
+        );
     }
 
     #[test]
