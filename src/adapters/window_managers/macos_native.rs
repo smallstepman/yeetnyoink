@@ -176,10 +176,6 @@ mod macos_window_manager_api {
             unsafe extern "C" fn(u32, u64) -> CFStringRef;
         pub(crate) type SlsCopyWindowsWithOptionsAndTagsFn =
             unsafe extern "C" fn(u32, u32, CFArrayRef, i32, *mut i64, *mut i64) -> CFArrayRef;
-        pub(crate) type SlsAddWindowsToSpacesFn =
-            unsafe extern "C" fn(u32, CFArrayRef, CFArrayRef) -> OSStatus;
-        pub(crate) type SlsRemoveWindowsFromSpacesFn =
-            unsafe extern "C" fn(u32, CFArrayRef, CFArrayRef) -> OSStatus;
         pub(crate) type SlpsSetFrontProcessWithOptionsFn =
             unsafe extern "C" fn(*const ProcessSerialNumber, CGWindowID, u32) -> OSStatus;
         pub(crate) type SlpsPostEventRecordToFn =
@@ -530,10 +526,6 @@ mod macos_window_manager_api {
 
         pub(crate) fn cf_number_from_u64(value: u64) -> Result<CfOwned, MacosNativeProbeError> {
             number_from_u64(value).map(CfOwned::from_servo)
-        }
-
-        pub(crate) fn cf_array_from_u64s(values: &[u64]) -> Result<CfOwned, MacosNativeProbeError> {
-            array_from_u64s(values).map(CfOwned::from_servo)
         }
 
         pub(crate) fn cf_number_to_i64(number: CFTypeRef) -> Option<i64> {
@@ -1068,18 +1060,16 @@ mod macos_window_manager_api {
 
     pub(super) mod skylight {
         use super::foundation::{
-            CFArrayRef, CFDictionaryRef, CFStringRef, CfOwned, SlsAddWindowsToSpacesFn,
+            CFArrayRef, CFDictionaryRef, CFStringRef, CfOwned,
             SlsCopyManagedDisplayForSpaceFn, SlsCopyManagedDisplaySpacesFn,
             SlsCopyWindowsWithOptionsAndTagsFn, SlsMainConnectionIdFn,
             SlsManagedDisplayGetCurrentSpaceFn, SlsManagedDisplaySetCurrentSpaceFn,
-            SlsRemoveWindowsFromSpacesFn, array_from_type_refs, cf_array_from_u64s, cf_array_iter,
-            cf_as_dictionary, cf_dictionary_array, cf_dictionary_dictionary, cf_dictionary_i32,
-            cf_dictionary_string, cf_dictionary_u64, cf_number_from_u64, cf_number_to_u64,
-            cf_string,
+            array_from_type_refs, cf_array_iter, cf_as_dictionary, cf_dictionary_array,
+            cf_dictionary_dictionary, cf_dictionary_i32, cf_dictionary_string,
+            cf_dictionary_u64, cf_number_from_u64, cf_number_to_u64, cf_string,
         };
         use super::{
-            MacosNativeApi, MacosNativeOperationError, MacosNativeProbeError, RawSpaceRecord,
-            RealNativeApi,
+            MacosNativeOperationError, MacosNativeProbeError, RawSpaceRecord, RealNativeApi,
         };
         use std::collections::HashSet;
 
@@ -1202,57 +1192,6 @@ mod macos_window_manager_api {
             ))?;
 
             Ok(payload)
-        }
-
-        pub(crate) fn modify_windows_in_spaces(
-            api: &RealNativeApi,
-            window_ids: &[u64],
-            space_ids: &[u64],
-            add: bool,
-        ) -> Result<bool, MacosNativeProbeError> {
-            let symbol_name = if add {
-                ["SLSAddWindowsToSpaces", "CGSAddWindowsToSpaces"]
-            } else {
-                ["SLSRemoveWindowsFromSpaces", "CGSRemoveWindowsFromSpaces"]
-            };
-            let Some(symbol) = symbol_name
-                .into_iter()
-                .find_map(|name| api.resolve_symbol(name))
-            else {
-                return Ok(false);
-            };
-            let connection_id = main_connection_id(api)?;
-            let window_list = cf_array_from_u64s(window_ids)?;
-            let space_list = cf_array_from_u64s(space_ids)?;
-            let status = if add {
-                let add_windows_to_spaces: SlsAddWindowsToSpacesFn =
-                    unsafe { std::mem::transmute(symbol) };
-                unsafe {
-                    add_windows_to_spaces(
-                        connection_id,
-                        window_list.as_type_ref() as CFArrayRef,
-                        space_list.as_type_ref() as CFArrayRef,
-                    )
-                }
-            } else {
-                let remove_windows_from_spaces: SlsRemoveWindowsFromSpacesFn =
-                    unsafe { std::mem::transmute(symbol) };
-                unsafe {
-                    remove_windows_from_spaces(
-                        connection_id,
-                        window_list.as_type_ref() as CFArrayRef,
-                        space_list.as_type_ref() as CFArrayRef,
-                    )
-                }
-            };
-
-            (status == 0)
-                .then_some(true)
-                .ok_or(MacosNativeProbeError::MissingTopology(if add {
-                    "SLSAddWindowsToSpaces"
-                } else {
-                    "SLSRemoveWindowsFromSpaces"
-                }))
         }
 
         pub(crate) fn switch_space(
@@ -1471,28 +1410,6 @@ mod macos_window_manager_api {
                 .collect()
         }
 
-        pub(crate) fn borrowed_active_space_for_display(
-            api: &RealNativeApi,
-            target_space_id: u64,
-        ) -> Result<Option<u64>, MacosNativeProbeError> {
-            let spaces = MacosNativeApi::managed_spaces(api)?;
-            let active_space_ids = MacosNativeApi::active_space_ids(api)?;
-            let Some(display_index) = spaces
-                .iter()
-                .find(|space| space.managed_space_id == target_space_id)
-                .map(|space| space.display_index)
-            else {
-                return Ok(None);
-            };
-            Ok(active_space_ids.into_iter().find(|space_id| {
-                spaces
-                    .iter()
-                    .find(|space| space.managed_space_id == *space_id)
-                    .map(|space| space.display_index)
-                    == Some(display_index)
-                    && *space_id != target_space_id
-            }))
-        }
     }
 
     pub(super) mod window_server {
@@ -1664,17 +1581,6 @@ mod macos_window_manager_api {
             let descriptions =
                 copy_window_descriptions_raw(api, payload.as_type_ref() as CFArrayRef)?;
             parse_window_descriptions(descriptions.as_type_ref() as CFArrayRef, &visible_order)
-        }
-
-        pub(crate) fn window_descriptions_for_space_without_visible_order(
-            api: &RealNativeApi,
-            space_id: u64,
-        ) -> Result<Vec<RawWindow>, MacosNativeProbeError> {
-            let payload = skylight::copy_windows_for_space_raw(api, space_id)?;
-            let descriptions =
-                copy_window_descriptions_raw(api, payload.as_type_ref() as CFArrayRef)?;
-            parse_window_descriptions(descriptions.as_type_ref() as CFArrayRef, &HashMap::new())
-                .map(enrich_real_window_app_ids)
         }
 
         pub(crate) fn focus_window(
@@ -1877,10 +1783,7 @@ mod macos_window_manager_api {
             MacosNativeOperationError, MacosNativeProbeError, NativeBounds, NativeDesktopSnapshot,
             NativeSpaceSnapshot, NativeWindowSnapshot,
         };
-        use crate::engine::topology::{
-            DirectedRect, Direction, FloatingFocusStrategy, Rect,
-            select_closest_in_direction_with_strategy,
-        };
+        use crate::engine::topology::{Direction, Rect};
         use std::collections::{HashMap, HashSet};
 
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2033,241 +1936,6 @@ mod macos_window_manager_api {
             let mut ordered = windows.to_vec();
             ordered.sort_by(compare_active_windows);
             ordered
-        }
-
-        pub(crate) fn active_directed_rects(
-            topology: &RawTopologySnapshot,
-        ) -> Vec<DirectedRect<u64>> {
-            topology
-                .active_space_windows
-                .values()
-                .flat_map(|windows| {
-                    windows.iter().filter_map(|window| {
-                        is_directional_focus_window(window).then(|| {
-                            window.frame.map(|rect| DirectedRect {
-                                id: window.id,
-                                rect,
-                            })
-                        })?
-                    })
-                })
-                .collect()
-        }
-
-        pub(crate) fn active_directed_rects_for_display(
-            topology: &RawTopologySnapshot,
-            display_index: usize,
-        ) -> Vec<DirectedRect<u64>> {
-            topology
-                .active_space_windows
-                .iter()
-                .filter_map(|(space_id, windows)| {
-                    (display_index_for_space(topology, *space_id) == Some(display_index))
-                        .then_some(windows)
-                })
-                .flat_map(|windows| {
-                    windows.iter().filter_map(|window| {
-                        is_directional_focus_window(window).then(|| {
-                            window.frame.map(|rect| DirectedRect {
-                                id: window.id,
-                                rect,
-                            })
-                        })?
-                    })
-                })
-                .collect()
-        }
-
-        pub(crate) fn active_window_by_id(
-            topology: &RawTopologySnapshot,
-            window_id: u64,
-        ) -> Option<&RawWindow> {
-            topology
-                .active_space_windows
-                .values()
-                .flat_map(|windows| windows.iter())
-                .find(|window| window.id == window_id)
-        }
-
-        fn candidate_extends_in_direction(
-            source: Rect,
-            candidate: Rect,
-            direction: Direction,
-        ) -> bool {
-            match direction {
-                Direction::West => candidate.x < source.x,
-                Direction::East => candidate.x + candidate.w > source.x + source.w,
-                Direction::North => candidate.y < source.y,
-                Direction::South => candidate.y + candidate.h > source.y + source.h,
-            }
-        }
-
-        fn same_space_focus_target_extending_in_direction(
-            topology: &RawTopologySnapshot,
-            focused: &WindowSnapshot,
-            direction: Direction,
-        ) -> Option<u64> {
-            let source = active_window_by_id(topology, focused.id)?;
-            let source_frame = source.frame?;
-            topology
-                .active_space_windows
-                .get(&focused.space_id)?
-                .iter()
-                .filter(|window| window.id != focused.id)
-                .filter(|window| is_directional_focus_window(window))
-                .filter(|window| {
-                    window.frame.is_some_and(|frame| {
-                        candidate_extends_in_direction(source_frame, frame, direction)
-                    })
-                })
-                .max_by(|left, right| compare_windows_for_edge(left, right, direction))
-                .map(|window| window.id)
-        }
-
-        fn focused_window_is_on_outer_edge(
-            active_space_windows: &[RawWindow],
-            focused_id: u64,
-            direction: Direction,
-        ) -> bool {
-            let Some(focused_frame) = active_space_windows
-                .iter()
-                .find(|window| window.id == focused_id)
-                .and_then(|window| window.frame)
-            else {
-                return false;
-            };
-
-            let mut focusable_frames = active_space_windows
-                .iter()
-                .filter(|window| is_directional_focus_window(window))
-                .filter_map(|window| window.frame);
-
-            let Some(extreme_edge) = focusable_frames.next().map(|frame| match direction {
-                Direction::West => frame.x,
-                Direction::East => frame.x + frame.w,
-                Direction::North => frame.y,
-                Direction::South => frame.y + frame.h,
-            }) else {
-                return false;
-            };
-
-            let extreme_edge = focusable_frames.fold(extreme_edge, |current, frame| {
-                let candidate = match direction {
-                    Direction::West => frame.x,
-                    Direction::East => frame.x + frame.w,
-                    Direction::North => frame.y,
-                    Direction::South => frame.y + frame.h,
-                };
-                match direction {
-                    Direction::West | Direction::North => current.min(candidate),
-                    Direction::East | Direction::South => current.max(candidate),
-                }
-            });
-
-            match direction {
-                Direction::West => focused_frame.x == extreme_edge,
-                Direction::East => focused_frame.x + focused_frame.w == extreme_edge,
-                Direction::North => focused_frame.y == extreme_edge,
-                Direction::South => focused_frame.y + focused_frame.h == extreme_edge,
-            }
-        }
-
-        pub(crate) fn ax_backed_same_pid_split_view_target_in_direction(
-            topology: &RawTopologySnapshot,
-            focused: &WindowSnapshot,
-            direction: Direction,
-            pid: u32,
-            ax_window_ids: &HashSet<u64>,
-        ) -> Option<u64> {
-            let focused_space = topology
-                .spaces
-                .iter()
-                .find(|space| space.managed_space_id == focused.space_id)?;
-            if classify_space(focused_space) != SpaceKind::SplitView {
-                return None;
-            }
-
-            let source = active_window_by_id(topology, focused.id)?;
-            let source_frame = source.frame?;
-            topology
-                .active_space_windows
-                .get(&focused.space_id)?
-                .iter()
-                .filter(|window| window.id != focused.id)
-                .filter(|window| window.pid == Some(pid))
-                .filter(|window| ax_window_ids.contains(&window.id))
-                .filter(|window| is_directional_focus_window(window))
-                .filter(|window| {
-                    window.frame.is_some_and(|frame| {
-                        candidate_extends_in_direction(source_frame, frame, direction)
-                    })
-                })
-                .max_by(|left, right| compare_windows_for_edge(left, right, direction))
-                .map(|window| window.id)
-        }
-
-        fn should_escape_to_adjacent_space_from_edge(
-            topology: &RawTopologySnapshot,
-            focused: &WindowSnapshot,
-            direction: Direction,
-            target_id: u64,
-        ) -> bool {
-            if adjacent_space_in_direction(topology, focused.space_id, direction).is_none() {
-                return false;
-            }
-
-            let Some(active_space_windows) = topology.active_space_windows.get(&focused.space_id)
-            else {
-                return false;
-            };
-            if !focused_window_is_on_outer_edge(active_space_windows, focused.id, direction) {
-                return false;
-            }
-
-            let Some(source_frame) =
-                active_window_by_id(topology, focused.id).and_then(|window| window.frame)
-            else {
-                return false;
-            };
-            let Some(target_frame) =
-                active_window_by_id(topology, target_id).and_then(|window| window.frame)
-            else {
-                return false;
-            };
-
-            !candidate_extends_in_direction(source_frame, target_frame, direction)
-        }
-
-        pub(crate) fn directional_focus_target_in_active_topology(
-            topology: &RawTopologySnapshot,
-            focused: &WindowSnapshot,
-            direction: Direction,
-            strategy: FloatingFocusStrategy,
-        ) -> Option<u64> {
-            let focused_space = topology
-                .spaces
-                .iter()
-                .find(|space| space.managed_space_id == focused.space_id)?;
-            if classify_space(focused_space) == SpaceKind::SplitView {
-                return same_space_focus_target_extending_in_direction(
-                    topology, focused, direction,
-                );
-            }
-
-            let rects = display_index_for_space(topology, focused.space_id)
-                .map(|display_index| active_directed_rects_for_display(topology, display_index))
-                .filter(|rects| !rects.is_empty())
-                .unwrap_or_else(|| active_directed_rects(topology));
-            let target_id = select_closest_in_direction_with_strategy(
-                &rects,
-                focused.id,
-                direction,
-                Some(strategy),
-            )?;
-            if should_escape_to_adjacent_space_from_edge(topology, focused, direction, target_id) {
-                return None;
-            }
-            Some(target_id)
         }
 
         fn snapshots_for_active_space(space_id: u64, windows: &[RawWindow]) -> Vec<WindowSnapshot> {
@@ -2596,38 +2264,6 @@ mod macos_window_manager_api {
             (source_focus_window_id, target_window_ids)
         }
 
-        pub(crate) fn adjacent_space_in_direction(
-            topology: &RawTopologySnapshot,
-            source_space_id: u64,
-            direction: Direction,
-        ) -> Option<u64> {
-            let source_space = topology
-                .spaces
-                .iter()
-                .find(|space| space.managed_space_id == source_space_id)?;
-            let display_spaces = topology
-                .spaces
-                .iter()
-                .filter(|space| space.display_index == source_space.display_index)
-                .collect::<Vec<_>>();
-            let source_index = display_spaces
-                .iter()
-                .position(|space| space.managed_space_id == source_space_id)?;
-
-            match direction {
-                Direction::West => display_spaces[..source_index]
-                    .iter()
-                    .rev()
-                    .find(|space| classify_space(space) != SpaceKind::StageManagerOpaque)
-                    .map(|space| space.managed_space_id),
-                Direction::East => display_spaces[source_index + 1..]
-                    .iter()
-                    .find(|space| classify_space(space) != SpaceKind::StageManagerOpaque)
-                    .map(|space| space.managed_space_id),
-                Direction::North | Direction::South => None,
-            }
-        }
-
         pub(crate) fn ensure_supported_target_space(
             topology: &RawTopologySnapshot,
             space_id: u64,
@@ -2752,9 +2388,6 @@ mod macos_window_manager_api {
             &self,
             space_id: u64,
         ) -> Result<Vec<RawWindow>, MacosNativeProbeError>;
-        fn windows_in_space(&self, space_id: u64) -> Result<Vec<RawWindow>, MacosNativeProbeError> {
-            self.active_space_windows(space_id)
-        }
         fn inactive_space_window_ids(
             &self,
         ) -> Result<HashMap<u64, Vec<u64>>, MacosNativeProbeError>;
@@ -3247,74 +2880,6 @@ mod macos_window_manager_api {
         }
     }
 
-    fn focus_direction_target_with_ax_fallback<A: MacosNativeApi + ?Sized>(
-        api: &A,
-        topology: &RawTopologySnapshot,
-        focused: &WindowSnapshot,
-        direction: Direction,
-        target_id: u64,
-        pid: u32,
-    ) -> Result<(), MacosNativeOperationError> {
-        let same_pid_split_view = active_window_pid_from_topology(topology, focused.id)
-            == Some(pid)
-            && topology
-                .spaces
-                .iter()
-                .find(|space| space.managed_space_id == focused.space_id)
-                .is_some_and(|space| classify_space(space) == SpaceKind::SplitView);
-        let mut ax_window_ids = None;
-        let mut focus_target_id = target_id;
-
-        if same_pid_split_view {
-            let ids = api
-                .ax_window_ids_for_pid(pid)?
-                .into_iter()
-                .collect::<HashSet<_>>();
-            if !ids.contains(&target_id) {
-                if let Some(remapped_target_id) = ax_backed_same_pid_split_view_target_in_direction(
-                    topology, focused, direction, pid, &ids,
-                )
-                .filter(|candidate| *candidate != target_id)
-                {
-                    api.debug(&format!(
-                        "macos_native: preflighting split-view target {target_id} to AX-backed sibling {remapped_target_id} for pid {pid}"
-                    ));
-                    focus_target_id = remapped_target_id;
-                }
-            }
-            ax_window_ids = Some(ids);
-        }
-
-        match api.focus_window_with_known_pid(focus_target_id, pid) {
-            Err(MacosNativeOperationError::MissingWindow(missing_window_id))
-                if missing_window_id == focus_target_id =>
-            {
-                let ax_window_ids = match ax_window_ids {
-                    Some(ids) => ids,
-                    None => api
-                        .ax_window_ids_for_pid(pid)?
-                        .into_iter()
-                        .collect::<HashSet<_>>(),
-                };
-                let Some(remapped_target_id) = ax_backed_same_pid_split_view_target_in_direction(
-                    topology,
-                    focused,
-                    direction,
-                    pid,
-                    &ax_window_ids,
-                )
-                .filter(|candidate| *candidate != focus_target_id) else {
-                    return Err(MacosNativeOperationError::MissingWindow(focus_target_id));
-                };
-                api.debug(&format!(
-                    "macos_native: remapping split-view target {focus_target_id} to AX-backed sibling {remapped_target_id} for pid {pid}"
-                ));
-                api.focus_window_with_known_pid(remapped_target_id, pid)
-            }
-            other => other,
-        }
-    }
-
     pub(crate) struct RealNativeApi {
         skylight: Option<DylibHandle>,
         hiservices: Option<DylibHandle>,
@@ -3419,67 +2984,6 @@ mod macos_window_manager_api {
                 descriptions.as_type_ref() as CFArrayRef,
                 &visible_order,
             )
-        }
-
-        fn windows_in_space(&self, space_id: u64) -> Result<Vec<RawWindow>, MacosNativeProbeError> {
-            if self.active_space_ids()?.contains(&space_id) {
-                return self.active_space_windows(space_id);
-            }
-
-            let window_ids = parse_window_ids(
-                skylight::copy_windows_for_space_raw(self, space_id)?.as_type_ref() as CFArrayRef,
-            )?;
-            let mut windows =
-                window_server::window_descriptions_for_space_without_visible_order(self, space_id)?;
-            if !windows.is_empty() || window_ids.is_empty() {
-                return Ok(windows);
-            }
-
-            let Some(active_space_id) =
-                skylight::borrowed_active_space_for_display(self, space_id)?
-            else {
-                self.debug(format!(
-                    "macos_native: no active same-display space available to describe inactive-space windows target_space={space_id}"
-                ));
-                return Ok(windows);
-            };
-            self.debug(format!(
-                "macos_native: temporarily adding inactive-space windows to active space for description target_space={} active_space={} window_ids={:?}",
-                space_id, active_space_id, window_ids
-            ));
-            match skylight::modify_windows_in_spaces(self, &window_ids, &[active_space_id], true) {
-                Ok(true) => {
-                    windows = window_server::window_descriptions_for_space_without_visible_order(
-                        self, space_id,
-                    )?;
-                    if let Err(error) = skylight::modify_windows_in_spaces(
-                        self,
-                        &window_ids,
-                        &[active_space_id],
-                        false,
-                    ) {
-                        self.debug(format!(
-                            "macos_native: failed to remove temporarily borrowed windows from active space active_space={} window_ids={:?}: {}",
-                            active_space_id, window_ids, error
-                        ));
-                    }
-                    self.debug(format!(
-                        "macos_native: borrowed inactive-space descriptions target_space={} active_space={} described_windows={}",
-                        space_id,
-                        active_space_id,
-                        windows.len()
-                    ));
-                    Ok(windows)
-                }
-                Ok(false) => Ok(windows),
-                Err(error) => {
-                    self.debug(format!(
-                        "macos_native: add-windows-to-spaces fallback failed target_space={} active_space={} window_ids={:?}: {}",
-                        space_id, active_space_id, window_ids, error
-                    ));
-                    Ok(windows)
-                }
-            }
         }
 
         fn inactive_space_window_ids(
@@ -6620,14 +6124,6 @@ mod tests {
                 .unwrap_or_default())
         }
 
-        fn windows_in_space(&self, space_id: u64) -> Result<Vec<RawWindow>, MacosNativeProbeError> {
-            Ok(self
-                .described_space_windows
-                .get(&space_id)
-                .cloned()
-                .unwrap_or_default())
-        }
-
         fn inactive_space_window_ids(
             &self,
         ) -> Result<HashMap<u64, Vec<u64>>, MacosNativeProbeError> {
@@ -8312,6 +7808,7 @@ command = false
             "focused_window_record(",
             "focused_app_record(",
             "window_records(",
+            "windows_in_space(",
             "swap_directional_neighbor(",
             "move_window_to_space_checked(",
         ] {
@@ -8486,6 +7983,22 @@ command = false
             assert!(
                 !present,
                 "outer production adapter code should not reference raw focus fallback detail {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn source_removes_transitional_backend_helpers() {
+        let backend = backend_module_source();
+
+        for forbidden in [
+            "fn directional_focus_target_in_active_topology(",
+            "fn adjacent_space_in_direction(",
+            "fn focus_direction_target_with_ax_fallback(",
+        ] {
+            assert!(
+                !backend.contains(forbidden),
+                "backend module should not retain transitional helper {forbidden}"
             );
         }
     }
