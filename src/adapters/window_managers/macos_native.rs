@@ -13,11 +13,11 @@ use anyhow::{Context, bail};
 use macos_window_manager_api::{
     MacosNativeApi, MacosNativeConnectError, MacosNativeOperationError, MacosNativeProbeError,
     MissionControlHotkey, MissionControlModifiers, NativeBackendOptions, NativeBounds,
+    NativeDirection,
     NativeDesktopSnapshot, NativeDiagnostics, NativeWindowSnapshot, RealNativeApi,
 };
 
 mod macos_window_manager_api {
-    use crate::engine::topology::{Direction, Rect};
     use std::{
         collections::{HashMap, HashSet},
         ffi::{CString, c_void},
@@ -69,6 +69,26 @@ mod macos_window_manager_api {
     }
 
     #[allow(dead_code)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) enum NativeDirection {
+        West,
+        East,
+        North,
+        South,
+    }
+
+    impl std::fmt::Display for NativeDirection {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                Self::West => f.write_str("west"),
+                Self::East => f.write_str("east"),
+                Self::North => f.write_str("north"),
+                Self::South => f.write_str("south"),
+            }
+        }
+    }
+
+    #[allow(dead_code)]
     #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
     pub(crate) struct MissionControlModifiers {
         pub(crate) control: bool,
@@ -100,9 +120,8 @@ mod macos_window_manager_api {
     pub(super) mod foundation {
         use super::{
             MacosNativeOperationError, MacosNativeProbeError, MissionControlHotkey,
-            MissionControlModifiers, NativeBackendOptions,
+            MissionControlModifiers, NativeBackendOptions, NativeDirection,
         };
-        use crate::engine::topology::Direction;
         use core_foundation::{
             array::CFArray,
             base::{CFType, TCFType},
@@ -331,20 +350,22 @@ mod macos_window_manager_api {
 
         fn mission_control_shortcut(
             options: &NativeBackendOptions,
-            direction: Direction,
+            direction: NativeDirection,
         ) -> Result<MissionControlHotkey, MacosNativeOperationError> {
             match direction {
-                Direction::West => Ok(options.west_space_hotkey),
-                Direction::East => Ok(options.east_space_hotkey),
-                Direction::North | Direction::South => Err(MacosNativeOperationError::CallFailed(
+                NativeDirection::West => Ok(options.west_space_hotkey),
+                NativeDirection::East => Ok(options.east_space_hotkey),
+                NativeDirection::North | NativeDirection::South => {
+                    Err(MacosNativeOperationError::CallFailed(
                     "adjacent_space_hotkey_direction",
-                )),
+                ))
+                }
             }
         }
 
         fn configured_mission_control_shortcut(
             options: &NativeBackendOptions,
-            direction: Direction,
+            direction: NativeDirection,
         ) -> Result<(CGKeyCode, CGEventFlags), MacosNativeOperationError> {
             let shortcut = mission_control_shortcut(options, direction)?;
             Ok((
@@ -355,7 +376,7 @@ mod macos_window_manager_api {
 
         pub(crate) fn switch_adjacent_space_via_hotkey<PostKeyEvent>(
             options: &NativeBackendOptions,
-            direction: Direction,
+            direction: NativeDirection,
             mut post_key_event: PostKeyEvent,
         ) -> Result<(), MacosNativeOperationError>
         where
@@ -636,9 +657,9 @@ mod macos_window_manager_api {
         };
         use super::window_server;
         use super::{
-            MacosNativeApi, MacosNativeOperationError, MacosNativeProbeError, RealNativeApi,
+            MacosNativeApi, MacosNativeOperationError, MacosNativeProbeError, NativeBounds,
+            RealNativeApi,
         };
-        use crate::engine::topology::Rect;
         use std::{
             ffi::{c_int, c_void},
             ptr,
@@ -932,7 +953,7 @@ mod macos_window_manager_api {
             api: &RealNativeApi,
             window_id: u64,
             pid: u32,
-            frame: Rect,
+            frame: NativeBounds,
         ) -> Result<(), MacosNativeOperationError> {
             let window = copy_window_ax_for_id(api, pid, window_id)?;
             let position_attr = cf_string("AXPosition").map_err(MacosNativeOperationError::from)?;
@@ -963,8 +984,8 @@ mod macos_window_manager_api {
             }
 
             let size = CGSize {
-                width: f64::from(frame.w),
-                height: f64::from(frame.h),
+                width: f64::from(frame.width),
+                height: f64::from(frame.height),
             };
             let size_value = unsafe {
                 CfOwned::from_create_rule(AXValueCreate(
@@ -991,9 +1012,9 @@ mod macos_window_manager_api {
         pub(crate) fn swap_window_frames(
             api: &RealNativeApi,
             source_window_id: u64,
-            source_frame: Rect,
+            source_frame: NativeBounds,
             target_window_id: u64,
-            target_frame: Rect,
+            target_frame: NativeBounds,
         ) -> Result<(), MacosNativeOperationError> {
             let source = window_server::window_description(api, source_window_id)?;
             let source_pid = source
@@ -1014,7 +1035,7 @@ mod macos_window_manager_api {
     }
 
     pub(super) mod error {
-        use crate::engine::topology::Direction;
+        use super::NativeDirection;
         use thiserror::Error;
 
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
@@ -1050,9 +1071,9 @@ mod macos_window_manager_api {
             #[error("macOS native Stage Manager space {0} is intentionally unsupported")]
             UnsupportedStageManagerSpace(u64),
             #[error("macos_native: no window to focus {0}")]
-            NoDirectionalFocusTarget(Direction),
+            NoDirectionalFocusTarget(NativeDirection),
             #[error("macos_native: no window to move {0}")]
-            NoDirectionalMoveTarget(Direction),
+            NoDirectionalMoveTarget(NativeDirection),
             #[error("macOS native operation failed: {0}")]
             CallFailed(&'static str),
         }
@@ -1427,10 +1448,10 @@ mod macos_window_manager_api {
         };
         use super::skylight;
         use super::{
-            MacosNativeOperationError, MacosNativeProbeError, RawWindow, RealNativeApi,
+            MacosNativeOperationError, MacosNativeProbeError, NativeBounds, RawWindow,
+            RealNativeApi,
             enrich_real_window_app_ids, focus_window_via_process_and_raise,
         };
-        use crate::engine::topology::Rect;
         use std::{
             collections::{HashMap, HashSet},
             ffi::{c_int, c_void},
@@ -1762,18 +1783,18 @@ mod macos_window_manager_api {
             unsafe { core_graphics::window::kCGWindowBounds as CFStringRef }
         }
 
-        fn cg_window_bounds(description: CFDictionaryRef) -> Option<Rect> {
+        fn cg_window_bounds(description: CFDictionaryRef) -> Option<NativeBounds> {
             let bounds = cf_dictionary_dictionary(description, cg_window_bounds_key())?;
             let x_key = cf_string("X").ok()?;
             let y_key = cf_string("Y").ok()?;
             let width_key = cf_string("Width").ok()?;
             let height_key = cf_string("Height").ok()?;
 
-            Some(Rect {
+            Some(NativeBounds {
                 x: cf_dictionary_i32(bounds, x_key.as_type_ref() as CFStringRef)?,
                 y: cf_dictionary_i32(bounds, y_key.as_type_ref() as CFStringRef)?,
-                w: cf_dictionary_i32(bounds, width_key.as_type_ref() as CFStringRef)?,
-                h: cf_dictionary_i32(bounds, height_key.as_type_ref() as CFStringRef)?,
+                width: cf_dictionary_i32(bounds, width_key.as_type_ref() as CFStringRef)?,
+                height: cf_dictionary_i32(bounds, height_key.as_type_ref() as CFStringRef)?,
             })
         }
     }
@@ -1781,9 +1802,8 @@ mod macos_window_manager_api {
     mod desktop_topology_snapshot {
         use super::{
             MacosNativeOperationError, MacosNativeProbeError, NativeBounds, NativeDesktopSnapshot,
-            NativeSpaceSnapshot, NativeWindowSnapshot,
+            NativeDirection, NativeSpaceSnapshot, NativeWindowSnapshot,
         };
-        use crate::engine::topology::{Direction, Rect};
         use std::collections::{HashMap, HashSet};
 
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1826,7 +1846,7 @@ mod macos_window_manager_api {
             pub(crate) title: Option<String>,
             pub(crate) level: i32,
             pub(crate) visible_index: Option<usize>,
-            pub(crate) frame: Option<Rect>,
+            pub(crate) frame: Option<NativeBounds>,
         }
 
         #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1991,16 +2011,6 @@ mod macos_window_manager_api {
         }
 
         #[allow(dead_code)]
-        fn native_bounds_from_rect(rect: Rect) -> NativeBounds {
-            NativeBounds {
-                x: rect.x,
-                y: rect.y,
-                width: rect.w,
-                height: rect.h,
-            }
-        }
-
-        #[allow(dead_code)]
         pub(crate) fn native_desktop_snapshot_from_topology(
             topology: &RawTopologySnapshot,
         ) -> NativeDesktopSnapshot {
@@ -2033,7 +2043,7 @@ mod macos_window_manager_api {
                             pid: window.pid,
                             app_id: window.app_id,
                             title: window.title,
-                            bounds: window.frame.map(native_bounds_from_rect),
+                            bounds: window.frame,
                             space_id: space.managed_space_id,
                             order_index: Some(index),
                         }),
@@ -2197,7 +2207,7 @@ mod macos_window_manager_api {
         }
 
         pub(crate) fn best_window_id_from_windows(
-            direction: Direction,
+            direction: NativeDirection,
             windows: &[RawWindow],
         ) -> Option<u64> {
             let focusable_windows = windows
@@ -2219,7 +2229,7 @@ mod macos_window_manager_api {
 
         pub(crate) fn edge_window_id_in_direction(
             windows: &[RawWindow],
-            direction: Direction,
+            direction: NativeDirection,
         ) -> Option<u64> {
             windows
                 .iter()
@@ -2231,19 +2241,19 @@ mod macos_window_manager_api {
         pub(crate) fn compare_windows_for_edge(
             left: &RawWindow,
             right: &RawWindow,
-            direction: Direction,
+            direction: NativeDirection,
         ) -> std::cmp::Ordering {
             let left_frame = left.frame.expect("frame should be present");
             let right_frame = right.frame.expect("frame should be present");
 
             match direction {
-                Direction::East => {
-                    (left_frame.x + left_frame.w).cmp(&(right_frame.x + right_frame.w))
+                NativeDirection::East => {
+                    (left_frame.x + left_frame.width).cmp(&(right_frame.x + right_frame.width))
                 }
-                Direction::West => right_frame.x.cmp(&left_frame.x),
-                Direction::North => right_frame.y.cmp(&left_frame.y),
-                Direction::South => {
-                    (left_frame.y + left_frame.h).cmp(&(right_frame.y + right_frame.h))
+                NativeDirection::West => right_frame.x.cmp(&left_frame.x),
+                NativeDirection::North => right_frame.y.cmp(&left_frame.y),
+                NativeDirection::South => {
+                    (left_frame.y + left_frame.height).cmp(&(right_frame.y + right_frame.height))
                 }
             }
             .then_with(|| compare_active_windows(right, left))
@@ -2418,7 +2428,7 @@ mod macos_window_manager_api {
         fn switch_space(&self, space_id: u64) -> Result<(), MacosNativeOperationError>;
         fn switch_adjacent_space(
             &self,
-            _direction: Direction,
+            _direction: NativeDirection,
             space_id: u64,
         ) -> Result<(), MacosNativeOperationError> {
             self.switch_space(space_id)
@@ -2442,14 +2452,14 @@ mod macos_window_manager_api {
             &self,
             snapshot: &NativeDesktopSnapshot,
             space_id: u64,
-            adjacent_direction: Option<Direction>,
+            adjacent_direction: Option<NativeDirection>,
         ) -> Result<(), MacosNativeOperationError> {
             switch_space_in_snapshot(self, snapshot, space_id, adjacent_direction)
         }
         fn focus_same_space_target_in_snapshot(
             &self,
             snapshot: &NativeDesktopSnapshot,
-            direction: Direction,
+            direction: NativeDirection,
             target_window_id: u64,
         ) -> Result<(), MacosNativeOperationError> {
             focus_same_space_target_in_snapshot(self, snapshot, direction, target_window_id)
@@ -2507,9 +2517,9 @@ mod macos_window_manager_api {
         fn swap_window_frames(
             &self,
             source_window_id: u64,
-            source_frame: Rect,
+            source_frame: NativeBounds,
             target_window_id: u64,
-            target_frame: Rect,
+            target_frame: NativeBounds,
         ) -> Result<(), MacosNativeOperationError>;
 
         fn topology_snapshot(&self) -> Result<RawTopologySnapshot, MacosNativeProbeError> {
@@ -2595,7 +2605,7 @@ mod macos_window_manager_api {
         api: &A,
         snapshot: &NativeDesktopSnapshot,
         space_id: u64,
-        adjacent_direction: Option<Direction>,
+        adjacent_direction: Option<NativeDirection>,
     ) -> Result<(), MacosNativeOperationError> {
         let Some(target_space) = snapshot.spaces.iter().find(|space| space.id == space_id) else {
             return Err(MacosNativeOperationError::MissingSpace(space_id));
@@ -2708,40 +2718,36 @@ mod macos_window_manager_api {
     }
 
     fn native_candidate_extends_in_direction(
-        source: Rect,
-        candidate: Rect,
-        direction: Direction,
+        source: NativeBounds,
+        candidate: NativeBounds,
+        direction: NativeDirection,
     ) -> bool {
         match direction {
-            Direction::West => candidate.x < source.x,
-            Direction::East => candidate.x + candidate.w > source.x + source.w,
-            Direction::North => candidate.y < source.y,
-            Direction::South => candidate.y + candidate.h > source.y + source.h,
+            NativeDirection::West => candidate.x < source.x,
+            NativeDirection::East => candidate.x + candidate.width > source.x + source.width,
+            NativeDirection::North => candidate.y < source.y,
+            NativeDirection::South => {
+                candidate.y + candidate.height > source.y + source.height
+            }
         }
     }
 
     fn compare_native_windows_for_edge(
         left: &NativeWindowSnapshot,
         right: &NativeWindowSnapshot,
-        direction: Direction,
+        direction: NativeDirection,
     ) -> std::cmp::Ordering {
-        let left_bounds = left
-            .bounds
-            .map(super::rect_from_native)
-            .expect("bounds should be present");
-        let right_bounds = right
-            .bounds
-            .map(super::rect_from_native)
-            .expect("bounds should be present");
+        let left_bounds = left.bounds.expect("bounds should be present");
+        let right_bounds = right.bounds.expect("bounds should be present");
 
         match direction {
-            Direction::East => {
-                (left_bounds.x + left_bounds.w).cmp(&(right_bounds.x + right_bounds.w))
+            NativeDirection::East => {
+                (left_bounds.x + left_bounds.width).cmp(&(right_bounds.x + right_bounds.width))
             }
-            Direction::West => right_bounds.x.cmp(&left_bounds.x),
-            Direction::North => right_bounds.y.cmp(&left_bounds.y),
-            Direction::South => {
-                (left_bounds.y + left_bounds.h).cmp(&(right_bounds.y + right_bounds.h))
+            NativeDirection::West => right_bounds.x.cmp(&left_bounds.x),
+            NativeDirection::North => right_bounds.y.cmp(&left_bounds.y),
+            NativeDirection::South => {
+                (left_bounds.y + left_bounds.height).cmp(&(right_bounds.y + right_bounds.height))
             }
         }
         .then_with(|| super::compare_native_active_windows(right, left))
@@ -2749,7 +2755,7 @@ mod macos_window_manager_api {
 
     fn native_ax_backed_same_pid_target(
         snapshot: &NativeDesktopSnapshot,
-        direction: Direction,
+        direction: NativeDirection,
         pid: u32,
         ax_window_ids: &HashSet<u64>,
     ) -> Option<u64> {
@@ -2759,7 +2765,7 @@ mod macos_window_manager_api {
             return None;
         }
 
-        let source_bounds = focused.bounds.map(super::rect_from_native)?;
+        let source_bounds = focused.bounds?;
         snapshot
             .windows
             .iter()
@@ -2769,11 +2775,7 @@ mod macos_window_manager_api {
             .filter(|window| ax_window_ids.contains(&window.id))
             .filter(|window| {
                 window.bounds.is_some_and(|bounds| {
-                    native_candidate_extends_in_direction(
-                        source_bounds,
-                        super::rect_from_native(bounds),
-                        direction,
-                    )
+                    native_candidate_extends_in_direction(source_bounds, bounds, direction)
                 })
             })
             .max_by(|left, right| compare_native_windows_for_edge(left, right, direction))
@@ -2782,7 +2784,7 @@ mod macos_window_manager_api {
 
     fn split_view_same_space_focus_target(
         snapshot: &NativeDesktopSnapshot,
-        direction: Direction,
+        direction: NativeDirection,
     ) -> Option<u64> {
         let focused = super::resolved_focused_native_window(snapshot).ok()?;
         let focused_space = native_space(snapshot, focused.space_id)?;
@@ -2790,7 +2792,7 @@ mod macos_window_manager_api {
             return None;
         }
 
-        let source_bounds = focused.bounds.map(super::rect_from_native)?;
+        let source_bounds = focused.bounds?;
         snapshot
             .windows
             .iter()
@@ -2798,11 +2800,7 @@ mod macos_window_manager_api {
             .filter(|window| window.space_id == focused.space_id)
             .filter(|window| {
                 window.bounds.is_some_and(|bounds| {
-                    native_candidate_extends_in_direction(
-                        source_bounds,
-                        super::rect_from_native(bounds),
-                        direction,
-                    )
+                    native_candidate_extends_in_direction(source_bounds, bounds, direction)
                 })
             })
             .max_by(|left, right| compare_native_windows_for_edge(left, right, direction))
@@ -2812,7 +2810,7 @@ mod macos_window_manager_api {
     fn focus_same_space_target_in_snapshot<A: MacosNativeApi + ?Sized>(
         api: &A,
         snapshot: &NativeDesktopSnapshot,
-        direction: Direction,
+        direction: NativeDirection,
         target_window_id: u64,
     ) -> Result<(), MacosNativeOperationError> {
         let focus_target_id =
@@ -2828,7 +2826,7 @@ mod macos_window_manager_api {
     fn focus_same_space_target_with_known_pid<A: MacosNativeApi + ?Sized>(
         api: &A,
         snapshot: &NativeDesktopSnapshot,
-        direction: Direction,
+        direction: NativeDirection,
         target_window_id: u64,
         pid: u32,
     ) -> Result<(), MacosNativeOperationError> {
@@ -3019,7 +3017,7 @@ mod macos_window_manager_api {
 
         fn switch_adjacent_space(
             &self,
-            direction: Direction,
+            direction: NativeDirection,
             _space_id: u64,
         ) -> Result<(), MacosNativeOperationError> {
             self.debug(&format!(
@@ -3136,9 +3134,9 @@ mod macos_window_manager_api {
         fn swap_window_frames(
             &self,
             source_window_id: u64,
-            source_frame: Rect,
+            source_frame: NativeBounds,
             target_window_id: u64,
-            target_frame: Rect,
+            target_frame: NativeBounds,
         ) -> Result<(), MacosNativeOperationError> {
             ax::swap_window_frames(
                 self,
@@ -3475,9 +3473,9 @@ where
                 .api
                 .swap_window_frames(
                     source_window_id,
-                    source_frame,
+                    native_bounds_from_outer(source_frame),
                     target_window_id,
-                    target_frame,
+                    native_bounds_from_outer(target_frame),
                 )
                 .map_err(anyhow::Error::new),
             MoveTarget::CrossSpace {
@@ -3562,6 +3560,15 @@ fn mission_control_hotkey_from_config(direction: Direction) -> MissionControlHot
             shift: shortcut.shift,
             function: shortcut.r#fn,
         },
+    }
+}
+
+fn native_direction_from_outer(direction: Direction) -> NativeDirection {
+    match direction {
+        Direction::West => NativeDirection::West,
+        Direction::East => NativeDirection::East,
+        Direction::North => NativeDirection::North,
+        Direction::South => NativeDirection::South,
     }
 }
 
@@ -3655,6 +3662,15 @@ enum MoveTarget {
         window_id: u64,
         target_space_id: u64,
     },
+}
+
+fn native_bounds_from_outer(rect: Rect) -> NativeBounds {
+    NativeBounds {
+        x: rect.x,
+        y: rect.y,
+        width: rect.w,
+        height: rect.h,
+    }
 }
 
 #[allow(dead_code)]
@@ -4000,6 +4016,7 @@ fn select_focus_target_from_outer_topology(
     direction: Direction,
     strategy: crate::engine::topology::FloatingFocusStrategy,
 ) -> anyhow::Result<FocusTarget> {
+    let native_direction = native_direction_from_outer(direction);
     let focused = resolved_outer_focused_window(topology)?;
     let target_window_id = outer_same_space_focus_target(topology, direction, strategy);
 
@@ -4010,7 +4027,7 @@ fn select_focus_target_from_outer_topology(
     let target_space_id = outer_adjacent_space_in_direction(topology, focused.space_id, direction)
         .ok_or_else(|| {
             anyhow::Error::new(MacosNativeOperationError::NoDirectionalFocusTarget(
-                direction,
+                native_direction,
             ))
         })?;
     let target_space = outer_space(topology, target_space_id).ok_or_else(|| {
@@ -4029,6 +4046,7 @@ fn select_move_target_from_outer_topology(
     topology: &OuterMacosTopology,
     direction: Direction,
 ) -> anyhow::Result<MoveTarget> {
+    let native_direction = native_direction_from_outer(direction);
     let focused = resolved_outer_focused_window(topology)?;
 
     if let Some(target) = outer_same_space_move_target(topology, direction)? {
@@ -4038,7 +4056,7 @@ fn select_move_target_from_outer_topology(
     let target_space_id = outer_adjacent_space_in_direction(topology, focused.space_id, direction)
         .ok_or_else(|| {
             anyhow::Error::new(MacosNativeOperationError::NoDirectionalMoveTarget(
-                direction,
+                native_direction,
             ))
         })?;
     let target_space = outer_space(topology, target_space_id).ok_or_else(|| {
@@ -4206,17 +4224,18 @@ where
             .expect("macos_native floating focus strategy should be validated at config load");
         let snapshot = self.ctx.api.desktop_snapshot().map_err(map_probe_error)?;
         let topology = outer_topology_from_native_snapshot(&snapshot)?;
+        let native_direction = native_direction_from_outer(direction);
 
         match select_focus_target_from_outer_topology(&topology, direction, strategy)? {
             FocusTarget::SameSpace { window_id } => self
                 .ctx
                 .api
-                .focus_same_space_target_in_snapshot(&snapshot, direction, window_id)
+                .focus_same_space_target_in_snapshot(&snapshot, native_direction, window_id)
                 .map_err(anyhow::Error::new),
             FocusTarget::CrossSpace { target_space_id } => {
                 self.ctx
                     .api
-                    .switch_space_in_snapshot(&snapshot, target_space_id, Some(direction))
+                    .switch_space_in_snapshot(&snapshot, target_space_id, Some(native_direction))
                     .map_err(anyhow::Error::new)?;
                 let switched_snapshot = self.ctx.api.desktop_snapshot().map_err(map_probe_error)?;
                 let switched_topology = outer_topology_from_native_snapshot(&switched_snapshot)?;
@@ -4292,7 +4311,7 @@ mod tests {
             &self,
             topology: &RawTopologySnapshot,
             space_id: u64,
-            adjacent_direction: Option<Direction>,
+            adjacent_direction: Option<NativeDirection>,
         ) -> Result<(), MacosNativeOperationError> {
             ensure_supported_target_space(topology, space_id)?;
 
@@ -4655,9 +4674,9 @@ mod tests {
         fn swap_window_frames(
             &self,
             source_window_id: u64,
-            _source_frame: Rect,
+            _source_frame: NativeBounds,
             target_window_id: u64,
-            _target_frame: Rect,
+            _target_frame: NativeBounds,
         ) -> Result<(), MacosNativeOperationError> {
             self.calls.borrow_mut().push(format!(
                 "swap_window_frames:{source_window_id}:{target_window_id}"
@@ -4729,9 +4748,9 @@ mod tests {
         fn swap_window_frames(
             &self,
             _source_window_id: u64,
-            _source_frame: Rect,
+            _source_frame: NativeBounds,
             _target_window_id: u64,
-            _target_frame: Rect,
+            _target_frame: NativeBounds,
         ) -> Result<(), MacosNativeOperationError> {
             Ok(())
         }
@@ -4831,9 +4850,9 @@ mod tests {
         fn swap_window_frames(
             &self,
             source_window_id: u64,
-            _source_frame: Rect,
+            _source_frame: NativeBounds,
             target_window_id: u64,
-            _target_frame: Rect,
+            _target_frame: NativeBounds,
         ) -> Result<(), MacosNativeOperationError> {
             self.calls.lock().unwrap().push(format!(
                 "swap_window_frames:{source_window_id}:{target_window_id}"
@@ -4849,8 +4868,8 @@ mod tests {
     #[derive(Debug, Clone, PartialEq, Eq)]
     enum NativeCall {
         DesktopSnapshot,
-        SwitchSpaceInSnapshot(u64, Option<Direction>),
-        FocusSameSpaceTargetInSnapshot(Direction, u64),
+        SwitchSpaceInSnapshot(u64, Option<NativeDirection>),
+        FocusSameSpaceTargetInSnapshot(NativeDirection, u64),
         FocusWindowWithPid(u64, u32),
         SwapWindowFrames { source: u64, target: u64 },
         MoveWindowToSpace { window_id: u64, space_id: u64 },
@@ -4945,9 +4964,9 @@ mod tests {
         fn swap_window_frames(
             &self,
             _source_window_id: u64,
-            _source_frame: Rect,
+            _source_frame: NativeBounds,
             _target_window_id: u64,
-            _target_frame: Rect,
+            _target_frame: NativeBounds,
         ) -> Result<(), MacosNativeOperationError> {
             Ok(())
         }
@@ -5017,7 +5036,7 @@ mod tests {
             &self,
             _snapshot: &NativeDesktopSnapshot,
             space_id: u64,
-            adjacent_direction: Option<Direction>,
+            adjacent_direction: Option<NativeDirection>,
         ) -> Result<(), MacosNativeOperationError> {
             self.calls
                 .lock()
@@ -5056,9 +5075,9 @@ mod tests {
         fn swap_window_frames(
             &self,
             _source_window_id: u64,
-            _source_frame: Rect,
+            _source_frame: NativeBounds,
             _target_window_id: u64,
-            _target_frame: Rect,
+            _target_frame: NativeBounds,
         ) -> Result<(), MacosNativeOperationError> {
             Ok(())
         }
@@ -5141,7 +5160,7 @@ mod tests {
         fn focus_same_space_target_in_snapshot(
             &self,
             _snapshot: &NativeDesktopSnapshot,
-            direction: Direction,
+            direction: NativeDirection,
             target_window_id: u64,
         ) -> Result<(), MacosNativeOperationError> {
             self.calls
@@ -5165,9 +5184,9 @@ mod tests {
         fn swap_window_frames(
             &self,
             _source_window_id: u64,
-            _source_frame: Rect,
+            _source_frame: NativeBounds,
             _target_window_id: u64,
-            _target_frame: Rect,
+            _target_frame: NativeBounds,
         ) -> Result<(), MacosNativeOperationError> {
             Ok(())
         }
@@ -5257,9 +5276,9 @@ mod tests {
         fn swap_window_frames(
             &self,
             source_window_id: u64,
-            _source_frame: Rect,
+            _source_frame: NativeBounds,
             target_window_id: u64,
-            _target_frame: Rect,
+            _target_frame: NativeBounds,
         ) -> Result<(), MacosNativeOperationError> {
             self.calls
                 .lock()
@@ -5366,9 +5385,9 @@ mod tests {
         fn swap_window_frames(
             &self,
             source_window_id: u64,
-            _source_frame: Rect,
+            _source_frame: NativeBounds,
             target_window_id: u64,
-            _target_frame: Rect,
+            _target_frame: NativeBounds,
         ) -> Result<(), MacosNativeOperationError> {
             self.calls.lock().unwrap().push(format!(
                 "swap_window_frames:{source_window_id}:{target_window_id}"
@@ -5494,9 +5513,9 @@ mod tests {
         fn swap_window_frames(
             &self,
             source_window_id: u64,
-            _source_frame: Rect,
+            _source_frame: NativeBounds,
             target_window_id: u64,
-            _target_frame: Rect,
+            _target_frame: NativeBounds,
         ) -> Result<(), MacosNativeOperationError> {
             self.calls.borrow_mut().push(format!(
                 "swap_window_frames:{source_window_id}:{target_window_id}"
@@ -5662,9 +5681,9 @@ mod tests {
         fn swap_window_frames(
             &self,
             source_window_id: u64,
-            _source_frame: Rect,
+            _source_frame: NativeBounds,
             target_window_id: u64,
-            _target_frame: Rect,
+            _target_frame: NativeBounds,
         ) -> Result<(), MacosNativeOperationError> {
             self.calls.borrow_mut().push(format!(
                 "swap_window_frames:{source_window_id}:{target_window_id}"
@@ -5793,9 +5812,9 @@ mod tests {
         fn swap_window_frames(
             &self,
             source_window_id: u64,
-            _source_frame: Rect,
+            _source_frame: NativeBounds,
             target_window_id: u64,
-            _target_frame: Rect,
+            _target_frame: NativeBounds,
         ) -> Result<(), MacosNativeOperationError> {
             self.calls.borrow_mut().push(format!(
                 "swap_window_frames:{source_window_id}:{target_window_id}"
@@ -5924,9 +5943,9 @@ mod tests {
         fn swap_window_frames(
             &self,
             _source_window_id: u64,
-            _source_frame: Rect,
+            _source_frame: NativeBounds,
             _target_window_id: u64,
-            _target_frame: Rect,
+            _target_frame: NativeBounds,
         ) -> Result<(), MacosNativeOperationError> {
             Ok(())
         }
@@ -6056,9 +6075,9 @@ mod tests {
         fn swap_window_frames(
             &self,
             _source_window_id: u64,
-            _source_frame: Rect,
+            _source_frame: NativeBounds,
             _target_window_id: u64,
-            _target_frame: Rect,
+            _target_frame: NativeBounds,
         ) -> Result<(), MacosNativeOperationError> {
             Ok(())
         }
@@ -6182,9 +6201,9 @@ mod tests {
         fn swap_window_frames(
             &self,
             _source_window_id: u64,
-            _source_frame: Rect,
+            _source_frame: NativeBounds,
             _target_window_id: u64,
-            _target_frame: Rect,
+            _target_frame: NativeBounds,
         ) -> Result<(), MacosNativeOperationError> {
             Ok(())
         }
@@ -6255,9 +6274,9 @@ mod tests {
         fn swap_window_frames(
             &self,
             _source_window_id: u64,
-            _source_frame: Rect,
+            _source_frame: NativeBounds,
             _target_window_id: u64,
-            _target_frame: Rect,
+            _target_frame: NativeBounds,
         ) -> Result<(), MacosNativeOperationError> {
             Ok(())
         }
@@ -6357,9 +6376,9 @@ mod tests {
         fn swap_window_frames(
             &self,
             _source_window_id: u64,
-            _source_frame: Rect,
+            _source_frame: NativeBounds,
             _target_window_id: u64,
-            _target_frame: Rect,
+            _target_frame: NativeBounds,
         ) -> Result<(), MacosNativeOperationError> {
             Ok(())
         }
@@ -6472,9 +6491,9 @@ mod tests {
         fn swap_window_frames(
             &self,
             _source_window_id: u64,
-            _source_frame: Rect,
+            _source_frame: NativeBounds,
             _target_window_id: u64,
-            _target_frame: Rect,
+            _target_frame: NativeBounds,
         ) -> Result<(), MacosNativeOperationError> {
             Ok(())
         }
@@ -6591,9 +6610,9 @@ mod tests {
         fn swap_window_frames(
             &self,
             _source_window_id: u64,
-            _source_frame: Rect,
+            _source_frame: NativeBounds,
             _target_window_id: u64,
-            _target_frame: Rect,
+            _target_frame: NativeBounds,
         ) -> Result<(), MacosNativeOperationError> {
             Ok(())
         }
@@ -6710,9 +6729,9 @@ mod tests {
         fn swap_window_frames(
             &self,
             _source_window_id: u64,
-            _source_frame: Rect,
+            _source_frame: NativeBounds,
             _target_window_id: u64,
-            _target_frame: Rect,
+            _target_frame: NativeBounds,
         ) -> Result<(), MacosNativeOperationError> {
             Ok(())
         }
@@ -6824,7 +6843,7 @@ mod tests {
 
         fn switch_adjacent_space(
             &self,
-            _direction: Direction,
+            _direction: NativeDirection,
             space_id: u64,
         ) -> Result<(), MacosNativeOperationError> {
             *self.current_space_id.borrow_mut() = space_id;
@@ -6855,9 +6874,9 @@ mod tests {
         fn swap_window_frames(
             &self,
             _source_window_id: u64,
-            _source_frame: Rect,
+            _source_frame: NativeBounds,
             _target_window_id: u64,
-            _target_frame: Rect,
+            _target_frame: NativeBounds,
         ) -> Result<(), MacosNativeOperationError> {
             Ok(())
         }
@@ -6947,7 +6966,7 @@ mod tests {
 
         fn switch_adjacent_space(
             &self,
-            direction: Direction,
+            direction: NativeDirection,
             space_id: u64,
         ) -> Result<(), MacosNativeOperationError> {
             self.calls
@@ -6975,9 +6994,9 @@ mod tests {
         fn swap_window_frames(
             &self,
             _source_window_id: u64,
-            _source_frame: Rect,
+            _source_frame: NativeBounds,
             _target_window_id: u64,
-            _target_frame: Rect,
+            _target_frame: NativeBounds,
         ) -> Result<(), MacosNativeOperationError> {
             Ok(())
         }
@@ -7013,12 +7032,7 @@ mod tests {
                             pid: window.pid,
                             app_id: window.app_id,
                             title: window.title,
-                            bounds: window.frame.map(|rect| NativeBounds {
-                                x: rect.x,
-                                y: rect.y,
-                                width: rect.w,
-                                height: rect.h,
-                            }),
+                            bounds: window.frame,
                             space_id,
                             order_index: Some(order_index),
                         }),
@@ -7093,9 +7107,9 @@ mod tests {
         fn swap_window_frames(
             &self,
             _source_window_id: u64,
-            _source_frame: Rect,
+            _source_frame: NativeBounds,
             _target_window_id: u64,
-            _target_frame: Rect,
+            _target_frame: NativeBounds,
         ) -> Result<(), MacosNativeOperationError> {
             Ok(())
         }
@@ -7190,9 +7204,9 @@ mod tests {
         fn swap_window_frames(
             &self,
             _source_window_id: u64,
-            _source_frame: Rect,
+            _source_frame: NativeBounds,
             _target_window_id: u64,
-            _target_frame: Rect,
+            _target_frame: NativeBounds,
         ) -> Result<(), MacosNativeOperationError> {
             Ok(())
         }
@@ -7237,7 +7251,7 @@ mod tests {
         }
 
         fn with_frame(mut self, frame: Rect) -> Self {
-            self.frame = Some(frame);
+            self.frame = Some(native_bounds_from_outer(frame));
             self
         }
     }
@@ -7599,7 +7613,7 @@ command = false
         macos_window_manager_api_source(implementation_source())
     }
 
-    fn backend_public_api_source() -> &'static str {
+    fn backend_production_source() -> &'static str {
         backend_module_source()
     }
 
@@ -7797,7 +7811,7 @@ command = false
 
     #[test]
     fn source_backend_boundary_is_future_crate_ready() {
-        let backend_public = backend_public_api_source();
+        let backend_public = backend_production_source();
         for forbidden in [
             "FocusedWindowRecord",
             "FocusedAppRecord",
@@ -7815,6 +7829,15 @@ command = false
             assert!(
                 !backend_public.contains(forbidden),
                 "backend public api should not expose {forbidden}"
+            );
+        }
+        for forbidden in [
+            "use crate::engine::topology::",
+            "crate::engine::topology::",
+        ] {
+            assert!(
+                !backend_public.contains(forbidden),
+                "backend production code should not reference {forbidden}"
             );
         }
     }
@@ -8319,7 +8342,7 @@ command = false
         ];
 
         assert_eq!(
-            best_window_id_from_windows(Direction::East, &windows),
+            best_window_id_from_windows(NativeDirection::East, &windows),
             Some(159)
         );
     }
@@ -9012,13 +9035,17 @@ command = false
 
         let calls = Rc::new(RefCell::new(Vec::new()));
 
-        switch_adjacent_space_via_hotkey(&options, Direction::East, |key_code, key_down, flags| {
+        switch_adjacent_space_via_hotkey(
+            &options,
+            NativeDirection::East,
+            |key_code, key_down, flags| {
             calls.borrow_mut().push(format!(
                 "key:{key_code}:{}:{flags}",
                 if key_down { "down" } else { "up" }
             ));
             Ok(())
-        })
+        },
+        )
         .unwrap();
 
         let flags = K_CG_EVENT_FLAG_MASK_SHIFT
@@ -9039,8 +9066,9 @@ command = false
             mission_control_hotkey(0x7B, MissionControlModifiers::default()),
             mission_control_hotkey(0x7C, MissionControlModifiers::default()),
         );
-        let err = switch_adjacent_space_via_hotkey(&options, Direction::North, |_, _, _| Ok(()))
-            .unwrap_err();
+        let err =
+            switch_adjacent_space_via_hotkey(&options, NativeDirection::North, |_, _, _| Ok(()))
+                .unwrap_err();
 
         assert_eq!(
             err,
@@ -9661,7 +9689,7 @@ command = false
             recorded.api_calls(),
             vec![
                 NativeCall::DesktopSnapshot,
-                NativeCall::FocusSameSpaceTargetInSnapshot(Direction::West, 15),
+                NativeCall::FocusSameSpaceTargetInSnapshot(NativeDirection::West, 15),
             ]
         );
     }
@@ -9744,7 +9772,7 @@ command = false
             recorded.api_calls(),
             vec![
                 NativeCall::DesktopSnapshot,
-                NativeCall::SwitchSpaceInSnapshot(1, Some(Direction::West)),
+                NativeCall::SwitchSpaceInSnapshot(1, Some(NativeDirection::West)),
                 NativeCall::DesktopSnapshot,
             ]
         );
