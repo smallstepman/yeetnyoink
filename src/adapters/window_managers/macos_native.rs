@@ -6940,6 +6940,11 @@ command = false
         panic!("macos_window_manager_api should have a matching closing brace");
     }
 
+    fn macos_window_manager_api_source(implementation: &str) -> &str {
+        let (module_start, module_end) = macos_window_manager_api_span(implementation);
+        &implementation[module_start..module_end]
+    }
+
     #[test]
     fn source_places_macos_window_manager_api_before_root_types() {
         let implementation = implementation_source();
@@ -7134,10 +7139,19 @@ command = false
     #[test]
     fn source_declares_backend_owned_native_transport_types() {
         let implementation = implementation_source();
+        let api_module_source = macos_window_manager_api_source(implementation);
+        let (api_module_idx, api_module_end) = macos_window_manager_api_span(implementation);
+        let root_prefix = &implementation[..api_module_idx];
+        let root_suffix = &implementation[api_module_end..];
+
         for required in ["type NativeSpaceId = u64;", "type NativeWindowId = u64;"] {
             assert!(
-                implementation.contains(required),
+                api_module_source.contains(required),
                 "expected backend boundary to declare private backend-owned id alias {required}"
+            );
+            assert!(
+                !root_prefix.contains(required) && !root_suffix.contains(required),
+                "expected backend-owned id alias to stay inside macos_window_manager_api: {required}"
             );
         }
         for forbidden in [
@@ -7145,7 +7159,7 @@ command = false
             "pub(crate) type NativeWindowId = u64;",
         ] {
             assert!(
-                !implementation.contains(forbidden),
+                !api_module_source.contains(forbidden),
                 "expected backend boundary to keep id aliases private: {forbidden}"
             );
         }
@@ -7154,12 +7168,19 @@ command = false
             "pub(crate) struct NativeSpaceSnapshot",
             "pub(crate) struct NativeWindowSnapshot",
             "pub(crate) struct NativeBounds",
+            "pub(crate) struct MissionControlModifiers",
             "pub(crate) struct NativeBackendOptions",
+            "mission_control: MissionControlModifiers",
+            "diagnostics: Option<Arc<dyn NativeDiagnostics>>",
             "pub(crate) trait NativeDiagnostics",
         ] {
             assert!(
-                implementation.contains(required),
+                api_module_source.contains(required),
                 "expected backend boundary to declare {required}"
+            );
+            assert!(
+                !root_prefix.contains(required) && !root_suffix.contains(required),
+                "expected backend boundary declaration to stay inside macos_window_manager_api: {required}"
             );
         }
     }
