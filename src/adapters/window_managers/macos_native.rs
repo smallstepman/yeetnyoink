@@ -5,7 +5,7 @@ use crate::engine::wm::{
     CapabilitySupport, ConfiguredWindowManager, DirectionalCapability, FloatingFocusMode,
     FocusedAppRecord, FocusedWindowRecord, PrimitiveWindowManagerCapabilities, ResizeIntent,
     WindowManagerCapabilities, WindowManagerCapabilityDescriptor, WindowManagerFeatures,
-    WindowManagerSession, WindowManagerSpec, WindowRecord, validate_declared_capabilities,
+    WindowManagerSession, WindowManagerSpec, WindowRecord,
 };
 use crate::logging;
 use anyhow::{Context, bail};
@@ -3930,34 +3930,63 @@ pub(crate) struct MacosNativeAdapter<A = RealNativeApi> {
     ctx: MacosNativeContext<A>,
 }
 
-pub(crate) struct MacosNativeSpec;
+trait MacosNativeApiFactory {
+    type Api: MacosNativeApi;
 
-pub(crate) static MACOS_NATIVE_SPEC: MacosNativeSpec = MacosNativeSpec;
+    fn create(&self) -> Self::Api;
+}
 
-impl WindowManagerSpec for MacosNativeSpec {
+#[derive(Clone, Copy)]
+pub(crate) struct RealNativeApiFactory;
+
+impl MacosNativeApiFactory for RealNativeApiFactory {
+    type Api = RealNativeApi;
+
+    fn create(&self) -> Self::Api {
+        RealNativeApi::new()
+    }
+}
+
+pub(crate) struct MacosNativeSpec<F = RealNativeApiFactory> {
+    api_factory: F,
+}
+
+pub(crate) static MACOS_NATIVE_SPEC: MacosNativeSpec = MacosNativeSpec {
+    api_factory: RealNativeApiFactory,
+};
+
+impl<F> WindowManagerSpec for MacosNativeSpec<F>
+where
+    F: MacosNativeApiFactory + Sync,
+    F::Api: Send + 'static,
+{
     fn backend(&self) -> WmBackend {
         WmBackend::MacosNative
     }
 
     fn name(&self) -> &'static str {
-        MacosNativeAdapter::<RealNativeApi>::NAME
+        MacosNativeAdapter::<F::Api>::NAME
     }
 
     fn connect(&self) -> anyhow::Result<ConfiguredWindowManager> {
+        let api = {
+            let _span = tracing::debug_span!("macos_native.connect.real_api_new").entered();
+            self.api_factory.create()
+        };
         ConfiguredWindowManager::try_new(
-            Box::new(MacosNativeAdapter::connect()?),
+            Box::new(MacosNativeAdapter::connect_with_api(api)?),
             WindowManagerFeatures::default(),
         )
     }
 
     fn floating_focus_mode(&self) -> FloatingFocusMode {
-        MacosNativeAdapter::<RealNativeApi>::FLOATING_FOCUS_MODE
+        MacosNativeAdapter::<F::Api>::FLOATING_FOCUS_MODE
     }
 
     fn focused_app_record(&self) -> anyhow::Result<Option<FocusedAppRecord>> {
         let api = {
             let _span = tracing::debug_span!("macos_native.fast_focus.real_api_new").entered();
-            RealNativeApi::new()
+            self.api_factory.create()
         };
         focused_app_record_with_api(&api)
     }
@@ -3971,21 +4000,6 @@ where
         Ok(Self {
             ctx: MacosNativeContext::connect_with_api(api)?,
         })
-    }
-}
-
-impl MacosNativeAdapter<RealNativeApi> {
-    pub fn connect() -> anyhow::Result<Self> {
-        {
-            let _span =
-                tracing::debug_span!("macos_native.connect.validate_capabilities").entered();
-            validate_declared_capabilities::<Self>()?;
-        }
-        let api = {
-            let _span = tracing::debug_span!("macos_native.connect.real_api_new").entered();
-            RealNativeApi::new()
-        };
-        Self::connect_with_api(api).map_err(anyhow::Error::new)
     }
 }
 
@@ -6785,6 +6799,24 @@ mod tests {
         }
     }
 
+    struct SnapshotApiFactory {
+        snapshot: NativeDesktopSnapshot,
+    }
+
+    impl SnapshotApiFactory {
+        fn new(snapshot: NativeDesktopSnapshot) -> Self {
+            Self { snapshot }
+        }
+    }
+
+    impl MacosNativeApiFactory for SnapshotApiFactory {
+        type Api = SnapshotOnlyApi;
+
+        fn create(&self) -> Self::Api {
+            SnapshotOnlyApi::new(self.snapshot.clone())
+        }
+    }
+
     struct FocusedWindowRecordFastPathApi;
 
     impl MacosNativeApi for SnapshotOnlyApi {
@@ -7712,7 +7744,7 @@ command = false
             "macos_window_manager_api should expose a window_server module"
         );
         assert!(
-            implementation.contains("impl WindowManagerSpec for MacosNativeSpec"),
+            implementation.contains("impl<F> WindowManagerSpec for MacosNativeSpec<F>"),
             "root should still provide the WindowManagerSpec impl"
         );
         assert!(
@@ -8231,26 +8263,28 @@ command = false
 
     #[test]
     fn focused_app_record_is_derived_from_native_snapshot() {
-        let focused = focused_app_record_with_api(&SnapshotOnlyApi::new(NativeDesktopSnapshot {
-            spaces: vec![NativeSpaceSnapshot {
-                id: 1,
-                display_index: 0,
-                active: true,
-                kind: SpaceKind::Desktop,
-            }],
-            active_space_ids: HashSet::from([1]),
-            windows: vec![NativeWindowSnapshot {
-                id: 101,
-                pid: Some(4001),
-                app_id: Some("focused.app".to_string()),
-                title: Some("Focused".to_string()),
-                bounds: None,
-                space_id: 1,
-                order_index: Some(0),
-            }],
-            focused_window_id: Some(101),
-        }))
-        .unwrap();
+        let spec = MacosNativeSpec {
+            api_factory: SnapshotApiFactory::new(NativeDesktopSnapshot {
+                spaces: vec![NativeSpaceSnapshot {
+                    id: 1,
+                    display_index: 0,
+                    active: true,
+                    kind: SpaceKind::Desktop,
+                }],
+                active_space_ids: HashSet::from([1]),
+                windows: vec![NativeWindowSnapshot {
+                    id: 101,
+                    pid: Some(4001),
+                    app_id: Some("focused.app".to_string()),
+                    title: Some("Focused".to_string()),
+                    bounds: None,
+                    space_id: 1,
+                    order_index: Some(0),
+                }],
+                focused_window_id: Some(101),
+            }),
+        };
+        let focused = WindowManagerSpec::focused_app_record(&spec).unwrap();
 
         assert_eq!(
             focused,
