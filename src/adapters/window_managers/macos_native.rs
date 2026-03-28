@@ -2,10 +2,11 @@ use crate::config::{self, WmBackend};
 use crate::engine::runtime::{self, CommandContext, ProcessId};
 use crate::engine::topology::Direction;
 use crate::engine::wm::{
-    CapabilitySupport, ConfiguredWindowManager, DirectionalCapability, FloatingFocusMode,
-    FocusedAppRecord, FocusedWindowRecord, PrimitiveWindowManagerCapabilities, ResizeIntent,
-    WindowManagerCapabilities, WindowManagerCapabilityDescriptor, WindowManagerFeatures,
-    WindowManagerSession, WindowManagerSpec, WindowRecord,
+    validate_declared_capabilities, CapabilitySupport, ConfiguredWindowManager,
+    DirectionalCapability, FloatingFocusMode, FocusedAppRecord, FocusedWindowRecord,
+    PrimitiveWindowManagerCapabilities, ResizeIntent, WindowManagerCapabilities,
+    WindowManagerCapabilityDescriptor, WindowManagerFeatures, WindowManagerSession,
+    WindowManagerSpec, WindowRecord,
 };
 use crate::logging;
 use anyhow::{Context, bail};
@@ -3969,6 +3970,11 @@ where
     }
 
     fn connect(&self) -> anyhow::Result<ConfiguredWindowManager> {
+        {
+            let _span =
+                tracing::debug_span!("macos_native.connect.validate_capabilities").entered();
+            validate_declared_capabilities::<MacosNativeAdapter<F::Api>>()?;
+        }
         let api = {
             let _span = tracing::debug_span!("macos_native.connect.real_api_new").entered();
             self.api_factory.create()
@@ -7713,6 +7719,22 @@ command = false
                 idx + 1
             );
         }
+    }
+
+    #[test]
+    fn source_keeps_declared_capability_validation_in_spec_connect() {
+        let implementation = implementation_source();
+
+        assert!(
+            implementation.contains(
+                "validate_declared_capabilities::<MacosNativeAdapter<F::Api>>()?;"
+            ),
+            "WindowManagerSpec::connect should validate declared capabilities before connecting"
+        );
+        assert!(
+            implementation.contains("macos_native.connect.validate_capabilities"),
+            "WindowManagerSpec::connect should keep the capability validation span"
+        );
     }
 
     #[test]
