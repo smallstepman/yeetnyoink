@@ -40,6 +40,7 @@ use crate::adapters::window_managers::paneru::PANERU_SPEC;
 #[cfg(target_os = "macos")]
 use crate::adapters::window_managers::yabai::YABAI_SPEC;
 use crate::config::WmBackend;
+use crate::engine::wm::configured::WindowManagerSpec;
 #[cfg(not(target_os = "linux"))]
 pub(crate) use crate::engine::wm::configured::UNSUPPORTED_HYPRLAND_SPEC;
 #[cfg(not(target_os = "linux"))]
@@ -52,7 +53,6 @@ pub(crate) use crate::engine::wm::configured::UNSUPPORTED_NIRI_SPEC;
 pub(crate) use crate::engine::wm::configured::UNSUPPORTED_PANERU_SPEC;
 #[cfg(not(target_os = "macos"))]
 pub(crate) use crate::engine::wm::configured::UNSUPPORTED_YABAI_SPEC;
-use crate::engine::wm::configured::WindowManagerSpec;
 
 pub fn spec_for_backend(backend: WmBackend) -> &'static dyn WindowManagerSpec {
     match backend {

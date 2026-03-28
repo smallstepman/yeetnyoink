@@ -21,12 +21,13 @@
 /// enabled = true
 /// ```
 use crate::engine::{
-    FloatingFocusMode, floating_focus_mode_for_backend,
+    floating_focus_mode_for_backend,
     topology::{Direction, FloatingFocusStrategy},
+    FloatingFocusMode,
 };
-use anyhow::{Context, Result, anyhow, bail};
-use etcetera::base_strategy::{BaseStrategy, choose_base_strategy};
-use serde::{Deserialize, Deserializer, Serialize, de::DeserializeOwned};
+use anyhow::{anyhow, bail, Context, Result};
+use etcetera::base_strategy::{choose_base_strategy, BaseStrategy};
+use serde::{de::DeserializeOwned, Deserialize, Deserializer, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{OnceLock, RwLock};
@@ -2508,22 +2509,18 @@ command = false
 
     #[test]
     fn floating_focus_strategy_mode_allows_tiling_and_floating_with_optional_strategy() {
-        assert!(
-            validate_floating_focus_strategy_mode(
-                WmBackend::Yabai,
-                FloatingFocusMode::TilingAndFloating,
-                None
-            )
-            .is_ok()
-        );
-        assert!(
-            validate_floating_focus_strategy_mode(
-                WmBackend::Yabai,
-                FloatingFocusMode::TilingAndFloating,
-                Some(crate::engine::topology::FloatingFocusStrategy::RayAngle)
-            )
-            .is_ok()
-        );
+        assert!(validate_floating_focus_strategy_mode(
+            WmBackend::Yabai,
+            FloatingFocusMode::TilingAndFloating,
+            None
+        )
+        .is_ok());
+        assert!(validate_floating_focus_strategy_mode(
+            WmBackend::Yabai,
+            FloatingFocusMode::TilingAndFloating,
+            Some(crate::engine::topology::FloatingFocusStrategy::RayAngle)
+        )
+        .is_ok());
     }
 
     #[test]
@@ -2571,10 +2568,9 @@ command = false
         install(old);
         let _ = std::fs::remove_dir_all(&root);
 
-        assert!(
-            err.to_string()
-                .contains("invalid macOS Mission Control keycode")
-        );
+        assert!(err
+            .to_string()
+            .contains("invalid macOS Mission Control keycode"));
     }
 }
 

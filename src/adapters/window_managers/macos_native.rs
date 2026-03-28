@@ -13,8 +13,7 @@ use anyhow::{Context, bail};
 use macos_window_manager_api::{
     MacosNativeApi, MacosNativeConnectError, MacosNativeOperationError, MacosNativeProbeError,
     MissionControlHotkey, MissionControlModifiers, NativeBackendOptions, NativeBounds,
-    NativeDirection,
-    NativeDesktopSnapshot, NativeDiagnostics, NativeWindowSnapshot, RealNativeApi,
+    NativeDesktopSnapshot, NativeDiagnostics, NativeDirection, NativeWindowSnapshot, RealNativeApi,
 };
 
 mod macos_window_manager_api {
@@ -55,6 +54,7 @@ mod macos_window_manager_api {
         pub(crate) app_id: Option<String>,
         pub(crate) title: Option<String>,
         pub(crate) bounds: Option<NativeBounds>,
+        pub(crate) level: i32,
         pub(crate) space_id: NativeSpaceId,
         pub(crate) order_index: Option<usize>,
     }
@@ -355,11 +355,9 @@ mod macos_window_manager_api {
             match direction {
                 NativeDirection::West => Ok(options.west_space_hotkey),
                 NativeDirection::East => Ok(options.east_space_hotkey),
-                NativeDirection::North | NativeDirection::South => {
-                    Err(MacosNativeOperationError::CallFailed(
-                    "adjacent_space_hotkey_direction",
-                ))
-                }
+                NativeDirection::North | NativeDirection::South => Err(
+                    MacosNativeOperationError::CallFailed("adjacent_space_hotkey_direction"),
+                ),
             }
         }
 
@@ -1081,13 +1079,13 @@ mod macos_window_manager_api {
 
     pub(super) mod skylight {
         use super::foundation::{
-            CFArrayRef, CFDictionaryRef, CFStringRef, CfOwned,
-            SlsCopyManagedDisplayForSpaceFn, SlsCopyManagedDisplaySpacesFn,
-            SlsCopyWindowsWithOptionsAndTagsFn, SlsMainConnectionIdFn,
-            SlsManagedDisplayGetCurrentSpaceFn, SlsManagedDisplaySetCurrentSpaceFn,
-            array_from_type_refs, cf_array_iter, cf_as_dictionary, cf_dictionary_array,
-            cf_dictionary_dictionary, cf_dictionary_i32, cf_dictionary_string,
-            cf_dictionary_u64, cf_number_from_u64, cf_number_to_u64, cf_string,
+            CFArrayRef, CFDictionaryRef, CFStringRef, CfOwned, SlsCopyManagedDisplayForSpaceFn,
+            SlsCopyManagedDisplaySpacesFn, SlsCopyWindowsWithOptionsAndTagsFn,
+            SlsMainConnectionIdFn, SlsManagedDisplayGetCurrentSpaceFn,
+            SlsManagedDisplaySetCurrentSpaceFn, array_from_type_refs, cf_array_iter,
+            cf_as_dictionary, cf_dictionary_array, cf_dictionary_dictionary, cf_dictionary_i32,
+            cf_dictionary_string, cf_dictionary_u64, cf_number_from_u64, cf_number_to_u64,
+            cf_string,
         };
         use super::{
             MacosNativeOperationError, MacosNativeProbeError, RawSpaceRecord, RealNativeApi,
@@ -1430,7 +1428,6 @@ mod macos_window_manager_api {
                 })
                 .collect()
         }
-
     }
 
     pub(super) mod window_server {
@@ -1449,8 +1446,7 @@ mod macos_window_manager_api {
         use super::skylight;
         use super::{
             MacosNativeOperationError, MacosNativeProbeError, NativeBounds, RawWindow,
-            RealNativeApi,
-            enrich_real_window_app_ids, focus_window_via_process_and_raise,
+            RealNativeApi, enrich_real_window_app_ids, focus_window_via_process_and_raise,
         };
         use std::{
             collections::{HashMap, HashSet},
@@ -2044,6 +2040,7 @@ mod macos_window_manager_api {
                             app_id: window.app_id,
                             title: window.title,
                             bounds: window.frame,
+                            level: window.level,
                             space_id: space.managed_space_id,
                             order_index: Some(index),
                         }),
@@ -2063,6 +2060,7 @@ mod macos_window_manager_api {
                                 app_id: None,
                                 title: None,
                                 bounds: None,
+                                level: 0,
                                 space_id: space.managed_space_id,
                                 order_index: None,
                             }),
@@ -2726,10 +2724,12 @@ mod macos_window_manager_api {
             NativeDirection::West => candidate.x < source.x,
             NativeDirection::East => candidate.x + candidate.width > source.x + source.width,
             NativeDirection::North => candidate.y < source.y,
-            NativeDirection::South => {
-                candidate.y + candidate.height > source.y + source.height
-            }
+            NativeDirection::South => candidate.y + candidate.height > source.y + source.height,
         }
+    }
+
+    fn is_directional_focus_window(window: &NativeWindowSnapshot) -> bool {
+        window.level == 0
     }
 
     fn compare_native_windows_for_edge(
@@ -2771,8 +2771,36 @@ mod macos_window_manager_api {
             .iter()
             .filter(|window| window.id != focused.id)
             .filter(|window| window.space_id == focused.space_id)
+            .filter(|window| is_directional_focus_window(window))
             .filter(|window| window.pid == Some(pid))
             .filter(|window| ax_window_ids.contains(&window.id))
+            .filter(|window| {
+                window.bounds.is_some_and(|bounds| {
+                    native_candidate_extends_in_direction(source_bounds, bounds, direction)
+                })
+            })
+            .max_by(|left, right| compare_native_windows_for_edge(left, right, direction))
+            .map(|window| window.id)
+    }
+
+    fn split_view_same_space_focus_target_from_source(
+        snapshot: &NativeDesktopSnapshot,
+        source_window_id: u64,
+        direction: NativeDirection,
+    ) -> Option<u64> {
+        let focused = native_window(snapshot, source_window_id)?;
+        let focused_space = native_space(snapshot, focused.space_id)?;
+        if focused_space.kind != SpaceKind::SplitView {
+            return None;
+        }
+
+        let source_bounds = focused.bounds?;
+        snapshot
+            .windows
+            .iter()
+            .filter(|window| window.id != focused.id)
+            .filter(|window| window.space_id == focused.space_id)
+            .filter(|window| is_directional_focus_window(window))
             .filter(|window| {
                 window.bounds.is_some_and(|bounds| {
                     native_candidate_extends_in_direction(source_bounds, bounds, direction)
@@ -2787,24 +2815,186 @@ mod macos_window_manager_api {
         direction: NativeDirection,
     ) -> Option<u64> {
         let focused = super::resolved_focused_native_window(snapshot).ok()?;
-        let focused_space = native_space(snapshot, focused.space_id)?;
-        if focused_space.kind != SpaceKind::SplitView {
-            return None;
-        }
+        split_view_same_space_focus_target_from_source(snapshot, focused.id, direction)
+    }
 
-        let source_bounds = focused.bounds?;
-        snapshot
+    fn focusable_same_app_split_view_peer_from_source<A: MacosNativeApi + ?Sized>(
+        api: &A,
+        snapshot: &NativeDesktopSnapshot,
+        source_window_id: u64,
+        direction: NativeDirection,
+        target_window_id: u64,
+    ) -> Result<Option<(u64, u32)>, MacosNativeOperationError> {
+        let Some(focused) = native_window(snapshot, source_window_id) else {
+            api.debug(&format!(
+                "macos_native: split-view peer remap skipped; source window {source_window_id} missing from snapshot"
+            ));
+            return Ok(None);
+        };
+        let Some(source_bounds) = focused.bounds else {
+            api.debug(&format!(
+                "macos_native: split-view peer remap skipped; source window {source_window_id} has no bounds"
+            ));
+            return Ok(None);
+        };
+        let Some(target) = native_window(snapshot, target_window_id) else {
+            api.debug(&format!(
+                "macos_native: split-view peer remap skipped; target window {target_window_id} missing from snapshot"
+            ));
+            return Ok(None);
+        };
+        let Some(target_app_id) = target.app_id.as_deref() else {
+            api.debug(&format!(
+                "macos_native: split-view peer remap skipped; target window {target_window_id} has no app_id"
+            ));
+            return Ok(None);
+        };
+        let mut candidates = snapshot
             .windows
             .iter()
-            .filter(|window| window.id != focused.id)
+            .filter(|window| window.id != focused.id && window.id != target_window_id)
             .filter(|window| window.space_id == focused.space_id)
+            .filter(|window| is_directional_focus_window(window))
+            .filter(|window| window.app_id.as_deref() == Some(target_app_id))
+            .filter(|window| window.pid.is_some())
             .filter(|window| {
                 window.bounds.is_some_and(|bounds| {
                     native_candidate_extends_in_direction(source_bounds, bounds, direction)
                 })
             })
-            .max_by(|left, right| compare_native_windows_for_edge(left, right, direction))
-            .map(|window| window.id)
+            .collect::<Vec<_>>();
+        candidates.sort_by(|left, right| {
+            compare_native_windows_for_edge(left, right, direction).reverse()
+        });
+
+        api.debug(&format!(
+            "macos_native: split-view peer remap source={} target={} target_pid={:?} target_app_id={} candidates={:?}",
+            source_window_id,
+            target_window_id,
+            target.pid,
+            target_app_id,
+            candidates
+                .iter()
+                .map(|candidate| (candidate.id, candidate.pid))
+                .collect::<Vec<_>>()
+        ));
+
+        let fallback_candidate = candidates
+            .first()
+            .and_then(|candidate| candidate.pid.map(|pid| (candidate.id, pid)));
+
+        let mut ax_window_ids_by_pid = HashMap::<u32, HashSet<u64>>::new();
+        for candidate in candidates {
+            let Some(pid) = candidate.pid else {
+                continue;
+            };
+            let ax_window_ids = match ax_window_ids_by_pid.entry(pid) {
+                std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+                std::collections::hash_map::Entry::Vacant(entry) => entry.insert(
+                    api.ax_window_ids_for_pid(pid)?
+                        .into_iter()
+                        .collect::<HashSet<_>>(),
+                ),
+            };
+            api.debug(&format!(
+                "macos_native: split-view peer remap candidate={} pid={} ax_window_ids={:?}",
+                candidate.id, pid, ax_window_ids
+            ));
+            if ax_window_ids.contains(&candidate.id) {
+                api.debug(&format!(
+                    "macos_native: split-view peer remap chose AX-backed candidate={} pid={}",
+                    candidate.id, pid
+                ));
+                return Ok(Some((candidate.id, pid)));
+            }
+        }
+
+        if let Some((candidate_id, candidate_pid)) = fallback_candidate {
+            api.debug(&format!(
+                "macos_native: split-view peer remap falling back to directional candidate={} pid={} despite empty AX preflight",
+                candidate_id, candidate_pid
+            ));
+        } else {
+            api.debug(
+                "macos_native: split-view peer remap found no same-app directional candidates",
+            );
+        }
+
+        Ok(fallback_candidate)
+    }
+
+    fn focusable_same_app_split_view_peer<A: MacosNativeApi + ?Sized>(
+        api: &A,
+        snapshot: &NativeDesktopSnapshot,
+        direction: NativeDirection,
+        target_window_id: u64,
+    ) -> Result<Option<(u64, u32)>, MacosNativeOperationError> {
+        let Some(focused) = super::resolved_focused_native_window(snapshot).ok() else {
+            return Ok(None);
+        };
+        focusable_same_app_split_view_peer_from_source(
+            api,
+            snapshot,
+            focused.id,
+            direction,
+            target_window_id,
+        )
+    }
+
+    fn refreshed_split_view_focus_target<A: MacosNativeApi + ?Sized>(
+        api: &A,
+        snapshot: &NativeDesktopSnapshot,
+        direction: NativeDirection,
+        target_window_id: u64,
+        pid: u32,
+    ) -> Result<Option<(u64, Option<u32>)>, MacosNativeOperationError> {
+        let Some(original_focused) = super::resolved_focused_native_window(snapshot).ok() else {
+            api.debug(
+                "macos_native: refreshed split-view retarget skipped; no focused source window in planning snapshot",
+            );
+            return Ok(None);
+        };
+        let refreshed_snapshot = api.desktop_snapshot()?;
+        let Some(refreshed_target_id) = split_view_same_space_focus_target_from_source(
+            &refreshed_snapshot,
+            original_focused.id,
+            direction,
+        ) else {
+            api.debug(&format!(
+                "macos_native: refreshed split-view retarget found no directional target from source {}",
+                original_focused.id
+            ));
+            return Ok(None);
+        };
+        let refreshed_pid =
+            native_window(&refreshed_snapshot, refreshed_target_id).and_then(|window| window.pid);
+        api.debug(&format!(
+            "macos_native: refreshed split-view retarget source={} stale_target={} stale_pid={} refreshed_target={} refreshed_pid={:?}",
+            original_focused.id, target_window_id, pid, refreshed_target_id, refreshed_pid
+        ));
+        if refreshed_target_id == target_window_id && refreshed_pid == Some(pid) {
+            if let Some((peer_target_id, peer_pid)) =
+                focusable_same_app_split_view_peer_from_source(
+                    api,
+                    &refreshed_snapshot,
+                    original_focused.id,
+                    direction,
+                    refreshed_target_id,
+                )?
+            {
+                api.debug(&format!(
+                    "macos_native: refreshed split-view retarget remapped stale target {} to peer {} pid={}",
+                    refreshed_target_id, peer_target_id, peer_pid
+                ));
+                return Ok(Some((peer_target_id, Some(peer_pid))));
+            }
+            api.debug(&format!(
+                "macos_native: refreshed split-view retarget still stale after peer probing target={} pid={}",
+                refreshed_target_id, pid
+            ));
+            return Ok(None);
+        }
+        Ok(Some((refreshed_target_id, refreshed_pid)))
     }
 
     fn focus_same_space_target_in_snapshot<A: MacosNativeApi + ?Sized>(
@@ -2839,6 +3029,14 @@ mod macos_window_manager_api {
         let mut ax_window_ids = None;
         let mut focus_target_id = target_window_id;
 
+        api.debug(&format!(
+            "macos_native: split-view focus target preflight target={} pid={} same_pid_split_view={} focused_same_pid={:?}",
+            target_window_id,
+            pid,
+            same_pid_split_view,
+            focused.as_ref().map(|window| window.id)
+        ));
+
         if same_pid_split_view {
             let ids = api
                 .ax_window_ids_for_pid(pid)?
@@ -2849,6 +3047,10 @@ mod macos_window_manager_api {
                     native_ax_backed_same_pid_target(snapshot, direction, pid, &ids)
                         .filter(|candidate| *candidate != target_window_id)
                 {
+                    api.debug(&format!(
+                        "macos_native: split-view focus remapped same-pid stale target {} to {}",
+                        target_window_id, remapped_target_id
+                    ));
                     focus_target_id = remapped_target_id;
                 }
             }
@@ -2859,20 +3061,68 @@ mod macos_window_manager_api {
             Err(MacosNativeOperationError::MissingWindow(missing_window_id))
                 if missing_window_id == focus_target_id =>
             {
-                let ax_window_ids = match ax_window_ids {
-                    Some(ids) => ids,
-                    None => api
-                        .ax_window_ids_for_pid(pid)?
-                        .into_iter()
-                        .collect::<HashSet<_>>(),
-                };
-                let Some(remapped_target_id) =
-                    native_ax_backed_same_pid_target(snapshot, direction, pid, &ax_window_ids)
-                        .filter(|candidate| *candidate != focus_target_id)
-                else {
-                    return Err(MacosNativeOperationError::MissingWindow(focus_target_id));
-                };
-                api.focus_window_with_known_pid(remapped_target_id, pid)
+                if same_pid_split_view {
+                    let ax_window_ids = match ax_window_ids {
+                        Some(ids) => ids,
+                        None => api
+                            .ax_window_ids_for_pid(pid)?
+                            .into_iter()
+                            .collect::<HashSet<_>>(),
+                    };
+                    if let Some(remapped_target_id) =
+                        native_ax_backed_same_pid_target(snapshot, direction, pid, &ax_window_ids)
+                            .filter(|candidate| *candidate != focus_target_id)
+                    {
+                        api.debug(&format!(
+                            "macos_native: split-view focus retry remapped same-pid stale target {} to {}",
+                            focus_target_id, remapped_target_id
+                        ));
+                        return api.focus_window_with_known_pid(remapped_target_id, pid);
+                    }
+                }
+
+                if let Some((remapped_target_id, remapped_pid)) =
+                    focusable_same_app_split_view_peer(api, snapshot, direction, focus_target_id)?
+                {
+                    api.debug(&format!(
+                        "macos_native: split-view focus remapped stale target {} to same-app peer {} pid={}",
+                        focus_target_id, remapped_target_id, remapped_pid
+                    ));
+                    return api.focus_window_with_known_pid(remapped_target_id, remapped_pid);
+                }
+
+                if let Some((refreshed_target_id, refreshed_pid)) =
+                    refreshed_split_view_focus_target(
+                        api,
+                        snapshot,
+                        direction,
+                        focus_target_id,
+                        pid,
+                    )?
+                {
+                    if let Some(refreshed_pid) = refreshed_pid {
+                        api.debug(&format!(
+                            "macos_native: split-view focus retrying with refreshed target {} pid={}",
+                            refreshed_target_id, refreshed_pid
+                        ));
+                        return api.focus_window_with_known_pid(refreshed_target_id, refreshed_pid);
+                    }
+                    api.debug(&format!(
+                        "macos_native: split-view focus retrying with refreshed target {} via generic focus",
+                        refreshed_target_id
+                    ));
+                    return api.focus_window(refreshed_target_id);
+                }
+
+                if !same_pid_split_view {
+                    api.debug(&format!(
+                        "macos_native: split-view focus falling back to generic focus for stale target {}",
+                        focus_target_id
+                    ));
+                    return api.focus_window(focus_target_id);
+                }
+
+                Err(MacosNativeOperationError::MissingWindow(focus_target_id))
             }
             other => other,
         }
@@ -5193,6 +5443,386 @@ mod tests {
     }
 
     #[derive(Debug, Clone)]
+    struct SplitViewKnownPidFallbackApi {
+        snapshot: NativeDesktopSnapshot,
+        calls: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl SplitViewKnownPidFallbackApi {
+        fn from_snapshot(snapshot: NativeDesktopSnapshot) -> Self {
+            Self {
+                snapshot,
+                calls: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+
+        fn api_calls(&self) -> Vec<String> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    impl MacosNativeApi for SplitViewKnownPidFallbackApi {
+        fn has_symbol(&self, _symbol: &'static str) -> bool {
+            true
+        }
+
+        fn ax_is_trusted(&self) -> bool {
+            true
+        }
+
+        fn minimal_topology_ready(&self) -> bool {
+            true
+        }
+
+        fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push("desktop_snapshot".to_string());
+            Ok(self.snapshot.clone())
+        }
+
+        fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
+            panic!("split-view fallback api must not query managed_spaces")
+        }
+
+        fn active_space_ids(&self) -> Result<HashSet<u64>, MacosNativeProbeError> {
+            panic!("split-view fallback api must not query active_space_ids")
+        }
+
+        fn active_space_windows(
+            &self,
+            _space_id: u64,
+        ) -> Result<Vec<RawWindow>, MacosNativeProbeError> {
+            panic!("split-view fallback api must not query active_space_windows")
+        }
+
+        fn inactive_space_window_ids(
+            &self,
+        ) -> Result<HashMap<u64, Vec<u64>>, MacosNativeProbeError> {
+            panic!("split-view fallback api must not query inactive_space_window_ids")
+        }
+
+        fn switch_space(&self, _space_id: u64) -> Result<(), MacosNativeOperationError> {
+            panic!("split-view fallback api must not switch spaces")
+        }
+
+        fn focus_window(&self, window_id: u64) -> Result<(), MacosNativeOperationError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("focus_window:{window_id}"));
+            Ok(())
+        }
+
+        fn focus_window_with_known_pid(
+            &self,
+            window_id: u64,
+            pid: u32,
+        ) -> Result<(), MacosNativeOperationError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("focus_window_with_known_pid:{window_id}:{pid}"));
+            Err(MacosNativeOperationError::MissingWindow(window_id))
+        }
+
+        fn move_window_to_space(
+            &self,
+            _window_id: u64,
+            _space_id: u64,
+        ) -> Result<(), MacosNativeOperationError> {
+            Ok(())
+        }
+
+        fn swap_window_frames(
+            &self,
+            _source_window_id: u64,
+            _source_frame: NativeBounds,
+            _target_window_id: u64,
+            _target_frame: NativeBounds,
+        ) -> Result<(), MacosNativeOperationError> {
+            Ok(())
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    struct SplitViewSameAppPeerFallbackApi {
+        snapshot: NativeDesktopSnapshot,
+        ax_window_ids_by_pid: HashMap<u32, Vec<u64>>,
+        calls: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl SplitViewSameAppPeerFallbackApi {
+        fn from_snapshot(
+            snapshot: NativeDesktopSnapshot,
+            ax_window_ids_by_pid: HashMap<u32, Vec<u64>>,
+        ) -> Self {
+            Self {
+                snapshot,
+                ax_window_ids_by_pid,
+                calls: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+
+        fn api_calls(&self) -> Vec<String> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    impl MacosNativeApi for SplitViewSameAppPeerFallbackApi {
+        fn has_symbol(&self, _symbol: &'static str) -> bool {
+            true
+        }
+
+        fn ax_is_trusted(&self) -> bool {
+            true
+        }
+
+        fn minimal_topology_ready(&self) -> bool {
+            true
+        }
+
+        fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push("desktop_snapshot".to_string());
+            Ok(self.snapshot.clone())
+        }
+
+        fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
+            panic!("same-app split-view fallback api must not query managed_spaces")
+        }
+
+        fn active_space_ids(&self) -> Result<HashSet<u64>, MacosNativeProbeError> {
+            panic!("same-app split-view fallback api must not query active_space_ids")
+        }
+
+        fn active_space_windows(
+            &self,
+            _space_id: u64,
+        ) -> Result<Vec<RawWindow>, MacosNativeProbeError> {
+            panic!("same-app split-view fallback api must not query active_space_windows")
+        }
+
+        fn inactive_space_window_ids(
+            &self,
+        ) -> Result<HashMap<u64, Vec<u64>>, MacosNativeProbeError> {
+            panic!("same-app split-view fallback api must not query inactive_space_window_ids")
+        }
+
+        fn ax_window_ids_for_pid(&self, pid: u32) -> Result<Vec<u64>, MacosNativeOperationError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("ax_window_ids_for_pid:{pid}"));
+            Ok(self
+                .ax_window_ids_by_pid
+                .get(&pid)
+                .cloned()
+                .unwrap_or_default())
+        }
+
+        fn switch_space(&self, _space_id: u64) -> Result<(), MacosNativeOperationError> {
+            panic!("same-app split-view fallback api must not switch spaces")
+        }
+
+        fn focus_window(&self, window_id: u64) -> Result<(), MacosNativeOperationError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("focus_window:{window_id}"));
+            Err(MacosNativeOperationError::MissingWindow(window_id))
+        }
+
+        fn focus_window_with_known_pid(
+            &self,
+            window_id: u64,
+            pid: u32,
+        ) -> Result<(), MacosNativeOperationError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("focus_window_with_known_pid:{window_id}:{pid}"));
+            if self
+                .ax_window_ids_by_pid
+                .get(&pid)
+                .is_some_and(|ids| ids.contains(&window_id))
+            {
+                Ok(())
+            } else {
+                Err(MacosNativeOperationError::MissingWindow(window_id))
+            }
+        }
+
+        fn move_window_to_space(
+            &self,
+            _window_id: u64,
+            _space_id: u64,
+        ) -> Result<(), MacosNativeOperationError> {
+            Ok(())
+        }
+
+        fn swap_window_frames(
+            &self,
+            _source_window_id: u64,
+            _source_frame: NativeBounds,
+            _target_window_id: u64,
+            _target_frame: NativeBounds,
+        ) -> Result<(), MacosNativeOperationError> {
+            Ok(())
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    struct SplitViewRefreshedTargetFallbackApi {
+        snapshots: Arc<Mutex<VecDeque<NativeDesktopSnapshot>>>,
+        successful_focus_targets: HashSet<(u64, u32)>,
+        ax_window_ids_by_pid: HashMap<u32, Vec<u64>>,
+        calls: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl SplitViewRefreshedTargetFallbackApi {
+        fn from_snapshots(
+            snapshots: Vec<NativeDesktopSnapshot>,
+            successful_focus_targets: HashSet<(u64, u32)>,
+        ) -> Self {
+            Self::from_snapshots_with_ax_window_ids(
+                snapshots,
+                successful_focus_targets,
+                HashMap::new(),
+            )
+        }
+
+        fn from_snapshots_with_ax_window_ids(
+            snapshots: Vec<NativeDesktopSnapshot>,
+            successful_focus_targets: HashSet<(u64, u32)>,
+            ax_window_ids_by_pid: HashMap<u32, Vec<u64>>,
+        ) -> Self {
+            Self {
+                snapshots: Arc::new(Mutex::new(VecDeque::from(snapshots))),
+                successful_focus_targets,
+                ax_window_ids_by_pid,
+                calls: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+
+        fn api_calls(&self) -> Vec<String> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    impl MacosNativeApi for SplitViewRefreshedTargetFallbackApi {
+        fn has_symbol(&self, _symbol: &'static str) -> bool {
+            true
+        }
+
+        fn ax_is_trusted(&self) -> bool {
+            true
+        }
+
+        fn minimal_topology_ready(&self) -> bool {
+            true
+        }
+
+        fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push("desktop_snapshot".to_string());
+            let mut snapshots = self.snapshots.lock().unwrap();
+            let snapshot = snapshots
+                .front()
+                .cloned()
+                .expect("refreshed-target fallback api must retain at least one snapshot");
+            if snapshots.len() > 1 {
+                snapshots.pop_front();
+            }
+            Ok(snapshot)
+        }
+
+        fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
+            panic!("refreshed-target fallback api must not query managed_spaces")
+        }
+
+        fn active_space_ids(&self) -> Result<HashSet<u64>, MacosNativeProbeError> {
+            panic!("refreshed-target fallback api must not query active_space_ids")
+        }
+
+        fn active_space_windows(
+            &self,
+            _space_id: u64,
+        ) -> Result<Vec<RawWindow>, MacosNativeProbeError> {
+            panic!("refreshed-target fallback api must not query active_space_windows")
+        }
+
+        fn inactive_space_window_ids(
+            &self,
+        ) -> Result<HashMap<u64, Vec<u64>>, MacosNativeProbeError> {
+            panic!("refreshed-target fallback api must not query inactive_space_window_ids")
+        }
+
+        fn switch_space(&self, _space_id: u64) -> Result<(), MacosNativeOperationError> {
+            panic!("refreshed-target fallback api must not switch spaces")
+        }
+
+        fn focus_window(&self, window_id: u64) -> Result<(), MacosNativeOperationError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("focus_window:{window_id}"));
+            Err(MacosNativeOperationError::MissingWindow(window_id))
+        }
+
+        fn focus_window_with_known_pid(
+            &self,
+            window_id: u64,
+            pid: u32,
+        ) -> Result<(), MacosNativeOperationError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("focus_window_with_known_pid:{window_id}:{pid}"));
+            if self.successful_focus_targets.contains(&(window_id, pid)) {
+                Ok(())
+            } else {
+                Err(MacosNativeOperationError::MissingWindow(window_id))
+            }
+        }
+
+        fn ax_window_ids_for_pid(&self, pid: u32) -> Result<Vec<u64>, MacosNativeOperationError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("ax_window_ids_for_pid:{pid}"));
+            Ok(self
+                .ax_window_ids_by_pid
+                .get(&pid)
+                .cloned()
+                .unwrap_or_default())
+        }
+
+        fn move_window_to_space(
+            &self,
+            _window_id: u64,
+            _space_id: u64,
+        ) -> Result<(), MacosNativeOperationError> {
+            Ok(())
+        }
+
+        fn swap_window_frames(
+            &self,
+            _source_window_id: u64,
+            _source_frame: NativeBounds,
+            _target_window_id: u64,
+            _target_frame: NativeBounds,
+        ) -> Result<(), MacosNativeOperationError> {
+            Ok(())
+        }
+    }
+
+    #[derive(Debug, Clone)]
     struct RecordingMoveApi {
         snapshot: NativeDesktopSnapshot,
         calls: Arc<Mutex<Vec<NativeCall>>>,
@@ -7033,6 +7663,7 @@ mod tests {
                             app_id: window.app_id,
                             title: window.title,
                             bounds: window.frame,
+                            level: window.level,
                             space_id,
                             order_index: Some(order_index),
                         }),
@@ -7831,10 +8462,7 @@ command = false
                 "backend public api should not expose {forbidden}"
             );
         }
-        for forbidden in [
-            "use crate::engine::topology::",
-            "crate::engine::topology::",
-        ] {
+        for forbidden in ["use crate::engine::topology::", "crate::engine::topology::"] {
             assert!(
                 !backend_public.contains(forbidden),
                 "backend production code should not reference {forbidden}"
@@ -8583,6 +9211,7 @@ command = false
                         app_id: Some("focused.app".to_string()),
                         title: Some("Focused".to_string()),
                         bounds: None,
+                        level: 0,
                         space_id: 1,
                         order_index: Some(0),
                     },
@@ -8592,6 +9221,7 @@ command = false
                         app_id: Some("other.app".to_string()),
                         title: Some("Other".to_string()),
                         bounds: None,
+                        level: 0,
                         space_id: 1,
                         order_index: Some(1),
                     },
@@ -8629,6 +9259,7 @@ command = false
                         width: 100,
                         height: 100,
                     }),
+                    level: 0,
                     space_id: 1,
                     order_index: Some(0),
                 },
@@ -8643,6 +9274,7 @@ command = false
                         width: 100,
                         height: 100,
                     }),
+                    level: 0,
                     space_id: 1,
                     order_index: Some(1),
                 },
@@ -8655,6 +9287,60 @@ command = false
             select_closest_in_direction_with_strategy(&topology.rects, 101, Direction::West, None);
 
         assert_eq!(target, Some(100));
+    }
+
+    #[test]
+    fn outer_directional_selection_ignores_non_normal_layer_targets_from_raw_snapshot() {
+        let topology = RawTopologySnapshot {
+            spaces: vec![raw_split_space(1, &[11, 12])],
+            active_space_ids: HashSet::from([1]),
+            active_space_windows: HashMap::from([(
+                1,
+                vec![
+                    raw_window(100)
+                        .with_level(0)
+                        .with_pid(4001)
+                        .with_frame(Rect {
+                            x: 0,
+                            y: 120,
+                            w: 500,
+                            h: 900,
+                        }),
+                    raw_window(159)
+                        .with_level(0)
+                        .with_pid(946)
+                        .with_frame(Rect {
+                            x: 1200,
+                            y: 120,
+                            w: 500,
+                            h: 900,
+                        }),
+                    raw_window(52)
+                        .with_level(25)
+                        .with_pid(950)
+                        .with_frame(Rect {
+                            x: 1739,
+                            y: 0,
+                            w: 63,
+                            h: 39,
+                        }),
+                ],
+            )]),
+            inactive_space_window_ids: HashMap::new(),
+            focused_window_id: Some(100),
+        };
+
+        let snapshot = native_desktop_snapshot_from_topology(&topology);
+        let outer_topology = outer_topology_from_native_snapshot(&snapshot).unwrap();
+
+        let target = select_focus_target_from_outer_topology(
+            &outer_topology,
+            Direction::East,
+            crate::engine::topology::FloatingFocusStrategy::RadialCenter,
+        )
+        .unwrap();
+
+        assert_eq!(target, FocusTarget::SameSpace { window_id: 159 });
     }
 
     #[test]
@@ -8675,6 +9361,7 @@ command = false
                         app_id: Some("focused.app".to_string()),
                         title: Some("Focused".to_string()),
                         bounds: None,
+                        level: 0,
                         space_id: 1,
                         order_index: Some(0),
                     },
@@ -8684,6 +9371,7 @@ command = false
                         app_id: Some("other.app".to_string()),
                         title: Some("Other".to_string()),
                         bounds: None,
+                        level: 0,
                         space_id: 1,
                         order_index: Some(1),
                     },
@@ -8725,6 +9413,7 @@ command = false
                         app_id: Some("focused.app".to_string()),
                         title: Some("Focused".to_string()),
                         bounds: None,
+                        level: 0,
                         space_id: 99,
                         order_index: Some(1),
                     },
@@ -8734,6 +9423,7 @@ command = false
                         app_id: Some("other.app".to_string()),
                         title: Some("Other".to_string()),
                         bounds: None,
+                        level: 0,
                         space_id: 100,
                         order_index: Some(0),
                     },
@@ -8779,6 +9469,7 @@ command = false
                     app_id: Some("focused.app".to_string()),
                     title: Some("Focused".to_string()),
                     bounds: None,
+                    level: 0,
                     space_id: 1,
                     order_index: Some(0),
                 }],
@@ -8815,6 +9506,7 @@ command = false
                         app_id: Some("focused.app".to_string()),
                         title: Some("Focused".to_string()),
                         bounds: None,
+                        level: 0,
                         space_id: 1,
                         order_index: Some(0),
                     },
@@ -8824,6 +9516,7 @@ command = false
                         app_id: Some("other.app".to_string()),
                         title: Some("Other".to_string()),
                         bounds: None,
+                        level: 0,
                         space_id: 1,
                         order_index: Some(1),
                     },
@@ -8868,6 +9561,7 @@ command = false
                     app_id: Some("focused.app".to_string()),
                     title: Some("focused".to_string()),
                     bounds: None,
+                    level: 0,
                     space_id: 1,
                     order_index: Some(0),
                 },
@@ -8877,6 +9571,7 @@ command = false
                     app_id: Some("first.app".to_string()),
                     title: Some("first".to_string()),
                     bounds: None,
+                    level: 0,
                     space_id: 1,
                     order_index: Some(1),
                 },
@@ -9039,12 +9734,12 @@ command = false
             &options,
             NativeDirection::East,
             |key_code, key_down, flags| {
-            calls.borrow_mut().push(format!(
-                "key:{key_code}:{}:{flags}",
-                if key_down { "down" } else { "up" }
-            ));
-            Ok(())
-        },
+                calls.borrow_mut().push(format!(
+                    "key:{key_code}:{}:{flags}",
+                    if key_down { "down" } else { "up" }
+                ));
+                Ok(())
+            },
         )
         .unwrap();
 
@@ -9589,6 +10284,7 @@ command = false
                         width: 100,
                         height: 100,
                     }),
+                    level: 0,
                     space_id: 1,
                     order_index: Some(0),
                 },
@@ -9603,6 +10299,7 @@ command = false
                         width: 100,
                         height: 100,
                     }),
+                    level: 0,
                     space_id: 1,
                     order_index: Some(1),
                 },
@@ -9646,6 +10343,7 @@ command = false
                         width: 120,
                         height: 120,
                     }),
+                    level: 0,
                     space_id: 1,
                     order_index: Some(0),
                 },
@@ -9660,6 +10358,7 @@ command = false
                         width: 60,
                         height: 120,
                     }),
+                    level: 0,
                     space_id: 1,
                     order_index: Some(1),
                 },
@@ -9674,6 +10373,7 @@ command = false
                         width: 120,
                         height: 120,
                     }),
+                    level: 0,
                     space_id: 1,
                     order_index: Some(2),
                 },
@@ -9690,6 +10390,568 @@ command = false
             vec![
                 NativeCall::DesktopSnapshot,
                 NativeCall::FocusSameSpaceTargetInSnapshot(NativeDirection::West, 15),
+            ]
+        );
+    }
+
+    #[test]
+    fn focus_direction_falls_back_to_generic_focus_when_splitview_known_pid_focus_misses_target() {
+        let _config = install_macos_native_focus_config("radial_center");
+        let api = SplitViewKnownPidFallbackApi::from_snapshot(NativeDesktopSnapshot {
+            spaces: vec![NativeSpaceSnapshot {
+                id: 1,
+                display_index: 0,
+                active: true,
+                kind: SpaceKind::SplitView,
+            }],
+            active_space_ids: HashSet::from([1]),
+            windows: vec![
+                NativeWindowSnapshot {
+                    id: 10,
+                    pid: Some(924),
+                    app_id: Some("ai.perplexity.mac".to_string()),
+                    title: Some("left-pane".to_string()),
+                    bounds: Some(NativeBounds {
+                        x: 0,
+                        y: 0,
+                        width: 120,
+                        height: 120,
+                    }),
+                    level: 0,
+                    space_id: 1,
+                    order_index: Some(0),
+                },
+                NativeWindowSnapshot {
+                    id: 20,
+                    pid: Some(33_881),
+                    app_id: Some("com.apple.MobileSMS".to_string()),
+                    title: Some("right-pane".to_string()),
+                    bounds: Some(NativeBounds {
+                        x: 220,
+                        y: 0,
+                        width: 120,
+                        height: 120,
+                    }),
+                    level: 0,
+                    space_id: 1,
+                    order_index: Some(1),
+                },
+            ],
+            focused_window_id: Some(20),
+        });
+        let recorded = api.clone();
+        let mut adapter = MacosNativeAdapter::connect_with_api(api).unwrap();
+
+        WindowManagerSession::focus_direction(&mut adapter, Direction::West).unwrap();
+
+        assert_eq!(
+            recorded.api_calls(),
+            vec![
+                "desktop_snapshot".to_string(),
+                "focus_window_with_known_pid:10:924".to_string(),
+                "desktop_snapshot".to_string(),
+                "focus_window:10".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn focus_direction_remaps_splitview_target_to_focusable_same_app_peer_when_target_pid_is_stale()
+    {
+        let _config = install_macos_native_focus_config("radial_center");
+        let api = SplitViewSameAppPeerFallbackApi::from_snapshot(
+            NativeDesktopSnapshot {
+                spaces: vec![NativeSpaceSnapshot {
+                    id: 1,
+                    display_index: 0,
+                    active: true,
+                    kind: SpaceKind::SplitView,
+                }],
+                active_space_ids: HashSet::from([1]),
+                windows: vec![
+                    NativeWindowSnapshot {
+                        id: 23,
+                        pid: Some(924),
+                        app_id: Some("com.apple.Safari".to_string()),
+                        title: Some("stale-left".to_string()),
+                        bounds: Some(NativeBounds {
+                            x: 0,
+                            y: 0,
+                            width: 120,
+                            height: 120,
+                        }),
+                        level: 0,
+                        space_id: 1,
+                        order_index: Some(0),
+                    },
+                    NativeWindowSnapshot {
+                        id: 24,
+                        pid: Some(1728),
+                        app_id: Some("com.apple.Safari".to_string()),
+                        title: Some("focusable-left".to_string()),
+                        bounds: Some(NativeBounds {
+                            x: 8,
+                            y: 0,
+                            width: 112,
+                            height: 120,
+                        }),
+                        level: 0,
+                        space_id: 1,
+                        order_index: Some(1),
+                    },
+                    NativeWindowSnapshot {
+                        id: 20,
+                        pid: Some(33_881),
+                        app_id: Some("com.apple.MobileSMS".to_string()),
+                        title: Some("right-pane".to_string()),
+                        bounds: Some(NativeBounds {
+                            x: 220,
+                            y: 0,
+                            width: 120,
+                            height: 120,
+                        }),
+                        level: 0,
+                        space_id: 1,
+                        order_index: Some(2),
+                    },
+                ],
+                focused_window_id: Some(20),
+            },
+            HashMap::from([(924, vec![]), (1728, vec![24])]),
+        );
+        let recorded = api.clone();
+        let mut adapter = MacosNativeAdapter::connect_with_api(api).unwrap();
+
+        WindowManagerSession::focus_direction(&mut adapter, Direction::West).unwrap();
+
+        assert_eq!(
+            recorded.api_calls(),
+            vec![
+                "desktop_snapshot".to_string(),
+                "focus_window_with_known_pid:23:924".to_string(),
+                "ax_window_ids_for_pid:1728".to_string(),
+                "focus_window_with_known_pid:24:1728".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn focus_direction_remaps_splitview_target_to_same_app_peer_even_when_peer_ax_windows_are_empty_preflight()
+     {
+        let _config = install_macos_native_focus_config("radial_center");
+        let api = SplitViewRefreshedTargetFallbackApi::from_snapshots_with_ax_window_ids(
+            vec![NativeDesktopSnapshot {
+                spaces: vec![NativeSpaceSnapshot {
+                    id: 1,
+                    display_index: 0,
+                    active: true,
+                    kind: SpaceKind::SplitView,
+                }],
+                active_space_ids: HashSet::from([1]),
+                windows: vec![
+                    NativeWindowSnapshot {
+                        id: 23,
+                        pid: Some(924),
+                        app_id: Some("com.apple.Safari".to_string()),
+                        title: Some("stale-left".to_string()),
+                        bounds: Some(NativeBounds {
+                            x: 0,
+                            y: 0,
+                            width: 120,
+                            height: 120,
+                        }),
+                        level: 0,
+                        space_id: 1,
+                        order_index: Some(0),
+                    },
+                    NativeWindowSnapshot {
+                        id: 24,
+                        pid: Some(1728),
+                        app_id: Some("com.apple.Safari".to_string()),
+                        title: Some("live-left".to_string()),
+                        bounds: Some(NativeBounds {
+                            x: 8,
+                            y: 0,
+                            width: 112,
+                            height: 120,
+                        }),
+                        level: 0,
+                        space_id: 1,
+                        order_index: Some(1),
+                    },
+                    NativeWindowSnapshot {
+                        id: 20,
+                        pid: Some(33_881),
+                        app_id: Some("com.apple.MobileSMS".to_string()),
+                        title: Some("right-pane".to_string()),
+                        bounds: Some(NativeBounds {
+                            x: 220,
+                            y: 0,
+                            width: 120,
+                            height: 120,
+                        }),
+                        level: 0,
+                        space_id: 1,
+                        order_index: Some(2),
+                    },
+                ],
+                focused_window_id: Some(20),
+            }],
+            HashSet::from([(24, 1728)]),
+            HashMap::from([(924, vec![]), (1728, vec![])]),
+        );
+        let recorded = api.clone();
+        let mut adapter = MacosNativeAdapter::connect_with_api(api).unwrap();
+
+        WindowManagerSession::focus_direction(&mut adapter, Direction::West).unwrap();
+
+        assert_eq!(
+            recorded.api_calls(),
+            vec![
+                "desktop_snapshot".to_string(),
+                "focus_window_with_known_pid:23:924".to_string(),
+                "ax_window_ids_for_pid:1728".to_string(),
+                "focus_window_with_known_pid:24:1728".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn focus_direction_requeries_splitview_target_from_fresh_snapshot_after_missing_window() {
+        let _config = install_macos_native_focus_config("radial_center");
+        let planning_snapshot = NativeDesktopSnapshot {
+            spaces: vec![NativeSpaceSnapshot {
+                id: 1,
+                display_index: 0,
+                active: true,
+                kind: SpaceKind::SplitView,
+            }],
+            active_space_ids: HashSet::from([1]),
+            windows: vec![
+                NativeWindowSnapshot {
+                    id: 23,
+                    pid: Some(924),
+                    app_id: Some("com.apple.Safari".to_string()),
+                    title: Some("stale-left".to_string()),
+                    bounds: Some(NativeBounds {
+                        x: 0,
+                        y: 0,
+                        width: 120,
+                        height: 120,
+                    }),
+                    level: 0,
+                    space_id: 1,
+                    order_index: Some(0),
+                },
+                NativeWindowSnapshot {
+                    id: 20,
+                    pid: Some(33_881),
+                    app_id: Some("com.apple.MobileSMS".to_string()),
+                    title: Some("right-pane".to_string()),
+                    bounds: Some(NativeBounds {
+                        x: 220,
+                        y: 0,
+                        width: 120,
+                        height: 120,
+                    }),
+                    level: 0,
+                    space_id: 1,
+                    order_index: Some(1),
+                },
+            ],
+            focused_window_id: Some(20),
+        };
+        let refreshed_snapshot = NativeDesktopSnapshot {
+            spaces: vec![NativeSpaceSnapshot {
+                id: 1,
+                display_index: 0,
+                active: true,
+                kind: SpaceKind::SplitView,
+            }],
+            active_space_ids: HashSet::from([1]),
+            windows: vec![
+                NativeWindowSnapshot {
+                    id: 24,
+                    pid: Some(1728),
+                    app_id: Some("com.apple.Safari".to_string()),
+                    title: Some("live-left".to_string()),
+                    bounds: Some(NativeBounds {
+                        x: 0,
+                        y: 0,
+                        width: 120,
+                        height: 120,
+                    }),
+                    level: 0,
+                    space_id: 1,
+                    order_index: Some(0),
+                },
+                NativeWindowSnapshot {
+                    id: 20,
+                    pid: Some(33_881),
+                    app_id: Some("com.apple.MobileSMS".to_string()),
+                    title: Some("right-pane".to_string()),
+                    bounds: Some(NativeBounds {
+                        x: 220,
+                        y: 0,
+                        width: 120,
+                        height: 120,
+                    }),
+                    level: 0,
+                    space_id: 1,
+                    order_index: Some(1),
+                },
+            ],
+            focused_window_id: Some(20),
+        };
+        let api = SplitViewRefreshedTargetFallbackApi::from_snapshots(
+            vec![planning_snapshot, refreshed_snapshot],
+            HashSet::from([(24, 1728)]),
+        );
+        let recorded = api.clone();
+        let mut adapter = MacosNativeAdapter::connect_with_api(api).unwrap();
+
+        WindowManagerSession::focus_direction(&mut adapter, Direction::West).unwrap();
+
+        assert_eq!(
+            recorded.api_calls(),
+            vec![
+                "desktop_snapshot".to_string(),
+                "focus_window_with_known_pid:23:924".to_string(),
+                "desktop_snapshot".to_string(),
+                "focus_window_with_known_pid:24:1728".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn focus_direction_requeries_splitview_target_from_fresh_snapshot_even_when_focus_state_drifts()
+    {
+        let _config = install_macos_native_focus_config("radial_center");
+        let planning_snapshot = NativeDesktopSnapshot {
+            spaces: vec![NativeSpaceSnapshot {
+                id: 1,
+                display_index: 0,
+                active: true,
+                kind: SpaceKind::SplitView,
+            }],
+            active_space_ids: HashSet::from([1]),
+            windows: vec![
+                NativeWindowSnapshot {
+                    id: 23,
+                    pid: Some(924),
+                    app_id: Some("com.apple.Safari".to_string()),
+                    title: Some("stale-left".to_string()),
+                    bounds: Some(NativeBounds {
+                        x: 0,
+                        y: 0,
+                        width: 120,
+                        height: 120,
+                    }),
+                    level: 0,
+                    space_id: 1,
+                    order_index: Some(0),
+                },
+                NativeWindowSnapshot {
+                    id: 20,
+                    pid: Some(33_881),
+                    app_id: Some("com.apple.MobileSMS".to_string()),
+                    title: Some("right-pane".to_string()),
+                    bounds: Some(NativeBounds {
+                        x: 220,
+                        y: 0,
+                        width: 120,
+                        height: 120,
+                    }),
+                    level: 0,
+                    space_id: 1,
+                    order_index: Some(1),
+                },
+            ],
+            focused_window_id: Some(20),
+        };
+        let refreshed_snapshot = NativeDesktopSnapshot {
+            spaces: vec![NativeSpaceSnapshot {
+                id: 1,
+                display_index: 0,
+                active: true,
+                kind: SpaceKind::SplitView,
+            }],
+            active_space_ids: HashSet::from([1]),
+            windows: vec![
+                NativeWindowSnapshot {
+                    id: 24,
+                    pid: Some(1728),
+                    app_id: Some("com.apple.Safari".to_string()),
+                    title: Some("live-left".to_string()),
+                    bounds: Some(NativeBounds {
+                        x: 0,
+                        y: 0,
+                        width: 120,
+                        height: 120,
+                    }),
+                    level: 0,
+                    space_id: 1,
+                    order_index: Some(0),
+                },
+                NativeWindowSnapshot {
+                    id: 20,
+                    pid: Some(33_881),
+                    app_id: Some("com.apple.MobileSMS".to_string()),
+                    title: Some("right-pane".to_string()),
+                    bounds: Some(NativeBounds {
+                        x: 220,
+                        y: 0,
+                        width: 120,
+                        height: 120,
+                    }),
+                    level: 0,
+                    space_id: 1,
+                    order_index: Some(1),
+                },
+            ],
+            focused_window_id: None,
+        };
+        let api = SplitViewRefreshedTargetFallbackApi::from_snapshots(
+            vec![planning_snapshot, refreshed_snapshot],
+            HashSet::from([(24, 1728)]),
+        );
+        let recorded = api.clone();
+        let mut adapter = MacosNativeAdapter::connect_with_api(api).unwrap();
+
+        WindowManagerSession::focus_direction(&mut adapter, Direction::West).unwrap();
+
+        assert_eq!(
+            recorded.api_calls(),
+            vec![
+                "desktop_snapshot".to_string(),
+                "focus_window_with_known_pid:23:924".to_string(),
+                "desktop_snapshot".to_string(),
+                "focus_window_with_known_pid:24:1728".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn focus_direction_remaps_refreshed_splitview_target_to_focusable_same_app_peer_when_direct_target_stays_stale()
+     {
+        let _config = install_macos_native_focus_config("radial_center");
+        let planning_snapshot = NativeDesktopSnapshot {
+            spaces: vec![NativeSpaceSnapshot {
+                id: 1,
+                display_index: 0,
+                active: true,
+                kind: SpaceKind::SplitView,
+            }],
+            active_space_ids: HashSet::from([1]),
+            windows: vec![
+                NativeWindowSnapshot {
+                    id: 23,
+                    pid: Some(924),
+                    app_id: Some("com.apple.Safari".to_string()),
+                    title: Some("stale-left".to_string()),
+                    bounds: Some(NativeBounds {
+                        x: 0,
+                        y: 0,
+                        width: 120,
+                        height: 120,
+                    }),
+                    level: 0,
+                    space_id: 1,
+                    order_index: Some(0),
+                },
+                NativeWindowSnapshot {
+                    id: 20,
+                    pid: Some(33_881),
+                    app_id: Some("com.apple.MobileSMS".to_string()),
+                    title: Some("right-pane".to_string()),
+                    bounds: Some(NativeBounds {
+                        x: 220,
+                        y: 0,
+                        width: 120,
+                        height: 120,
+                    }),
+                    level: 0,
+                    space_id: 1,
+                    order_index: Some(1),
+                },
+            ],
+            focused_window_id: Some(20),
+        };
+        let refreshed_snapshot = NativeDesktopSnapshot {
+            spaces: vec![NativeSpaceSnapshot {
+                id: 1,
+                display_index: 0,
+                active: true,
+                kind: SpaceKind::SplitView,
+            }],
+            active_space_ids: HashSet::from([1]),
+            windows: vec![
+                NativeWindowSnapshot {
+                    id: 23,
+                    pid: Some(924),
+                    app_id: Some("com.apple.Safari".to_string()),
+                    title: Some("still-stale-left".to_string()),
+                    bounds: Some(NativeBounds {
+                        x: 0,
+                        y: 0,
+                        width: 120,
+                        height: 120,
+                    }),
+                    level: 0,
+                    space_id: 1,
+                    order_index: Some(0),
+                },
+                NativeWindowSnapshot {
+                    id: 24,
+                    pid: Some(1728),
+                    app_id: Some("com.apple.Safari".to_string()),
+                    title: Some("focusable-left".to_string()),
+                    bounds: Some(NativeBounds {
+                        x: 8,
+                        y: 0,
+                        width: 112,
+                        height: 120,
+                    }),
+                    level: 0,
+                    space_id: 1,
+                    order_index: Some(1),
+                },
+                NativeWindowSnapshot {
+                    id: 20,
+                    pid: Some(33_881),
+                    app_id: Some("com.apple.MobileSMS".to_string()),
+                    title: Some("right-pane".to_string()),
+                    bounds: Some(NativeBounds {
+                        x: 220,
+                        y: 0,
+                        width: 120,
+                        height: 120,
+                    }),
+                    level: 0,
+                    space_id: 1,
+                    order_index: Some(2),
+                },
+            ],
+            focused_window_id: Some(20),
+        };
+        let api = SplitViewRefreshedTargetFallbackApi::from_snapshots_with_ax_window_ids(
+            vec![planning_snapshot, refreshed_snapshot],
+            HashSet::from([(24, 1728)]),
+            HashMap::from([(924, vec![]), (1728, vec![24])]),
+        );
+        let recorded = api.clone();
+        let mut adapter = MacosNativeAdapter::connect_with_api(api).unwrap();
+
+        WindowManagerSession::focus_direction(&mut adapter, Direction::West).unwrap();
+
+        assert_eq!(
+            recorded.api_calls(),
+            vec![
+                "desktop_snapshot".to_string(),
+                "focus_window_with_known_pid:23:924".to_string(),
+                "desktop_snapshot".to_string(),
+                "ax_window_ids_for_pid:1728".to_string(),
+                "focus_window_with_known_pid:24:1728".to_string(),
             ]
         );
     }
@@ -9725,6 +10987,7 @@ command = false
                         width: 100,
                         height: 100,
                     }),
+                    level: 0,
                     space_id: 2,
                     order_index: Some(0),
                 }],
@@ -9757,6 +11020,7 @@ command = false
                         width: 100,
                         height: 100,
                     }),
+                    level: 0,
                     space_id: 2,
                     order_index: Some(0),
                 }],
@@ -9800,6 +11064,7 @@ command = false
                         width: 100,
                         height: 100,
                     }),
+                    level: 0,
                     space_id: 1,
                     order_index: Some(0),
                 },
@@ -9814,6 +11079,7 @@ command = false
                         width: 100,
                         height: 100,
                     }),
+                    level: 0,
                     space_id: 1,
                     order_index: Some(1),
                 },
@@ -9866,6 +11132,7 @@ command = false
                     width: 100,
                     height: 100,
                 }),
+                level: 0,
                 space_id: 2,
                 order_index: Some(0),
             }],
@@ -10192,6 +11459,65 @@ command = false
         adapter.focus_direction_inner(Direction::West).unwrap();
 
         assert_eq!(take_calls(&calls), vec!["focus_window:10"]);
+    }
+
+    #[test]
+    fn backend_split_view_focus_ignores_non_normal_layer_overlay_targets() {
+        let _config = install_macos_native_focus_config("radial_center");
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let topology = RawTopologySnapshot {
+            spaces: vec![raw_split_space(1, &[11, 12])],
+            active_space_ids: HashSet::from([1]),
+            active_space_windows: HashMap::from([(
+                1,
+                vec![
+                    raw_window(100)
+                        .with_visible_index(0)
+                        .with_pid(4001)
+                        .with_app_id("com.example.source")
+                        .with_title("source")
+                        .with_frame(Rect {
+                            x: 0,
+                            y: 120,
+                            w: 500,
+                            h: 900,
+                        }),
+                    raw_window(159)
+                        .with_visible_index(1)
+                        .with_pid(946)
+                        .with_app_id("com.example.target")
+                        .with_title("target")
+                        .with_frame(Rect {
+                            x: 1200,
+                            y: 120,
+                            w: 500,
+                            h: 900,
+                        }),
+                    raw_window(52)
+                        .with_visible_index(2)
+                        .with_level(25)
+                        .with_pid(950)
+                        .with_app_id("com.apple.controlcenter")
+                        .with_title("Control Center")
+                        .with_frame(Rect {
+                            x: 1739,
+                            y: 0,
+                            w: 63,
+                            h: 39,
+                        }),
+                ],
+            )]),
+            inactive_space_window_ids: HashMap::new(),
+            focused_window_id: Some(100),
+        };
+        let api = FakeNativeApi::default()
+            .with_topology(topology)
+            .with_calls(calls.clone());
+        let adapter = MacosNativeAdapter::connect_with_api(api).unwrap();
+
+        adapter.focus_direction_inner(Direction::East).unwrap();
+
+        assert_eq!(take_calls(&calls), vec!["focus_window:159"]);
     }
 
     #[test]

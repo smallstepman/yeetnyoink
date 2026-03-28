@@ -1,6 +1,6 @@
 use crate::adapters::apps::{
-    AppAdapter, AppKind, MergeExecutionMode, MergePreparation, MoveDecision, TearResult,
-    TopologyHandler, unsupported_operation,
+    unsupported_operation, AppAdapter, AppKind, MergeExecutionMode, MergePreparation, MoveDecision,
+    TearResult, TopologyHandler,
 };
 use crate::config::AppSection;
 
@@ -251,10 +251,10 @@ pub(crate) fn bind_app_policy(app: Box<dyn AppAdapter>) -> Box<dyn AppAdapter> {
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+    use std::sync::Arc;
 
-    use crate::adapters::apps::{AppAdapter, AppKind, TearResult, emacs, wezterm};
+    use crate::adapters::apps::{emacs, wezterm, AppAdapter, AppKind, TearResult};
     use crate::engine::contracts::{AppCapabilities, TopologyHandler};
     use crate::engine::topology::Direction;
 
