@@ -13,7 +13,7 @@ use anyhow::{Context, bail};
 
 use macos_window_manager_api::{
     DirectionalFocusPlan, MacosNativeApi, MacosNativeConnectError, MacosNativeProbeError,
-    NativeDesktopSnapshot, RealNativeApi,
+    NativeDesktopSnapshot, NativeWindowSnapshot, RealNativeApi,
 };
 
 mod macos_window_manager_api {
@@ -4144,7 +4144,50 @@ fn process_id_from_native(pid: Option<u32>) -> Option<ProcessId> {
     pid.and_then(ProcessId::new)
 }
 
+fn compare_native_active_windows(
+    left: &NativeWindowSnapshot,
+    right: &NativeWindowSnapshot,
+) -> std::cmp::Ordering {
+    match (left.order_index, right.order_index) {
+        (Some(left_index), Some(right_index)) => left_index.cmp(&right_index),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
+    }
+    .then_with(|| left.id.cmp(&right.id))
+}
+
+fn resolved_focused_native_window(
+    snapshot: &NativeDesktopSnapshot,
+) -> anyhow::Result<&NativeWindowSnapshot> {
+    let is_active_window =
+        |window: &&NativeWindowSnapshot| snapshot.active_space_ids.contains(&window.space_id);
+
+    if let Some(focused_window_id) = snapshot.focused_window_id {
+        if let Some(window) = snapshot
+            .windows
+            .iter()
+            .filter(is_active_window)
+            .find(|window| window.id == focused_window_id)
+        {
+            return Ok(window);
+        }
+    }
+
+    snapshot
+        .windows
+        .iter()
+        .filter(is_active_window)
+        .min_by(|left, right| compare_native_active_windows(left, right))
+        .ok_or(MacosNativeProbeError::MissingFocusedWindow)
+        .map_err(map_probe_error)
+}
+
 fn window_records_from_native(snapshot: &NativeDesktopSnapshot) -> Vec<WindowRecord> {
+    let focused_window_id = resolved_focused_native_window(snapshot)
+        .ok()
+        .map(|window| window.id);
+
     snapshot
         .windows
         .iter()
@@ -4153,7 +4196,7 @@ fn window_records_from_native(snapshot: &NativeDesktopSnapshot) -> Vec<WindowRec
             app_id: window.app_id.clone(),
             title: window.title.clone(),
             pid: process_id_from_native(window.pid),
-            is_focused: snapshot.focused_window_id == Some(window.id),
+            is_focused: focused_window_id == Some(window.id),
             original_tile_index: window.order_index.unwrap_or(0),
         })
         .collect()
@@ -4162,16 +4205,7 @@ fn window_records_from_native(snapshot: &NativeDesktopSnapshot) -> Vec<WindowRec
 fn focused_window_record_from_native(
     snapshot: &NativeDesktopSnapshot,
 ) -> anyhow::Result<FocusedWindowRecord> {
-    let focused_window_id = snapshot
-        .focused_window_id
-        .ok_or(MacosNativeProbeError::MissingFocusedWindow)
-        .map_err(map_probe_error)?;
-    let focused = snapshot
-        .windows
-        .iter()
-        .find(|window| window.id == focused_window_id)
-        .ok_or(MacosNativeProbeError::MissingFocusedWindow)
-        .map_err(map_probe_error)?;
+    let focused = resolved_focused_native_window(snapshot)?;
 
     Ok(FocusedWindowRecord {
         id: focused.id,
@@ -8290,6 +8324,55 @@ command = false
     }
 
     #[test]
+    fn focused_window_and_windows_fall_back_when_native_snapshot_has_no_focused_window_id() {
+        let mut adapter =
+            MacosNativeAdapter::connect_with_api(SnapshotOnlyApi::new(NativeDesktopSnapshot {
+                spaces: vec![NativeSpaceSnapshot {
+                    id: 1,
+                    display_index: 0,
+                    active: true,
+                    kind: SpaceKind::Desktop,
+                }],
+                active_space_ids: HashSet::from([1]),
+                windows: vec![
+                    NativeWindowSnapshot {
+                        id: 101,
+                        pid: Some(4001),
+                        app_id: Some("focused.app".to_string()),
+                        title: Some("Focused".to_string()),
+                        bounds: None,
+                        space_id: 1,
+                        order_index: Some(0),
+                    },
+                    NativeWindowSnapshot {
+                        id: 102,
+                        pid: Some(4002),
+                        app_id: Some("other.app".to_string()),
+                        title: Some("Other".to_string()),
+                        bounds: None,
+                        space_id: 1,
+                        order_index: Some(1),
+                    },
+                ],
+                focused_window_id: None,
+            }))
+            .unwrap();
+
+        let focused = WindowManagerSession::focused_window(&mut adapter).unwrap();
+        let windows = WindowManagerSession::windows(&mut adapter).unwrap();
+
+        assert_eq!(focused.id, 101);
+        assert_eq!(
+            windows.iter().find(|window| window.id == 101).map(|window| window.is_focused),
+            Some(true)
+        );
+        assert_eq!(
+            windows.iter().find(|window| window.id == 102).map(|window| window.is_focused),
+            Some(false)
+        );
+    }
+
+    #[test]
     fn focused_app_record_is_derived_from_native_snapshot() {
         let spec = MacosNativeSpec {
             api_factory: SnapshotApiFactory::new(NativeDesktopSnapshot {
@@ -8312,6 +8395,53 @@ command = false
                 focused_window_id: Some(101),
             }),
         };
+        let focused = WindowManagerSpec::focused_app_record(&spec).unwrap();
+
+        assert_eq!(
+            focused,
+            Some(FocusedAppRecord {
+                app_id: "focused.app".to_string(),
+                title: "Focused".to_string(),
+                pid: ProcessId::new(4001).unwrap(),
+            })
+        );
+    }
+
+    #[test]
+    fn focused_app_record_falls_back_when_native_snapshot_focused_window_id_is_stale() {
+        let spec = MacosNativeSpec {
+            api_factory: SnapshotApiFactory::new(NativeDesktopSnapshot {
+                spaces: vec![NativeSpaceSnapshot {
+                    id: 1,
+                    display_index: 0,
+                    active: true,
+                    kind: SpaceKind::Desktop,
+                }],
+                active_space_ids: HashSet::from([1]),
+                windows: vec![
+                    NativeWindowSnapshot {
+                        id: 101,
+                        pid: Some(4001),
+                        app_id: Some("focused.app".to_string()),
+                        title: Some("Focused".to_string()),
+                        bounds: None,
+                        space_id: 1,
+                        order_index: Some(0),
+                    },
+                    NativeWindowSnapshot {
+                        id: 102,
+                        pid: Some(4002),
+                        app_id: Some("other.app".to_string()),
+                        title: Some("Other".to_string()),
+                        bounds: None,
+                        space_id: 1,
+                        order_index: Some(1),
+                    },
+                ],
+                focused_window_id: Some(999),
+            }),
+        };
+
         let focused = WindowManagerSpec::focused_app_record(&spec).unwrap();
 
         assert_eq!(
