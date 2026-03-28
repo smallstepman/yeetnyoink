@@ -7,6 +7,7 @@ use crate::engine::wm::{
     WindowManagerCapabilities, WindowManagerCapabilityDescriptor, WindowManagerFeatures,
     WindowManagerSession, WindowManagerSpec, WindowRecord, validate_declared_capabilities,
 };
+use crate::logging;
 use anyhow::{Context, bail};
 
 use macos_window_manager_api::{
@@ -4359,16 +4360,17 @@ where
                     .map_err(anyhow::Error::new)?;
                 let switched_snapshot = self.ctx.api.desktop_snapshot().map_err(map_probe_error)?;
                 let switched_topology = outer_topology_from_native_snapshot(&switched_snapshot)?;
-                let target = outer_best_window_in_space(
+                let Some(target) = outer_best_window_in_space(
                     &switched_topology,
                     target_space_id,
                     direction.opposite(),
                 )
-                .ok_or_else(|| {
-                    anyhow::Error::new(MacosNativeOperationError::NoDirectionalFocusTarget(
-                        direction,
-                    ))
-                })?;
+                else {
+                    logging::debug(format!(
+                        "macos_native: switched to adjacent space {target_space_id} without focusable windows; treating focus as successful"
+                    ));
+                    return Ok(());
+                };
 
                 if let Some(pid) = target.pid {
                     self.ctx
@@ -5704,6 +5706,7 @@ mod tests {
     #[derive(Debug, Clone, PartialEq, Eq)]
     enum NativeCall {
         DesktopSnapshot,
+        SwitchSpaceInSnapshot(u64, Option<Direction>),
         FocusSameSpaceTargetInSnapshot(Direction, u64),
         FocusWindowWithPid(u64, u32),
     }
@@ -5784,6 +5787,136 @@ mod tests {
                 .unwrap()
                 .push(NativeCall::FocusWindowWithPid(window_id, pid));
             Ok(())
+        }
+
+        fn move_window_to_space(
+            &self,
+            _window_id: u64,
+            _space_id: u64,
+        ) -> Result<(), MacosNativeOperationError> {
+            Ok(())
+        }
+
+        fn swap_window_frames(
+            &self,
+            _source_window_id: u64,
+            _source_frame: Rect,
+            _target_window_id: u64,
+            _target_frame: Rect,
+        ) -> Result<(), MacosNativeOperationError> {
+            Ok(())
+        }
+
+        fn plan_focus_direction(
+            &self,
+            _direction: Direction,
+            _strategy: crate::engine::topology::FloatingFocusStrategy,
+        ) -> Result<DirectionalFocusPlan, MacosNativeOperationError> {
+            panic!("outer focus routing should not call plan_focus_direction")
+        }
+
+        fn execute_focus_plan(
+            &self,
+            _plan: &DirectionalFocusPlan,
+        ) -> Result<(), MacosNativeOperationError> {
+            panic!("outer focus routing should not call execute_focus_plan")
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    struct RecordingCrossSpaceFocusApi {
+        snapshots: Arc<Mutex<VecDeque<NativeDesktopSnapshot>>>,
+        calls: Arc<Mutex<Vec<NativeCall>>>,
+    }
+
+    impl RecordingCrossSpaceFocusApi {
+        fn from_snapshots(snapshots: impl IntoIterator<Item = NativeDesktopSnapshot>) -> Self {
+            Self {
+                snapshots: Arc::new(Mutex::new(snapshots.into_iter().collect())),
+                calls: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+
+        fn api_calls(&self) -> Vec<NativeCall> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    impl MacosNativeApi for RecordingCrossSpaceFocusApi {
+        fn has_symbol(&self, _symbol: &'static str) -> bool {
+            true
+        }
+
+        fn ax_is_trusted(&self) -> bool {
+            true
+        }
+
+        fn minimal_topology_ready(&self) -> bool {
+            true
+        }
+
+        fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
+            self.calls.lock().unwrap().push(NativeCall::DesktopSnapshot);
+            self.snapshots
+                .lock()
+                .unwrap()
+                .pop_front()
+                .ok_or(MacosNativeProbeError::MissingTopology(
+                    "recording cross-space focus snapshot",
+                ))
+        }
+
+        fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
+            panic!("cross-space focus api must not query managed_spaces")
+        }
+
+        fn active_space_ids(&self) -> Result<HashSet<u64>, MacosNativeProbeError> {
+            panic!("cross-space focus api must not query active_space_ids")
+        }
+
+        fn active_space_windows(
+            &self,
+            _space_id: u64,
+        ) -> Result<Vec<RawWindow>, MacosNativeProbeError> {
+            panic!("cross-space focus api must not query active_space_windows")
+        }
+
+        fn inactive_space_window_ids(
+            &self,
+        ) -> Result<HashMap<u64, Vec<u64>>, MacosNativeProbeError> {
+            panic!("cross-space focus api must not query inactive_space_window_ids")
+        }
+
+        fn switch_space_in_snapshot(
+            &self,
+            _snapshot: &NativeDesktopSnapshot,
+            space_id: u64,
+            adjacent_direction: Option<Direction>,
+        ) -> Result<(), MacosNativeOperationError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(NativeCall::SwitchSpaceInSnapshot(
+                    space_id,
+                    adjacent_direction,
+                ));
+            Ok(())
+        }
+
+        fn switch_space(&self, _space_id: u64) -> Result<(), MacosNativeOperationError> {
+            panic!("outer focus routing should call switch_space_in_snapshot")
+        }
+
+        fn focus_window(&self, _window_id: u64) -> Result<(), MacosNativeOperationError> {
+            panic!("empty destination space should not focus a window")
+        }
+
+        fn focus_window_in_active_space_with_known_pid(
+            &self,
+            _window_id: u64,
+            _pid: u32,
+        ) -> Result<(), MacosNativeOperationError> {
+            panic!("empty destination space should not focus a window with pid")
         }
 
         fn move_window_to_space(
@@ -10476,6 +10609,90 @@ command = true
             vec![
                 NativeCall::DesktopSnapshot,
                 NativeCall::FocusSameSpaceTargetInSnapshot(Direction::West, 15),
+            ]
+        );
+    }
+
+    #[test]
+    fn focus_direction_returns_success_after_switching_to_empty_adjacent_space() {
+        let _config = install_macos_native_focus_config("radial_center");
+        let api = RecordingCrossSpaceFocusApi::from_snapshots([
+            NativeDesktopSnapshot {
+                spaces: vec![
+                    NativeSpaceSnapshot {
+                        id: 1,
+                        display_index: 0,
+                        active: false,
+                        kind: SpaceKind::Desktop,
+                    },
+                    NativeSpaceSnapshot {
+                        id: 2,
+                        display_index: 0,
+                        active: true,
+                        kind: SpaceKind::Desktop,
+                    },
+                ],
+                active_space_ids: HashSet::from([2]),
+                windows: vec![NativeWindowSnapshot {
+                    id: 200,
+                    pid: Some(2200),
+                    app_id: Some("com.example.focused".to_string()),
+                    title: Some("focused".to_string()),
+                    bounds: Some(NativeBounds {
+                        x: 200,
+                        y: 0,
+                        width: 100,
+                        height: 100,
+                    }),
+                    space_id: 2,
+                    order_index: Some(0),
+                }],
+                focused_window_id: Some(200),
+            },
+            NativeDesktopSnapshot {
+                spaces: vec![
+                    NativeSpaceSnapshot {
+                        id: 1,
+                        display_index: 0,
+                        active: true,
+                        kind: SpaceKind::Desktop,
+                    },
+                    NativeSpaceSnapshot {
+                        id: 2,
+                        display_index: 0,
+                        active: false,
+                        kind: SpaceKind::Desktop,
+                    },
+                ],
+                active_space_ids: HashSet::from([1]),
+                windows: vec![NativeWindowSnapshot {
+                    id: 200,
+                    pid: Some(2200),
+                    app_id: Some("com.example.focused".to_string()),
+                    title: Some("focused".to_string()),
+                    bounds: Some(NativeBounds {
+                        x: 200,
+                        y: 0,
+                        width: 100,
+                        height: 100,
+                    }),
+                    space_id: 2,
+                    order_index: Some(0),
+                }],
+                focused_window_id: None,
+            },
+        ]);
+        let recorded = api.clone();
+        let mut adapter = MacosNativeAdapter::connect_with_api(api).unwrap();
+
+        WindowManagerSession::focus_direction(&mut adapter, Direction::West).unwrap();
+
+        assert_eq!(
+            recorded.api_calls(),
+            vec![
+                NativeCall::DesktopSnapshot,
+                NativeCall::SwitchSpaceInSnapshot(1, Some(Direction::West)),
+                NativeCall::DesktopSnapshot,
             ]
         );
     }
