@@ -1,6 +1,6 @@
 use crate::config::{self, WmBackend};
 use crate::engine::runtime::{self, CommandContext, ProcessId};
-use crate::engine::topology::Direction;
+use crate::engine::topology::{DirectedRect, Direction, Rect};
 use crate::engine::wm::{
     CapabilitySupport, ConfiguredWindowManager, DirectionalCapability, FloatingFocusMode,
     FocusedAppRecord, FocusedWindowRecord, PrimitiveWindowManagerCapabilities, ResizeIntent,
@@ -12,7 +12,7 @@ use anyhow::{Context, bail};
 
 use macos_window_manager_api::{
     DirectionalFocusPlan, MacosNativeApi, MacosNativeConnectError, MacosNativeProbeError,
-    NativeDesktopSnapshot, NativeWindowSnapshot, RealNativeApi,
+    NativeBounds, NativeDesktopSnapshot, NativeWindowSnapshot, RealNativeApi,
 };
 
 mod macos_window_manager_api {
@@ -4143,6 +4143,41 @@ fn process_id_from_native(pid: Option<u32>) -> Option<ProcessId> {
     pid.and_then(ProcessId::new)
 }
 
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OuterMacosTopology {
+    rects: Vec<DirectedRect<u64>>,
+}
+
+#[allow(dead_code)]
+fn rect_from_native(bounds: NativeBounds) -> Rect {
+    Rect {
+        x: bounds.x,
+        y: bounds.y,
+        w: bounds.width,
+        h: bounds.height,
+    }
+}
+
+#[allow(dead_code)]
+fn outer_topology_from_native_snapshot(
+    snapshot: &NativeDesktopSnapshot,
+) -> anyhow::Result<OuterMacosTopology> {
+    Ok(OuterMacosTopology {
+        rects: snapshot
+            .windows
+            .iter()
+            .filter(|window| snapshot.active_space_ids.contains(&window.space_id))
+            .filter_map(|window| {
+                window.bounds.map(|bounds| DirectedRect {
+                    id: window.id,
+                    rect: rect_from_native(bounds),
+                })
+            })
+            .collect(),
+    })
+}
+
 fn compare_native_active_windows(
     left: &NativeWindowSnapshot,
     right: &NativeWindowSnapshot,
@@ -4256,7 +4291,7 @@ mod tests {
     };
     use super::macos_window_manager_api::*;
     use super::*;
-    use crate::engine::topology::Rect;
+    use crate::engine::topology::{Rect, select_closest_in_direction_with_strategy};
     use core_foundation::base::TCFType;
     use std::time::Instant;
     use std::{
@@ -8341,6 +8376,60 @@ command = false
 
         assert_eq!(focused.id, 101);
         assert_eq!(windows.len(), 2);
+    }
+
+    #[test]
+    fn native_snapshot_can_drive_outer_directional_selection() {
+        let snapshot = NativeDesktopSnapshot {
+            spaces: vec![NativeSpaceSnapshot {
+                id: 1,
+                display_index: 0,
+                active: true,
+                kind: SpaceKind::Desktop,
+            }],
+            active_space_ids: HashSet::from([1]),
+            windows: vec![
+                NativeWindowSnapshot {
+                    id: 100,
+                    pid: Some(4001),
+                    app_id: Some("west.app".to_string()),
+                    title: Some("West".to_string()),
+                    bounds: Some(NativeBounds {
+                        x: 0,
+                        y: 0,
+                        width: 100,
+                        height: 100,
+                    }),
+                    space_id: 1,
+                    order_index: Some(0),
+                },
+                NativeWindowSnapshot {
+                    id: 101,
+                    pid: Some(4002),
+                    app_id: Some("east.app".to_string()),
+                    title: Some("East".to_string()),
+                    bounds: Some(NativeBounds {
+                        x: 200,
+                        y: 0,
+                        width: 100,
+                        height: 100,
+                    }),
+                    space_id: 1,
+                    order_index: Some(1),
+                },
+            ],
+            focused_window_id: Some(101),
+        };
+        let topology = outer_topology_from_native_snapshot(&snapshot).unwrap();
+
+        let target = select_closest_in_direction_with_strategy(
+            &topology.rects,
+            101,
+            Direction::West,
+            None,
+        );
+
+        assert_eq!(target, Some(100));
     }
 
     #[test]
