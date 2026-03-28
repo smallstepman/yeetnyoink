@@ -1900,7 +1900,10 @@ mod macos_window_manager_api {
     }
 
     mod desktop_topology_snapshot {
-        use super::{MacosNativeOperationError, MacosNativeProbeError};
+        use super::{
+            MacosNativeOperationError, MacosNativeProbeError, NativeBounds, NativeDesktopSnapshot,
+            NativeSpaceSnapshot, NativeWindowSnapshot,
+        };
         use crate::engine::topology::{
             DirectedRect, Direction, FloatingFocusStrategy, Rect,
             select_closest_in_direction_with_strategy,
@@ -2346,6 +2349,84 @@ mod macos_window_manager_api {
                 .collect()
         }
 
+        #[allow(dead_code)]
+        fn native_bounds_from_rect(rect: Rect) -> NativeBounds {
+            NativeBounds {
+                x: rect.x,
+                y: rect.y,
+                width: rect.w,
+                height: rect.h,
+            }
+        }
+
+        #[allow(dead_code)]
+        pub(crate) fn native_desktop_snapshot_from_topology(
+            topology: &RawTopologySnapshot,
+        ) -> NativeDesktopSnapshot {
+            let spaces = topology
+                .spaces
+                .iter()
+                .map(|space| NativeSpaceSnapshot {
+                    id: space.managed_space_id,
+                    display_index: space.display_index,
+                    active: topology.active_space_ids.contains(&space.managed_space_id),
+                    kind: classify_space(space),
+                })
+                .collect();
+            let mut windows = Vec::new();
+
+            for space in &topology.spaces {
+                if topology.active_space_ids.contains(&space.managed_space_id) {
+                    windows.extend(
+                        order_active_space_windows(
+                            topology
+                                .active_space_windows
+                                .get(&space.managed_space_id)
+                                .map(Vec::as_slice)
+                                .unwrap_or(&[]),
+                        )
+                        .into_iter()
+                        .enumerate()
+                        .map(|(index, window)| NativeWindowSnapshot {
+                            id: window.id,
+                            pid: window.pid,
+                            app_id: window.app_id,
+                            title: window.title,
+                            bounds: window.frame.map(native_bounds_from_rect),
+                            space_id: space.managed_space_id,
+                            order_index: Some(index),
+                        }),
+                    );
+                } else {
+                    windows.extend(
+                        topology
+                            .inactive_space_window_ids
+                            .get(&space.managed_space_id)
+                            .map(Vec::as_slice)
+                            .unwrap_or(&[])
+                            .iter()
+                            .copied()
+                            .map(|window_id| NativeWindowSnapshot {
+                                id: window_id,
+                                pid: None,
+                                app_id: None,
+                                title: None,
+                                bounds: None,
+                                space_id: space.managed_space_id,
+                                order_index: None,
+                            }),
+                    );
+                }
+            }
+
+            NativeDesktopSnapshot {
+                spaces,
+                active_space_ids: topology.active_space_ids.clone(),
+                windows,
+                focused_window_id: topology.focused_window_id,
+            }
+        }
+
         pub(crate) fn window_snapshots_from_topology(
             topology: &RawTopologySnapshot,
         ) -> Vec<WindowSnapshot> {
@@ -2689,6 +2770,8 @@ mod macos_window_manager_api {
         fn validate_environment(&self) -> Result<(), MacosNativeConnectError> {
             validate_environment_with_api(self)
         }
+        #[allow(dead_code)]
+        fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError>;
         fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError>;
         fn active_space_ids(&self) -> Result<HashSet<u64>, MacosNativeProbeError>;
         fn active_space_windows(
@@ -2701,7 +2784,7 @@ mod macos_window_manager_api {
         fn inactive_space_window_ids(
             &self,
         ) -> Result<HashMap<u64, Vec<u64>>, MacosNativeProbeError>;
-        fn focused_window_id(&self) -> Result<Option<u64>, MacosNativeProbeError> {
+        fn focused_window_id(&self) -> Result<Option<NativeWindowId>, MacosNativeProbeError> {
             Ok(None)
         }
         fn focused_window_snapshot(&self) -> Result<WindowSnapshot, MacosNativeProbeError> {
@@ -2759,7 +2842,7 @@ mod macos_window_manager_api {
         fn ax_window_ids_for_pid(&self, _pid: u32) -> Result<Vec<u64>, MacosNativeOperationError> {
             Ok(Vec::new())
         }
-        fn onscreen_window_ids(&self) -> Result<HashSet<u64>, MacosNativeProbeError> {
+        fn onscreen_window_ids(&self) -> Result<HashSet<NativeWindowId>, MacosNativeProbeError> {
             Ok(HashSet::new())
         }
         fn switch_space(&self, space_id: u64) -> Result<(), MacosNativeOperationError>;
@@ -3311,6 +3394,10 @@ mod macos_window_manager_api {
             unsafe { main_connection_id() != 0 }
         }
 
+        fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
+            Ok(native_desktop_snapshot_from_topology(&self.topology_snapshot()?))
+        }
+
         fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
             let payload = skylight::copy_managed_display_spaces_raw(self)?;
             parse_managed_spaces(payload.as_type_ref() as CFArrayRef)
@@ -3436,7 +3523,7 @@ mod macos_window_manager_api {
             Ok(inactive_space_window_ids)
         }
 
-        fn onscreen_window_ids(&self) -> Result<HashSet<u64>, MacosNativeProbeError> {
+        fn onscreen_window_ids(&self) -> Result<HashSet<NativeWindowId>, MacosNativeProbeError> {
             let descriptions = copy_onscreen_window_descriptions_raw()?;
             onscreen_window_ids_from_descriptions(descriptions.as_type_ref() as CFArrayRef)
         }
@@ -3573,7 +3660,7 @@ mod macos_window_manager_api {
             )
         }
 
-        fn focused_window_id(&self) -> Result<Option<u64>, MacosNativeProbeError> {
+        fn focused_window_id(&self) -> Result<Option<NativeWindowId>, MacosNativeProbeError> {
             ax::probe_focused_window_id(self)
         }
 
@@ -4405,6 +4492,10 @@ mod tests {
             macos_window_manager_api::validate_environment_with_api(self)
         }
 
+        fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
+            Ok(native_desktop_snapshot_from_topology(&self.topology_snapshot()?))
+        }
+
         fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
             Ok(self.topology.spaces.clone())
         }
@@ -4487,6 +4578,10 @@ mod tests {
             true
         }
 
+        fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
+            Ok(native_desktop_snapshot_from_topology(&self.topology_snapshot()?))
+        }
+
         fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
             Ok(vec![raw_stage_manager_space(99)])
         }
@@ -4560,6 +4655,10 @@ mod tests {
 
         fn minimal_topology_ready(&self) -> bool {
             true
+        }
+
+        fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
+            Ok(native_desktop_snapshot_from_topology(&self.topology_snapshot()?))
         }
 
         fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
@@ -4657,6 +4756,10 @@ mod tests {
 
         fn minimal_topology_ready(&self) -> bool {
             true
+        }
+
+        fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
+            Ok(native_desktop_snapshot_from_topology(&self.topology_snapshot()?))
         }
 
         fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
@@ -4775,6 +4878,10 @@ mod tests {
 
         fn minimal_topology_ready(&self) -> bool {
             true
+        }
+
+        fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
+            Ok(native_desktop_snapshot_from_topology(&self.topology_snapshot()?))
         }
 
         fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
@@ -4919,6 +5026,10 @@ mod tests {
             true
         }
 
+        fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
+            Ok(native_desktop_snapshot_from_topology(&self.topology_snapshot()?))
+        }
+
         fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
             Ok(self.current_topology().spaces)
         }
@@ -5056,6 +5167,10 @@ mod tests {
 
         fn minimal_topology_ready(&self) -> bool {
             true
+        }
+
+        fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
+            Ok(native_desktop_snapshot_from_topology(&self.topology_snapshot()?))
         }
 
         fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
@@ -5205,6 +5320,10 @@ mod tests {
             true
         }
 
+        fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
+            Ok(native_desktop_snapshot_from_topology(&self.topology_snapshot()?))
+        }
+
         fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
             Ok(self.topology.spaces.clone())
         }
@@ -5322,6 +5441,10 @@ mod tests {
 
         fn minimal_topology_ready(&self) -> bool {
             true
+        }
+
+        fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
+            Ok(native_desktop_snapshot_from_topology(&self.topology_snapshot()?))
         }
 
         fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
@@ -5449,6 +5572,10 @@ mod tests {
             true
         }
 
+        fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
+            Ok(native_desktop_snapshot_from_topology(&self.topology_snapshot()?))
+        }
+
         fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
             Ok(self.initial_topology.spaces.clone())
         }
@@ -5565,6 +5692,10 @@ mod tests {
             true
         }
 
+        fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
+            Ok(native_desktop_snapshot_from_topology(&self.topology_snapshot()?))
+        }
+
         fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
             Ok(self.topology.spaces.clone())
         }
@@ -5679,6 +5810,10 @@ mod tests {
             true
         }
 
+        fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
+            Ok(native_desktop_snapshot_from_topology(&self.topology_snapshot()?))
+        }
+
         fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
             Ok(vec![raw_desktop_space(1)])
         }
@@ -5749,6 +5884,10 @@ mod tests {
 
         fn minimal_topology_ready(&self) -> bool {
             true
+        }
+
+        fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
+            Ok(native_desktop_snapshot_from_topology(&self.topology_snapshot()?))
         }
 
         fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
@@ -5859,6 +5998,10 @@ mod tests {
             true
         }
 
+        fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
+            Ok(native_desktop_snapshot_from_topology(&self.topology_snapshot()?))
+        }
+
         fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
             Ok(self.current_topology().spaces)
         }
@@ -5961,6 +6104,10 @@ mod tests {
 
         fn minimal_topology_ready(&self) -> bool {
             true
+        }
+
+        fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
+            Ok(native_desktop_snapshot_from_topology(&self.topology_snapshot()?))
         }
 
         fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
@@ -6068,6 +6215,10 @@ mod tests {
 
         fn minimal_topology_ready(&self) -> bool {
             true
+        }
+
+        fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
+            Ok(native_desktop_snapshot_from_topology(&self.topology_snapshot()?))
         }
 
         fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
@@ -6205,6 +6356,10 @@ mod tests {
             true
         }
 
+        fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
+            Ok(native_desktop_snapshot_from_topology(&self.topology_snapshot()?))
+        }
+
         fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
             Ok(self.topology.spaces.clone())
         }
@@ -6323,6 +6478,10 @@ mod tests {
             true
         }
 
+        fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
+            Ok(native_desktop_snapshot_from_topology(&self.topology_snapshot()?))
+        }
+
         fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
             Ok(self.topology.spaces.clone())
         }
@@ -6430,6 +6589,10 @@ mod tests {
             true
         }
 
+        fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
+            Ok(native_desktop_snapshot_from_topology(&self.topology_snapshot()?))
+        }
+
         fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
             panic!("focused_window fast path must not query managed_spaces")
         }
@@ -6506,6 +6669,10 @@ mod tests {
 
         fn minimal_topology_ready(&self) -> bool {
             true
+        }
+
+        fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
+            Ok(native_desktop_snapshot_from_topology(&self.topology_snapshot()?))
         }
 
         fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
@@ -7186,6 +7353,14 @@ command = false
     }
 
     #[test]
+    fn source_exposes_desktop_snapshot_query() {
+        let implementation = implementation_source();
+        assert!(implementation.contains(
+            "fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError>;"
+        ));
+    }
+
+    #[test]
     fn source_keeps_directional_selection_helpers_inside_backend() {
         let implementation = implementation_source();
         let api_module_idx = implementation
@@ -7629,7 +7804,11 @@ command = false
             .map(|idx| fake_impl_start + idx)
             .expect("fake api impl should override validate_environment");
         let fake_validate_end = implementation[fake_validate_start..]
-            .find("\n\n        fn managed_spaces(")
+            .find("\n\n        fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
+            Ok(native_desktop_snapshot_from_topology(&self.topology_snapshot()?))
+        }
+
+        fn managed_spaces(")
             .map(|idx| fake_validate_start + idx)
             .expect("fake validate_environment should appear before managed_spaces");
         let fake_validate_source = &implementation[fake_validate_start..fake_validate_end];
