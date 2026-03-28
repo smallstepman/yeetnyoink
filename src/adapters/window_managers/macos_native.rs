@@ -5653,6 +5653,7 @@ mod tests {
     #[derive(Debug, Clone, PartialEq, Eq)]
     enum NativeCall {
         DesktopSnapshot,
+        FocusSameSpaceTargetFromOuterTopology(Direction, u64),
         FocusWindowWithPid(u64, u32),
     }
 
@@ -5731,6 +5732,126 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(NativeCall::FocusWindowWithPid(window_id, pid));
+            Ok(())
+        }
+
+        fn move_window_to_space(
+            &self,
+            _window_id: u64,
+            _space_id: u64,
+        ) -> Result<(), MacosNativeOperationError> {
+            Ok(())
+        }
+
+        fn swap_window_frames(
+            &self,
+            _source_window_id: u64,
+            _source_frame: Rect,
+            _target_window_id: u64,
+            _target_frame: Rect,
+        ) -> Result<(), MacosNativeOperationError> {
+            Ok(())
+        }
+
+        fn plan_focus_direction(
+            &self,
+            _direction: Direction,
+            _strategy: crate::engine::topology::FloatingFocusStrategy,
+        ) -> Result<DirectionalFocusPlan, MacosNativeOperationError> {
+            panic!("outer focus routing should not call plan_focus_direction")
+        }
+
+        fn execute_focus_plan(
+            &self,
+            _plan: &DirectionalFocusPlan,
+        ) -> Result<(), MacosNativeOperationError> {
+            panic!("outer focus routing should not call execute_focus_plan")
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    struct RecordingSameSpaceDelegationApi {
+        snapshot: NativeDesktopSnapshot,
+        calls: Arc<Mutex<Vec<NativeCall>>>,
+    }
+
+    impl RecordingSameSpaceDelegationApi {
+        fn from_snapshot(snapshot: NativeDesktopSnapshot) -> Self {
+            Self {
+                snapshot,
+                calls: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+
+        fn api_calls(&self) -> Vec<NativeCall> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    impl MacosNativeApi for RecordingSameSpaceDelegationApi {
+        fn has_symbol(&self, _symbol: &'static str) -> bool {
+            true
+        }
+
+        fn ax_is_trusted(&self) -> bool {
+            true
+        }
+
+        fn minimal_topology_ready(&self) -> bool {
+            true
+        }
+
+        fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
+            self.calls.lock().unwrap().push(NativeCall::DesktopSnapshot);
+            Ok(self.snapshot.clone())
+        }
+
+        fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
+            panic!("delegation api must not query managed_spaces")
+        }
+
+        fn active_space_ids(&self) -> Result<HashSet<u64>, MacosNativeProbeError> {
+            panic!("delegation api must not query active_space_ids")
+        }
+
+        fn active_space_windows(
+            &self,
+            _space_id: u64,
+        ) -> Result<Vec<RawWindow>, MacosNativeProbeError> {
+            panic!("delegation api must not query active_space_windows")
+        }
+
+        fn inactive_space_window_ids(
+            &self,
+        ) -> Result<HashMap<u64, Vec<u64>>, MacosNativeProbeError> {
+            panic!("delegation api must not query inactive_space_window_ids")
+        }
+
+        fn switch_space(&self, _space_id: u64) -> Result<(), MacosNativeOperationError> {
+            panic!("delegation api must not switch spaces in this test")
+        }
+
+        fn focus_window(&self, _window_id: u64) -> Result<(), MacosNativeOperationError> {
+            panic!("outer focus routing should delegate same-space mechanics to backend helper")
+        }
+
+        fn focus_window_with_known_pid(
+            &self,
+            _window_id: u64,
+            _pid: u32,
+        ) -> Result<(), MacosNativeOperationError> {
+            panic!("outer focus routing should not perform same-space native mechanics directly")
+        }
+
+        fn focus_same_space_target_from_outer_topology(
+            &self,
+            _topology: &super::OuterMacosTopology,
+            direction: Direction,
+            target_window_id: u64,
+        ) -> Result<(), MacosNativeOperationError> {
+            self.calls.lock().unwrap().push(
+                NativeCall::FocusSameSpaceTargetFromOuterTopology(direction, target_window_id),
+            );
             Ok(())
         }
 
@@ -10222,6 +10343,77 @@ command = true
             vec![
                 NativeCall::DesktopSnapshot,
                 NativeCall::FocusWindowWithPid(100, 2000)
+            ]
+        );
+    }
+
+    #[test]
+    fn focus_direction_delegates_same_pid_splitview_mechanics_to_backend_helper() {
+        let _config = install_macos_native_focus_config("overlap_then_gap");
+        let api = RecordingSameSpaceDelegationApi::from_snapshot(NativeDesktopSnapshot {
+            spaces: vec![NativeSpaceSnapshot {
+                id: 1,
+                display_index: 0,
+                active: true,
+                kind: SpaceKind::SplitView,
+            }],
+            active_space_ids: HashSet::from([1]),
+            windows: vec![
+                NativeWindowSnapshot {
+                    id: 10,
+                    pid: Some(3350),
+                    app_id: Some("com.github.wez.wezterm".to_string()),
+                    title: Some("left-pane".to_string()),
+                    bounds: Some(NativeBounds {
+                        x: 0,
+                        y: 0,
+                        width: 120,
+                        height: 120,
+                    }),
+                    space_id: 1,
+                    order_index: Some(0),
+                },
+                NativeWindowSnapshot {
+                    id: 15,
+                    pid: Some(926),
+                    app_id: Some("ai.perplexity.mac".to_string()),
+                    title: Some("interior-helper".to_string()),
+                    bounds: Some(NativeBounds {
+                        x: 150,
+                        y: 0,
+                        width: 60,
+                        height: 120,
+                    }),
+                    space_id: 1,
+                    order_index: Some(1),
+                },
+                NativeWindowSnapshot {
+                    id: 20,
+                    pid: Some(926),
+                    app_id: Some("ai.perplexity.mac".to_string()),
+                    title: Some("right-pane".to_string()),
+                    bounds: Some(NativeBounds {
+                        x: 220,
+                        y: 0,
+                        width: 120,
+                        height: 120,
+                    }),
+                    space_id: 1,
+                    order_index: Some(2),
+                },
+            ],
+            focused_window_id: Some(20),
+        });
+        let recorded = api.clone();
+        let mut adapter = MacosNativeAdapter::connect_with_api(api).unwrap();
+
+        WindowManagerSession::focus_direction(&mut adapter, Direction::West).unwrap();
+
+        assert_eq!(
+            recorded.api_calls(),
+            vec![
+                NativeCall::DesktopSnapshot,
+                NativeCall::FocusSameSpaceTargetFromOuterTopology(Direction::West, 15),
             ]
         );
     }
