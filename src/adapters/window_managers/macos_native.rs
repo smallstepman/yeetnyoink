@@ -6590,7 +6590,43 @@ mod tests {
         }
 
         fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
-            Ok(native_desktop_snapshot_from_topology(&self.topology_snapshot()?))
+            let active_space_ids = self.active_space_ids()?;
+            let focused_window_id = self.focused_window_id()?;
+            let mut windows = Vec::new();
+
+            for &space_id in &active_space_ids {
+                windows.extend(
+                    order_active_space_windows(&self.active_space_windows(space_id)?)
+                        .into_iter()
+                        .enumerate()
+                        .map(|(order_index, window)| NativeWindowSnapshot {
+                            id: window.id,
+                            pid: window.pid,
+                            app_id: window.app_id,
+                            title: window.title,
+                            bounds: window.frame.map(|rect| NativeBounds {
+                                x: rect.x,
+                                y: rect.y,
+                                width: rect.w,
+                                height: rect.h,
+                            }),
+                            space_id,
+                            order_index: Some(order_index),
+                        }),
+                );
+            }
+
+            Ok(NativeDesktopSnapshot {
+                spaces: vec![NativeSpaceSnapshot {
+                    id: 1,
+                    display_index: 0,
+                    active: true,
+                    kind: SpaceKind::Desktop,
+                }],
+                active_space_ids,
+                windows,
+                focused_window_id,
+            })
         }
 
         fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
@@ -6672,7 +6708,29 @@ mod tests {
         }
 
         fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
-            Ok(native_desktop_snapshot_from_topology(&self.topology_snapshot()?))
+            let windows = self.window_records()?;
+            let focused_window_id = windows
+                .iter()
+                .find(|window| window.is_focused)
+                .map(|window| window.id);
+
+            Ok(NativeDesktopSnapshot {
+                spaces: Vec::new(),
+                active_space_ids: HashSet::new(),
+                windows: windows
+                    .into_iter()
+                    .map(|window| NativeWindowSnapshot {
+                        id: window.id,
+                        pid: window.pid.map(ProcessId::get),
+                        app_id: window.app_id,
+                        title: window.title,
+                        bounds: None,
+                        space_id: 0,
+                        order_index: Some(window.original_tile_index),
+                    })
+                    .collect(),
+                focused_window_id,
+            })
         }
 
         fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
@@ -7994,6 +8052,78 @@ command = false
                     pid: ProcessId::new(2021),
                     is_focused: false,
                     original_tile_index: 1,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn focused_window_fast_path_desktop_snapshot_stays_topology_free() {
+        let snapshot = FocusedWindowFastPathApi.desktop_snapshot().unwrap();
+
+        assert_eq!(snapshot.active_space_ids, HashSet::from([1]));
+        assert_eq!(snapshot.focused_window_id, Some(20));
+        assert_eq!(
+            snapshot.spaces,
+            vec![NativeSpaceSnapshot {
+                id: 1,
+                display_index: 0,
+                active: true,
+                kind: SpaceKind::Desktop,
+            }]
+        );
+        assert_eq!(
+            snapshot.windows,
+            vec![
+                NativeWindowSnapshot {
+                    id: 20,
+                    pid: Some(2020),
+                    app_id: Some("focused.app".to_string()),
+                    title: Some("focused".to_string()),
+                    bounds: None,
+                    space_id: 1,
+                    order_index: Some(0),
+                },
+                NativeWindowSnapshot {
+                    id: 10,
+                    pid: Some(1010),
+                    app_id: Some("first.app".to_string()),
+                    title: Some("first".to_string()),
+                    bounds: None,
+                    space_id: 1,
+                    order_index: Some(1),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn focused_window_record_fast_path_desktop_snapshot_stays_topology_free() {
+        let snapshot = FocusedWindowRecordFastPathApi.desktop_snapshot().unwrap();
+
+        assert!(snapshot.spaces.is_empty());
+        assert!(snapshot.active_space_ids.is_empty());
+        assert_eq!(snapshot.focused_window_id, Some(20));
+        assert_eq!(
+            snapshot.windows,
+            vec![
+                NativeWindowSnapshot {
+                    id: 20,
+                    pid: Some(2020),
+                    app_id: Some("focused.app".to_string()),
+                    title: Some("focused".to_string()),
+                    bounds: None,
+                    space_id: 0,
+                    order_index: Some(0),
+                },
+                NativeWindowSnapshot {
+                    id: 21,
+                    pid: Some(2021),
+                    app_id: Some("other.app".to_string()),
+                    title: Some("other".to_string()),
+                    bounds: None,
+                    space_id: 0,
+                    order_index: Some(1),
                 },
             ]
         );
