@@ -7351,14 +7351,11 @@ command = false
         panic!("implementation should contain a non-import item");
     }
 
-    fn macos_window_manager_api_span(implementation: &str) -> (usize, usize) {
-        let module_start = implementation
-            .find("mod macos_window_manager_api {")
-            .expect("implementation should define mod macos_window_manager_api");
-        let body_start = implementation[module_start..]
+    fn block_end(implementation: &str, block_start: usize, expectation: &str) -> usize {
+        let body_start = implementation[block_start..]
             .find('{')
-            .map(|idx| module_start + idx)
-            .expect("macos_window_manager_api should have an opening brace");
+            .map(|idx| block_start + idx)
+            .expect(expectation);
         let mut depth = 0usize;
 
         for (relative_idx, ch) in implementation[body_start..].char_indices() {
@@ -7367,14 +7364,26 @@ command = false
                 '}' => {
                     depth -= 1;
                     if depth == 0 {
-                        return (module_start, body_start + relative_idx + 1);
+                        return body_start + relative_idx + 1;
                     }
                 }
                 _ => {}
             }
         }
 
-        panic!("macos_window_manager_api should have a matching closing brace");
+        panic!("{expectation}");
+    }
+
+    fn macos_window_manager_api_span(implementation: &str) -> (usize, usize) {
+        let module_start = implementation
+            .find("mod macos_window_manager_api {")
+            .expect("implementation should define mod macos_window_manager_api");
+        let module_end = block_end(
+            implementation,
+            module_start,
+            "macos_window_manager_api should have a matching closing brace",
+        );
+        (module_start, module_end)
     }
 
     fn macos_window_manager_api_source(implementation: &str) -> &str {
@@ -8089,14 +8098,11 @@ command = false
             .find("fn validate_environment(&self) -> Result<(), MacosNativeConnectError> {")
             .map(|idx| fake_impl_start + idx)
             .expect("fake api impl should override validate_environment");
-        let fake_validate_end = implementation[fake_validate_start..]
-            .find("\n\n        fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
-            Ok(native_desktop_snapshot_from_topology(&self.topology_snapshot()?))
-        }
-
-        fn managed_spaces(")
-            .map(|idx| fake_validate_start + idx)
-            .expect("fake validate_environment should appear before managed_spaces");
+        let fake_validate_end = block_end(
+            implementation,
+            fake_validate_start,
+            "fake validate_environment should have a matching closing brace",
+        );
         let fake_validate_source = &implementation[fake_validate_start..fake_validate_end];
 
         assert!(
