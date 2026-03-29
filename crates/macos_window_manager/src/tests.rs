@@ -2301,6 +2301,26 @@ fn backend_focus_direction_keeps_selected_target_when_next_snapshot_drops_it() {
 }
 
 #[test]
+fn confirm_focus_after_missing_ax_target_uses_probe_until_match() {
+    let probe_attempts = Rc::new(RefCell::new(0));
+    let focused = confirm_focus_after_missing_ax_target(77, {
+        let probe_attempts = probe_attempts.clone();
+        move || {
+            let mut probe_attempts = probe_attempts.borrow_mut();
+            *probe_attempts += 1;
+            match *probe_attempts {
+                1 => Err(MacosNativeProbeError::MissingTopology("swift macOS backend")),
+                2 => Ok(None),
+                _ => Ok(Some(77)),
+            }
+        }
+    });
+
+    assert!(focused);
+    assert_eq!(*probe_attempts.borrow(), 3);
+}
+
+#[test]
 fn backend_focus_direction_remaps_post_switch_same_pid_splitview_target_before_active_space_focus()
 {
     let calls = Rc::new(RefCell::new(Vec::new()));

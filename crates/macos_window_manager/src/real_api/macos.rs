@@ -1,14 +1,12 @@
 use std::{
     collections::{HashMap, HashSet},
     ffi::{CString, c_void},
-    time::Instant,
 };
 
 use crate::{
-    AX_RAISE_RETRY_INTERVAL, AX_RAISE_SETTLE_TIMEOUT, ActiveSpaceFocusTargetHint, MacosNativeApi,
-    MacosNativeOperationError, MacosNativeProbeError, NativeBackendOptions, NativeBounds,
-    NativeDesktopSnapshot, NativeDirection, NativeWindowId, active_space_ax_backed_same_pid_target,
-    ax,
+    ActiveSpaceFocusTargetHint, MacosNativeApi, MacosNativeOperationError, MacosNativeProbeError,
+    NativeBackendOptions, NativeBounds, NativeDesktopSnapshot, NativeDirection, NativeWindowId,
+    active_space_ax_backed_same_pid_target, ax, confirm_focus_after_missing_ax_target,
     desktop_topology_snapshot::{
         DESKTOP_SPACE_TYPE, FULLSCREEN_SPACE_TYPE, RawSpaceRecord, RawWindow, SpaceKind,
     },
@@ -181,22 +179,16 @@ impl MacosNativeApi for RealNativeApi {
             Err(MacosNativeOperationError::MissingWindow(missing_window_id))
                 if missing_window_id == window_id =>
             {
-                let deadline = Instant::now() + AX_RAISE_SETTLE_TIMEOUT;
-                loop {
-                    if self.focused_window_id().ok() == Some(Some(window_id)) {
-                        self.debug(&format!(
-                            "macos_native: treating missing AX raise target {window_id} as success after focus confirmation"
-                        ));
-                        return Ok(());
-                    }
-                    if Instant::now() >= deadline {
-                        break;
-                    }
-                    std::thread::sleep(AX_RAISE_RETRY_INTERVAL);
+                if confirm_focus_after_missing_ax_target(window_id, || ax::probe_focused_window_id(self))
+                {
+                    self.debug(&format!(
+                        "macos_native: treating missing AX raise target {window_id} as success after focus confirmation"
+                    ));
+                    return Ok(());
                 }
                 self.debug(&format!(
                     "macos_native: AX raise still missing target {window_id} after retries; focused_window_id={:?}",
-                    self.focused_window_id().ok().flatten()
+                    ax::probe_focused_window_id(self).ok().flatten()
                 ));
                 Err(MacosNativeOperationError::MissingWindow(window_id))
             }
@@ -226,18 +218,12 @@ impl MacosNativeApi for RealNativeApi {
             Err(MacosNativeOperationError::MissingWindow(missing_window_id))
                 if missing_window_id == window_id =>
             {
-                let deadline = Instant::now() + AX_RAISE_SETTLE_TIMEOUT;
-                loop {
-                    if self.focused_window_id().ok() == Some(Some(window_id)) {
-                        self.debug(&format!(
-                            "macos_native: treating missing active-space AX raise target {window_id} as success after focus confirmation"
-                        ));
-                        return Ok(());
-                    }
-                    if Instant::now() >= deadline {
-                        break;
-                    }
-                    std::thread::sleep(AX_RAISE_RETRY_INTERVAL);
+                if confirm_focus_after_missing_ax_target(window_id, || ax::probe_focused_window_id(self))
+                {
+                    self.debug(&format!(
+                        "macos_native: treating missing active-space AX raise target {window_id} as success after focus confirmation"
+                    ));
+                    return Ok(());
                 }
                 if let Some(remapped_target_id) = active_space_ax_backed_same_pid_target(
                     self,
@@ -254,7 +240,7 @@ impl MacosNativeApi for RealNativeApi {
                 }
                 self.debug(&format!(
                     "macos_native: active-space AX raise still missing target {window_id} after retries; focused_window_id={:?}",
-                    self.focused_window_id().ok().flatten()
+                    ax::probe_focused_window_id(self).ok().flatten()
                 ));
                 Err(MacosNativeOperationError::MissingWindow(window_id))
             }
@@ -287,7 +273,7 @@ impl MacosNativeApi for RealNativeApi {
     }
 
     fn focused_window_id(&self) -> Result<Option<NativeWindowId>, MacosNativeProbeError> {
-        Ok(self.desktop_snapshot()?.focused_window_id)
+        ax::probe_focused_window_id(self)
     }
 }
 

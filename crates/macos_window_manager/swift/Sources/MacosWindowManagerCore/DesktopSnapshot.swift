@@ -263,10 +263,17 @@ enum DesktopSnapshotBuilder {
             }
         }
 
+        let focusedWindowID: UInt64?
+        do {
+            focusedWindowID = try system.focusedWindowID()
+        } catch {
+            focusedWindowID = nil
+        }
+
         return DesktopSnapshot(
             spaces: spaces,
             windows: windows,
-            focusedWindowID: try system.focusedWindowID()
+            focusedWindowID: focusedWindowID
         )
     }
 

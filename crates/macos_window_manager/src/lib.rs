@@ -669,6 +669,25 @@ where
     }
 }
 
+pub(crate) fn confirm_focus_after_missing_ax_target<Probe>(
+    target_window_id: u64,
+    mut focused_window_id: Probe,
+) -> bool
+where
+    Probe: FnMut() -> Result<Option<u64>, MacosNativeProbeError>,
+{
+    let deadline = Instant::now() + AX_RAISE_SETTLE_TIMEOUT;
+    loop {
+        if focused_window_id().ok() == Some(Some(target_window_id)) {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(AX_RAISE_RETRY_INTERVAL);
+    }
+}
+
 use desktop_topology_snapshot::*;
 #[cfg(target_os = "macos")]
 use foundation::*;
