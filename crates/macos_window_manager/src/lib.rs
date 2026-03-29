@@ -1621,33 +1621,4 @@ pub use error::{MacosNativeConnectError, MacosNativeOperationError, MacosNativeP
 
 #[cfg(test)]
 #[allow(dead_code)]
-pub(crate) mod tests {
-    #[allow(unused_imports)]
-    pub(crate) use super::desktop_topology_snapshot::tests::{
-        SpaceSnapshot, space_snapshots_from_topology,
-    };
-    #[cfg(target_os = "macos")]
-    #[allow(unused_imports)]
-    pub(crate) use super::foundation::tests::dictionary_from_type_refs;
-    use super::*;
-
-    #[cfg(target_os = "macos")]
-    pub(crate) fn focused_window_id_via_ax<
-        App,
-        Window,
-        FocusedApplication,
-        FocusedWindow,
-        WindowId,
-    >(
-        focused_application: FocusedApplication,
-        focused_window: FocusedWindow,
-        window_id: WindowId,
-    ) -> Result<Option<u64>, MacosNativeProbeError>
-    where
-        FocusedApplication: FnMut() -> Result<Option<App>, MacosNativeProbeError>,
-        FocusedWindow: FnMut(&App) -> Result<Option<Window>, MacosNativeProbeError>,
-        WindowId: FnMut(&Window) -> Result<u64, MacosNativeProbeError>,
-    {
-        ax::focused_window_id(focused_application, focused_window, window_id)
-    }
-}
+mod tests;
