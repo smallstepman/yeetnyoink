@@ -185,10 +185,24 @@ fn source_swift_ffi_contract_is_explicit() {
     assert!(lib.contains("mod transport;"));
     assert!(lib.contains("mod shim;"));
 
-    let exports =
-        std::fs::read_to_string(crate_source("swift/Sources/MacosWindowManagerFFI/Exports.swift"))
-            .unwrap();
+    let exports = std::fs::read_to_string(crate_source(
+        "swift/Sources/MacosWindowManagerFFI/Exports.swift",
+    ))
+    .unwrap();
     assert!(exports.contains("@_cdecl(\"mwm_backend_new\")"));
     assert!(exports.contains("@_cdecl(\"mwm_backend_free\")"));
     assert!(exports.contains("@_cdecl(\"mwm_backend_desktop_snapshot\")"));
+    assert!(exports.contains("@_cdecl(\"mwm_status_release\")"));
+    assert!(exports.contains("@_cdecl(\"mwm_desktop_snapshot_release\")"));
+
+    let rust_transport = std::fs::read_to_string(crate_source("src/transport.rs")).unwrap();
+    assert!(
+        rust_transport.contains("mwm_status_release")
+            && rust_transport.contains("mwm_desktop_snapshot_release"),
+        "Rust transport contract should document how owned FFI payloads are released"
+    );
+    assert!(
+        rust_transport.contains("ABI layout assertions"),
+        "Rust transport should pin the Swift ABI with explicit layout assertions"
+    );
 }

@@ -6,6 +6,88 @@ pub(crate) const MWM_STATUS_OK: i32 = 0;
 pub(crate) const MWM_STATUS_INVALID_ARGUMENT: i32 = 1;
 pub(crate) const MWM_STATUS_UNAVAILABLE: i32 = 2;
 
+/// ABI layout assertions for the Swift transport contract.
+///
+/// The Swift definitions in `swift/Sources/MacosWindowManagerFFI/Transport.swift`
+/// must keep these exact sizes, alignments, and field offsets on macOS 64-bit.
+/// Pointer payloads are owned by the Swift FFI layer when non-null and must be
+/// released via `mwm_status_release` or `mwm_desktop_snapshot_release` after the
+/// Rust side has copied any needed data out of them.
+#[cfg(not(target_pointer_width = "64"))]
+compile_error!("macos_window_manager FFI transport requires a 64-bit target");
+#[cfg(target_pointer_width = "64")]
+const _: [(); 16] = [(); std::mem::size_of::<MwmStatus>()];
+#[cfg(target_pointer_width = "64")]
+const _: [(); 8] = [(); std::mem::align_of::<MwmStatus>()];
+#[cfg(target_pointer_width = "64")]
+const _: [(); 0] = [(); std::mem::offset_of!(MwmStatus, code)];
+#[cfg(target_pointer_width = "64")]
+const _: [(); 8] = [(); std::mem::offset_of!(MwmStatus, message_ptr)];
+#[cfg(target_pointer_width = "64")]
+const _: [(); 16] = [(); std::mem::size_of::<MwmRectAbi>()];
+#[cfg(target_pointer_width = "64")]
+const _: [(); 4] = [(); std::mem::align_of::<MwmRectAbi>()];
+#[cfg(target_pointer_width = "64")]
+const _: [(); 0] = [(); std::mem::offset_of!(MwmRectAbi, x)];
+#[cfg(target_pointer_width = "64")]
+const _: [(); 4] = [(); std::mem::offset_of!(MwmRectAbi, y)];
+#[cfg(target_pointer_width = "64")]
+const _: [(); 8] = [(); std::mem::offset_of!(MwmRectAbi, width)];
+#[cfg(target_pointer_width = "64")]
+const _: [(); 12] = [(); std::mem::offset_of!(MwmRectAbi, height)];
+#[cfg(target_pointer_width = "64")]
+const _: [(); 24] = [(); std::mem::size_of::<MwmSpaceAbi>()];
+#[cfg(target_pointer_width = "64")]
+const _: [(); 8] = [(); std::mem::align_of::<MwmSpaceAbi>()];
+#[cfg(target_pointer_width = "64")]
+const _: [(); 0] = [(); std::mem::offset_of!(MwmSpaceAbi, id)];
+#[cfg(target_pointer_width = "64")]
+const _: [(); 8] = [(); std::mem::offset_of!(MwmSpaceAbi, display_index)];
+#[cfg(target_pointer_width = "64")]
+const _: [(); 16] = [(); std::mem::offset_of!(MwmSpaceAbi, active)];
+#[cfg(target_pointer_width = "64")]
+const _: [(); 20] = [(); std::mem::offset_of!(MwmSpaceAbi, kind)];
+#[cfg(target_pointer_width = "64")]
+const _: [(); 80] = [(); std::mem::size_of::<MwmWindowAbi>()];
+#[cfg(target_pointer_width = "64")]
+const _: [(); 8] = [(); std::mem::align_of::<MwmWindowAbi>()];
+#[cfg(target_pointer_width = "64")]
+const _: [(); 0] = [(); std::mem::offset_of!(MwmWindowAbi, id)];
+#[cfg(target_pointer_width = "64")]
+const _: [(); 8] = [(); std::mem::offset_of!(MwmWindowAbi, pid)];
+#[cfg(target_pointer_width = "64")]
+const _: [(); 12] = [(); std::mem::offset_of!(MwmWindowAbi, has_pid)];
+#[cfg(target_pointer_width = "64")]
+const _: [(); 16] = [(); std::mem::offset_of!(MwmWindowAbi, app_id_ptr)];
+#[cfg(target_pointer_width = "64")]
+const _: [(); 24] = [(); std::mem::offset_of!(MwmWindowAbi, title_ptr)];
+#[cfg(target_pointer_width = "64")]
+const _: [(); 32] = [(); std::mem::offset_of!(MwmWindowAbi, frame)];
+#[cfg(target_pointer_width = "64")]
+const _: [(); 48] = [(); std::mem::offset_of!(MwmWindowAbi, has_frame)];
+#[cfg(target_pointer_width = "64")]
+const _: [(); 52] = [(); std::mem::offset_of!(MwmWindowAbi, level)];
+#[cfg(target_pointer_width = "64")]
+const _: [(); 56] = [(); std::mem::offset_of!(MwmWindowAbi, space_id)];
+#[cfg(target_pointer_width = "64")]
+const _: [(); 64] = [(); std::mem::offset_of!(MwmWindowAbi, order_index)];
+#[cfg(target_pointer_width = "64")]
+const _: [(); 72] = [(); std::mem::offset_of!(MwmWindowAbi, has_order_index)];
+#[cfg(target_pointer_width = "64")]
+const _: [(); 40] = [(); std::mem::size_of::<MwmDesktopSnapshotAbi>()];
+#[cfg(target_pointer_width = "64")]
+const _: [(); 8] = [(); std::mem::align_of::<MwmDesktopSnapshotAbi>()];
+#[cfg(target_pointer_width = "64")]
+const _: [(); 0] = [(); std::mem::offset_of!(MwmDesktopSnapshotAbi, spaces_ptr)];
+#[cfg(target_pointer_width = "64")]
+const _: [(); 8] = [(); std::mem::offset_of!(MwmDesktopSnapshotAbi, spaces_len)];
+#[cfg(target_pointer_width = "64")]
+const _: [(); 16] = [(); std::mem::offset_of!(MwmDesktopSnapshotAbi, windows_ptr)];
+#[cfg(target_pointer_width = "64")]
+const _: [(); 24] = [(); std::mem::offset_of!(MwmDesktopSnapshotAbi, windows_len)];
+#[cfg(target_pointer_width = "64")]
+const _: [(); 32] = [(); std::mem::offset_of!(MwmDesktopSnapshotAbi, focused_window_id)];
+
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct MwmStatus {
@@ -93,5 +175,57 @@ impl MwmDesktopSnapshotAbi {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ffi_transport_layout_matches_swift_contract() {
+        assert_eq!(std::mem::size_of::<MwmStatus>(), 16);
+        assert_eq!(std::mem::align_of::<MwmStatus>(), 8);
+        assert_eq!(std::mem::offset_of!(MwmStatus, code), 0);
+        assert_eq!(std::mem::offset_of!(MwmStatus, message_ptr), 8);
+
+        assert_eq!(std::mem::size_of::<MwmRectAbi>(), 16);
+        assert_eq!(std::mem::align_of::<MwmRectAbi>(), 4);
+        assert_eq!(std::mem::offset_of!(MwmRectAbi, x), 0);
+        assert_eq!(std::mem::offset_of!(MwmRectAbi, y), 4);
+        assert_eq!(std::mem::offset_of!(MwmRectAbi, width), 8);
+        assert_eq!(std::mem::offset_of!(MwmRectAbi, height), 12);
+
+        assert_eq!(std::mem::size_of::<MwmSpaceAbi>(), 24);
+        assert_eq!(std::mem::align_of::<MwmSpaceAbi>(), 8);
+        assert_eq!(std::mem::offset_of!(MwmSpaceAbi, id), 0);
+        assert_eq!(std::mem::offset_of!(MwmSpaceAbi, display_index), 8);
+        assert_eq!(std::mem::offset_of!(MwmSpaceAbi, active), 16);
+        assert_eq!(std::mem::offset_of!(MwmSpaceAbi, kind), 20);
+
+        assert_eq!(std::mem::size_of::<MwmWindowAbi>(), 80);
+        assert_eq!(std::mem::align_of::<MwmWindowAbi>(), 8);
+        assert_eq!(std::mem::offset_of!(MwmWindowAbi, id), 0);
+        assert_eq!(std::mem::offset_of!(MwmWindowAbi, pid), 8);
+        assert_eq!(std::mem::offset_of!(MwmWindowAbi, has_pid), 12);
+        assert_eq!(std::mem::offset_of!(MwmWindowAbi, app_id_ptr), 16);
+        assert_eq!(std::mem::offset_of!(MwmWindowAbi, title_ptr), 24);
+        assert_eq!(std::mem::offset_of!(MwmWindowAbi, frame), 32);
+        assert_eq!(std::mem::offset_of!(MwmWindowAbi, has_frame), 48);
+        assert_eq!(std::mem::offset_of!(MwmWindowAbi, level), 52);
+        assert_eq!(std::mem::offset_of!(MwmWindowAbi, space_id), 56);
+        assert_eq!(std::mem::offset_of!(MwmWindowAbi, order_index), 64);
+        assert_eq!(std::mem::offset_of!(MwmWindowAbi, has_order_index), 72);
+
+        assert_eq!(std::mem::size_of::<MwmDesktopSnapshotAbi>(), 40);
+        assert_eq!(std::mem::align_of::<MwmDesktopSnapshotAbi>(), 8);
+        assert_eq!(std::mem::offset_of!(MwmDesktopSnapshotAbi, spaces_ptr), 0);
+        assert_eq!(std::mem::offset_of!(MwmDesktopSnapshotAbi, spaces_len), 8);
+        assert_eq!(std::mem::offset_of!(MwmDesktopSnapshotAbi, windows_ptr), 16);
+        assert_eq!(std::mem::offset_of!(MwmDesktopSnapshotAbi, windows_len), 24);
+        assert_eq!(
+            std::mem::offset_of!(MwmDesktopSnapshotAbi, focused_window_id),
+            32
+        );
     }
 }

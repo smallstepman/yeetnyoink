@@ -2,6 +2,59 @@ public let MWM_STATUS_OK: Int32 = 0
 public let MWM_STATUS_INVALID_ARGUMENT: Int32 = 1
 public let MWM_STATUS_UNAVAILABLE: Int32 = 2
 
+/// Runtime ABI guards for the transport shared with Rust `src/transport.rs`.
+///
+/// Pointer payloads are owned by the Swift FFI layer when non-nil and must be
+/// released by Rust via `mwm_status_release` or `mwm_desktop_snapshot_release`
+/// after copying any needed values out of the transport structs.
+@inline(__always)
+func verifyTransportAbiContract() {
+    precondition(MemoryLayout<MwmStatus>.stride == 16)
+    precondition(MemoryLayout<MwmStatus>.alignment == 8)
+    precondition(MemoryLayout<MwmStatus>.offset(of: \.code) == 0)
+    precondition(MemoryLayout<MwmStatus>.offset(of: \.message_ptr) == 8)
+
+    precondition(MemoryLayout<MwmRectAbi>.stride == 16)
+    precondition(MemoryLayout<MwmRectAbi>.alignment == 4)
+    precondition(MemoryLayout<MwmRectAbi>.offset(of: \.x) == 0)
+    precondition(MemoryLayout<MwmRectAbi>.offset(of: \.y) == 4)
+    precondition(MemoryLayout<MwmRectAbi>.offset(of: \.width) == 8)
+    precondition(MemoryLayout<MwmRectAbi>.offset(of: \.height) == 12)
+
+    precondition(MemoryLayout<MwmSpaceAbi>.stride == 24)
+    precondition(MemoryLayout<MwmSpaceAbi>.alignment == 8)
+    precondition(MemoryLayout<MwmSpaceAbi>.offset(of: \.id) == 0)
+    precondition(MemoryLayout<MwmSpaceAbi>.offset(of: \.display_index) == 8)
+    precondition(MemoryLayout<MwmSpaceAbi>.offset(of: \.active) == 16)
+    precondition(MemoryLayout<MwmSpaceAbi>.offset(of: \.kind) == 20)
+
+    precondition(MemoryLayout<MwmWindowAbi>.stride == 80)
+    precondition(MemoryLayout<MwmWindowAbi>.alignment == 8)
+    precondition(MemoryLayout<MwmWindowAbi>.offset(of: \.id) == 0)
+    precondition(MemoryLayout<MwmWindowAbi>.offset(of: \.pid) == 8)
+    precondition(MemoryLayout<MwmWindowAbi>.offset(of: \.has_pid) == 12)
+    precondition(MemoryLayout<MwmWindowAbi>.offset(of: \.app_id_ptr) == 16)
+    precondition(MemoryLayout<MwmWindowAbi>.offset(of: \.title_ptr) == 24)
+    precondition(MemoryLayout<MwmWindowAbi>.offset(of: \.frame) == 32)
+    precondition(MemoryLayout<MwmWindowAbi>.offset(of: \.has_frame) == 48)
+    precondition(MemoryLayout<MwmWindowAbi>.offset(of: \.level) == 52)
+    precondition(MemoryLayout<MwmWindowAbi>.offset(of: \.space_id) == 56)
+    precondition(MemoryLayout<MwmWindowAbi>.offset(of: \.order_index) == 64)
+    precondition(MemoryLayout<MwmWindowAbi>.offset(of: \.has_order_index) == 72)
+
+    precondition(MemoryLayout<MwmDesktopSnapshotAbi>.stride == 40)
+    precondition(MemoryLayout<MwmDesktopSnapshotAbi>.alignment == 8)
+    precondition(MemoryLayout<MwmDesktopSnapshotAbi>.offset(of: \.spaces_ptr) == 0)
+    precondition(MemoryLayout<MwmDesktopSnapshotAbi>.offset(of: \.spaces_len) == 8)
+    precondition(MemoryLayout<MwmDesktopSnapshotAbi>.offset(of: \.windows_ptr) == 16)
+    precondition(MemoryLayout<MwmDesktopSnapshotAbi>.offset(of: \.windows_len) == 24)
+    precondition(MemoryLayout<MwmDesktopSnapshotAbi>.offset(of: \.focused_window_id) == 32)
+}
+
+/// FFI status transport shared with Rust.
+///
+/// `message_ptr` is owned by the Swift FFI layer when non-nil. Rust must copy
+/// the string and then call `mwm_status_release` to release the owned payload.
 public struct MwmStatus {
     public var code: Int32
     public var message_ptr: UnsafeMutablePointer<CChar>?
@@ -15,6 +68,7 @@ public struct MwmStatus {
     }
 }
 
+/// FFI rectangle transport shared with Rust.
 public struct MwmRectAbi {
     public var x: Int32
     public var y: Int32
@@ -29,6 +83,7 @@ public struct MwmRectAbi {
     }
 }
 
+/// FFI space transport shared with Rust.
 public struct MwmSpaceAbi {
     public var id: UInt64
     public var display_index: Int
@@ -48,6 +103,10 @@ public struct MwmSpaceAbi {
     }
 }
 
+/// FFI window transport shared with Rust.
+///
+/// `app_id_ptr` and `title_ptr` are owned by the Swift FFI layer when non-nil
+/// and are released as part of `mwm_desktop_snapshot_release`.
 public struct MwmWindowAbi {
     public var id: UInt64
     public var pid: UInt32
@@ -88,6 +147,11 @@ public struct MwmWindowAbi {
     }
 }
 
+/// FFI desktop snapshot transport shared with Rust.
+///
+/// Any non-nil pointer fields are owned by the Swift FFI layer and must be
+/// released by Rust via `mwm_desktop_snapshot_release` after copying the
+/// snapshot contents into Rust-owned structures.
 public struct MwmDesktopSnapshotAbi {
     public var spaces_ptr: UnsafeMutablePointer<MwmSpaceAbi>?
     public var spaces_len: Int
@@ -107,5 +171,46 @@ public struct MwmDesktopSnapshotAbi {
         self.windows_ptr = windows_ptr
         self.windows_len = windows_len
         self.focused_window_id = focused_window_id
+    }
+}
+
+extension MwmStatus {
+    mutating func releaseOwnedPayloads() {
+        message_ptr?.deallocate()
+        self = MwmStatus()
+    }
+}
+
+extension MwmWindowAbi {
+    mutating func releaseOwnedPayloads() {
+        app_id_ptr?.deallocate()
+        title_ptr?.deallocate()
+        self = MwmWindowAbi(
+            id: id,
+            pid: pid,
+            has_pid: has_pid,
+            app_id_ptr: nil,
+            title_ptr: nil,
+            frame: frame,
+            has_frame: has_frame,
+            level: level,
+            space_id: space_id,
+            order_index: order_index,
+            has_order_index: has_order_index
+        )
+    }
+}
+
+extension MwmDesktopSnapshotAbi {
+    mutating func releaseOwnedPayloads() {
+        if let windows_ptr {
+            for index in 0..<windows_len {
+                windows_ptr.advanced(by: index).pointee.releaseOwnedPayloads()
+            }
+            windows_ptr.deallocate()
+        }
+
+        spaces_ptr?.deallocate()
+        self = MwmDesktopSnapshotAbi()
     }
 }

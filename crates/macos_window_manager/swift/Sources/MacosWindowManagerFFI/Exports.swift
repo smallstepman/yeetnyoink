@@ -31,6 +31,8 @@ public func mwm_backend_new(
     _ outBackend: UnsafeMutablePointer<UnsafeMutableRawPointer?>?,
     _ outStatus: UnsafeMutableRawPointer?
 ) -> Int32 {
+    verifyTransportAbiContract()
+
     guard let outBackend else {
         writeStatus(outStatus, code: MWM_STATUS_INVALID_ARGUMENT)
         return MWM_STATUS_INVALID_ARGUMENT
@@ -43,6 +45,8 @@ public func mwm_backend_new(
 
 @_cdecl("mwm_backend_free")
 public func mwm_backend_free(_ backend: UnsafeMutableRawPointer?) {
+    verifyTransportAbiContract()
+
     guard let backend else {
         return
     }
@@ -56,6 +60,8 @@ public func mwm_backend_desktop_snapshot(
     _ outSnapshot: UnsafeMutableRawPointer?,
     _ outStatus: UnsafeMutableRawPointer?
 ) -> Int32 {
+    verifyTransportAbiContract()
+
     guard let backend, let outSnapshot else {
         writeStatus(outStatus, code: MWM_STATUS_INVALID_ARGUMENT)
         return MWM_STATUS_INVALID_ARGUMENT
@@ -67,4 +73,32 @@ public func mwm_backend_desktop_snapshot(
         .pointee = handle.desktopSnapshot()
     writeStatus(outStatus, code: MWM_STATUS_OK)
     return MWM_STATUS_OK
+}
+
+@_cdecl("mwm_status_release")
+public func mwm_status_release(_ status: UnsafeMutableRawPointer?) {
+    verifyTransportAbiContract()
+
+    guard let status else {
+        return
+    }
+
+    status
+        .assumingMemoryBound(to: MwmStatus.self)
+        .pointee
+        .releaseOwnedPayloads()
+}
+
+@_cdecl("mwm_desktop_snapshot_release")
+public func mwm_desktop_snapshot_release(_ snapshot: UnsafeMutableRawPointer?) {
+    verifyTransportAbiContract()
+
+    guard let snapshot else {
+        return
+    }
+
+    snapshot
+        .assumingMemoryBound(to: MwmDesktopSnapshotAbi.self)
+        .pointee
+        .releaseOwnedPayloads()
 }

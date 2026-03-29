@@ -17,7 +17,7 @@ let package = Package(
         ),
         .testTarget(
             name: "MacosWindowManagerCoreTests",
-            dependencies: ["MacosWindowManagerCore"]
+            dependencies: ["MacosWindowManagerCore", "MacosWindowManagerFFI"]
         ),
     ]
 )
