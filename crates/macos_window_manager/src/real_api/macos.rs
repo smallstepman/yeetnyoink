@@ -10,28 +10,24 @@ use crate::{
     NativeDesktopSnapshot, NativeDirection, NativeWindowId, active_space_ax_backed_same_pid_target,
     ax,
     desktop_topology_snapshot::{
-        RawSpaceRecord, RawTopologySnapshot, RawWindow, WindowSnapshot, active_window_snapshot,
-        focused_window_from_active_space_windows, native_desktop_snapshot_from_topology,
-        stable_app_id_from_real_window,
+        DESKTOP_SPACE_TYPE, FULLSCREEN_SPACE_TYPE, RawSpaceRecord, RawWindow, SpaceKind,
     },
     focus_window_via_make_key_and_raise, focus_window_via_process_and_raise,
     foundation::{
         CFArrayRef, DylibHandle, HISERVICES_FRAMEWORK_PATH, SKYLIGHT_FRAMEWORK_PATH,
         SlsMainConnectionIdFn, switch_adjacent_space_via_hotkey,
     },
-    skylight::{
-        self, parse_active_space_ids, parse_display_identifiers, parse_managed_spaces,
-        parse_window_ids,
-    },
+    shim::SwiftBackendShim,
+    skylight,
     window_server::{
-        self, assemble_real_active_space_windows, copy_onscreen_window_descriptions_raw,
-        onscreen_window_ids_from_descriptions, query_visible_window_order,
+        self, copy_onscreen_window_descriptions_raw, onscreen_window_ids_from_descriptions,
     },
 };
 
 pub struct RealNativeApi {
     skylight: Option<DylibHandle>,
     hiservices: Option<DylibHandle>,
+    swift_backend: Result<SwiftBackendShim, crate::MacosNativeBridgeError>,
     options: NativeBackendOptions,
 }
 
@@ -41,6 +37,7 @@ impl RealNativeApi {
         Self {
             skylight: DylibHandle::open(SKYLIGHT_FRAMEWORK_PATH),
             hiservices: DylibHandle::open(HISERVICES_FRAMEWORK_PATH),
+            swift_backend: SwiftBackendShim::new(),
             options,
         }
     }
@@ -88,61 +85,53 @@ impl MacosNativeApi for RealNativeApi {
         unsafe { main_connection_id() != 0 }
     }
 
+    fn validate_environment(&self) -> Result<(), crate::MacosNativeConnectError> {
+        self.swift_backend
+            .as_ref()
+            .map_err(|_| crate::MacosNativeConnectError::MissingTopologyPrecondition("swift macOS backend"))?
+            .validate_environment()
+    }
+
     fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
-        Ok(native_desktop_snapshot_from_topology(
-            &self.topology_snapshot()?,
-        ))
+        self.swift_backend
+            .as_ref()
+            .map_err(|_| MacosNativeProbeError::MissingTopology("swift macOS backend"))?
+            .desktop_snapshot_native()
     }
 
     fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
-        let payload = skylight::copy_managed_display_spaces_raw(self)?;
-        parse_managed_spaces(payload.as_type_ref() as CFArrayRef)
+        Ok(self
+            .desktop_snapshot()?
+            .spaces
+            .iter()
+            .map(space_record_from_snapshot)
+            .collect())
     }
 
     fn active_space_ids(&self) -> Result<HashSet<u64>, MacosNativeProbeError> {
-        let payload = skylight::copy_managed_display_spaces_raw(self)?;
-        let display_identifiers = parse_display_identifiers(payload.as_type_ref() as CFArrayRef)?;
-        let active_space_ids = display_identifiers
-            .into_iter()
-            .map(|display_identifier| {
-                skylight::current_space_for_display(self, &display_identifier)
-            })
-            .collect::<Result<HashSet<_>, _>>()?;
-
-        (!active_space_ids.is_empty())
-            .then_some(active_space_ids)
-            .ok_or(MacosNativeProbeError::MissingTopology(
-                "SLSManagedDisplayGetCurrentSpace",
-            ))
+        Ok(self.desktop_snapshot()?.active_space_ids)
     }
 
     fn active_space_windows(&self, space_id: u64) -> Result<Vec<RawWindow>, MacosNativeProbeError> {
-        let payload = skylight::copy_windows_for_space_raw(self, space_id)?;
-        let visible_order =
-            query_visible_window_order(&parse_window_ids(payload.as_type_ref() as CFArrayRef)?)?;
-        let descriptions =
-            window_server::copy_window_descriptions_raw(self, payload.as_type_ref() as CFArrayRef)?;
-
-        assemble_real_active_space_windows(descriptions.as_type_ref() as CFArrayRef, &visible_order)
+        let snapshot = self.desktop_snapshot()?;
+        Ok(snapshot
+            .windows
+            .into_iter()
+            .filter(|window| window.space_id == space_id)
+            .filter(|window| window.order_index.is_some())
+            .map(raw_window_from_snapshot)
+            .collect())
     }
 
     fn inactive_space_window_ids(&self) -> Result<HashMap<u64, Vec<u64>>, MacosNativeProbeError> {
-        let spaces = self.managed_spaces()?;
-        let active_space_ids = self.active_space_ids()?;
-        let mut inactive_space_window_ids = HashMap::new();
-
-        for space in spaces {
-            if active_space_ids.contains(&space.managed_space_id) {
-                continue;
-            }
-
-            let payload = skylight::copy_windows_for_space_raw(self, space.managed_space_id)?;
-            inactive_space_window_ids.insert(
-                space.managed_space_id,
-                parse_window_ids(payload.as_type_ref() as CFArrayRef)?,
-            );
+        let snapshot = self.desktop_snapshot()?;
+        let mut inactive_space_window_ids = HashMap::<u64, Vec<u64>>::new();
+        for window in snapshot.windows.into_iter().filter(|window| window.order_index.is_none()) {
+            inactive_space_window_ids
+                .entry(window.space_id)
+                .or_default()
+                .push(window.id);
         }
-
         Ok(inactive_space_window_ids)
     }
 
@@ -298,80 +287,39 @@ impl MacosNativeApi for RealNativeApi {
     }
 
     fn focused_window_id(&self) -> Result<Option<NativeWindowId>, MacosNativeProbeError> {
-        ax::probe_focused_window_id(self)
+        Ok(self.desktop_snapshot()?.focused_window_id)
     }
+}
 
-    fn focused_window_snapshot(&self) -> Result<WindowSnapshot, MacosNativeProbeError> {
-        let focused_window_id = ax::probe_focused_window_id(self)?;
-        let active_space_ids = self.active_space_ids()?;
-        let mut active_space_windows = HashMap::new();
+#[cfg(target_os = "macos")]
+fn space_record_from_snapshot(space: &crate::NativeSpaceSnapshot) -> RawSpaceRecord {
+    let (space_type, has_tile_layout_manager, stage_manager_managed) = match space.kind {
+        SpaceKind::Desktop => (DESKTOP_SPACE_TYPE, false, false),
+        SpaceKind::Fullscreen => (FULLSCREEN_SPACE_TYPE, false, false),
+        SpaceKind::SplitView => (DESKTOP_SPACE_TYPE, true, false),
+        SpaceKind::System => (-1, false, false),
+        SpaceKind::StageManagerOpaque => (DESKTOP_SPACE_TYPE, false, true),
+    };
 
-        for space_id in active_space_ids {
-            let windows = window_server::active_space_windows_without_app_ids(self, space_id)?;
-            if let Some(target_window_id) = focused_window_id {
-                if let Some(mut snapshot) =
-                    active_window_snapshot(space_id, &windows, target_window_id)
-                {
-                    snapshot.app_id = snapshot
-                        .app_id
-                        .or_else(|| stable_app_id_from_real_window(snapshot.pid, None));
-                    return Ok(snapshot);
-                }
-            }
-            active_space_windows.insert(space_id, windows);
-        }
-
-        let mut snapshot =
-            focused_window_from_active_space_windows(&active_space_windows, focused_window_id)?;
-        snapshot.app_id = snapshot
-            .app_id
-            .or_else(|| stable_app_id_from_real_window(snapshot.pid, None));
-        Ok(snapshot)
+    RawSpaceRecord {
+        managed_space_id: space.id,
+        display_index: space.display_index,
+        space_type,
+        tile_spaces: Vec::new(),
+        has_tile_layout_manager,
+        stage_manager_managed,
     }
+}
 
-    fn topology_snapshot(&self) -> Result<RawTopologySnapshot, MacosNativeProbeError> {
-        let mut topology = self.topology_snapshot_without_focus()?;
-        topology.focused_window_id = self.focused_window_id()?;
-        Ok(topology)
-    }
-
-    fn topology_snapshot_without_focus(
-        &self,
-    ) -> Result<RawTopologySnapshot, MacosNativeProbeError> {
-        let payload = skylight::copy_managed_display_spaces_raw(self)?;
-        let payload = payload.as_type_ref() as CFArrayRef;
-        let spaces = parse_managed_spaces(payload)?;
-        let active_space_ids = parse_active_space_ids(payload)?;
-        let mut active_space_windows = HashMap::new();
-        let mut inactive_space_window_ids = HashMap::new();
-
-        for space in &spaces {
-            let payload = skylight::copy_windows_for_space_raw(self, space.managed_space_id)?;
-            let raw_window_ids = parse_window_ids(payload.as_type_ref() as CFArrayRef)?;
-
-            if active_space_ids.contains(&space.managed_space_id) {
-                let visible_order = query_visible_window_order(&raw_window_ids)?;
-                let descriptions = window_server::copy_window_descriptions_raw(
-                    self,
-                    payload.as_type_ref() as CFArrayRef,
-                )?;
-                let windows = assemble_real_active_space_windows(
-                    descriptions.as_type_ref() as CFArrayRef,
-                    &visible_order,
-                )?;
-
-                active_space_windows.insert(space.managed_space_id, windows);
-            } else {
-                inactive_space_window_ids.insert(space.managed_space_id, raw_window_ids);
-            }
-        }
-
-        Ok(RawTopologySnapshot {
-            spaces,
-            active_space_ids,
-            active_space_windows,
-            inactive_space_window_ids,
-            focused_window_id: None,
-        })
+#[cfg(target_os = "macos")]
+fn raw_window_from_snapshot(window: crate::NativeWindowSnapshot) -> RawWindow {
+    RawWindow {
+        id: window.id,
+        pid: window.pid,
+        app_id: window.app_id,
+        title: window.title,
+        level: window.level,
+        visible_index: window.order_index,
+        frame: window.bounds,
     }
 }

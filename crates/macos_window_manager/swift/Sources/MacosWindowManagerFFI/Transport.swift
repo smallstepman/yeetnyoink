@@ -1,6 +1,12 @@
+import MacosWindowManagerCore
+
 public let MWM_STATUS_OK: Int32 = 0
 public let MWM_STATUS_INVALID_ARGUMENT: Int32 = 1
 public let MWM_STATUS_UNAVAILABLE: Int32 = 2
+public let MWM_STATUS_CONNECT_MISSING_REQUIRED_SYMBOL: Int32 = 10
+public let MWM_STATUS_CONNECT_MISSING_ACCESSIBILITY_PERMISSION: Int32 = 11
+public let MWM_STATUS_CONNECT_MISSING_TOPOLOGY_PRECONDITION: Int32 = 12
+public let MWM_STATUS_PROBE_MISSING_TOPOLOGY: Int32 = 20
 
 /// Runtime ABI guards for the transport shared with Rust `src/transport.rs`.
 ///
@@ -212,5 +218,85 @@ extension MwmDesktopSnapshotAbi {
 
         spaces_ptr?.deallocate()
         self = MwmDesktopSnapshotAbi()
+    }
+}
+
+extension MwmRectAbi {
+    init(_ bounds: NativeBounds) {
+        self.init(
+            x: bounds.x,
+            y: bounds.y,
+            width: bounds.width,
+            height: bounds.height
+        )
+    }
+}
+
+extension MwmSpaceAbi {
+    init(_ space: DesktopSpaceSnapshot) {
+        self.init(
+            id: space.id,
+            display_index: space.displayIndex,
+            active: space.active ? 1 : 0,
+            kind: space.kind.rawValue
+        )
+    }
+}
+
+extension MwmWindowAbi {
+    init(_ window: DesktopWindowSnapshot) {
+        self.init(
+            id: window.id,
+            pid: window.pid ?? 0,
+            has_pid: window.pid == nil ? 0 : 1,
+            app_id_ptr: window.appID?.ownedCString(),
+            title_ptr: window.title?.ownedCString(),
+            frame: window.bounds.map(MwmRectAbi.init) ?? MwmRectAbi(),
+            has_frame: window.bounds == nil ? 0 : 1,
+            level: window.level,
+            space_id: window.spaceID,
+            order_index: window.orderIndex ?? 0,
+            has_order_index: window.orderIndex == nil ? 0 : 1
+        )
+    }
+}
+
+extension MwmDesktopSnapshotAbi {
+    init(_ snapshot: DesktopSnapshot) {
+        let spacesPointer: UnsafeMutablePointer<MwmSpaceAbi>?
+        if snapshot.spaces.isEmpty {
+            spacesPointer = nil
+        } else {
+            let pointer = UnsafeMutablePointer<MwmSpaceAbi>.allocate(capacity: snapshot.spaces.count)
+            pointer.initialize(from: snapshot.spaces.map(MwmSpaceAbi.init), count: snapshot.spaces.count)
+            spacesPointer = pointer
+        }
+
+        let windowsPointer: UnsafeMutablePointer<MwmWindowAbi>?
+        if snapshot.windows.isEmpty {
+            windowsPointer = nil
+        } else {
+            let pointer = UnsafeMutablePointer<MwmWindowAbi>.allocate(capacity: snapshot.windows.count)
+            pointer.initialize(from: snapshot.windows.map(MwmWindowAbi.init), count: snapshot.windows.count)
+            windowsPointer = pointer
+        }
+
+        self.init(
+            spaces_ptr: spacesPointer,
+            spaces_len: snapshot.spaces.count,
+            windows_ptr: windowsPointer,
+            windows_len: snapshot.windows.count,
+            focused_window_id: snapshot.focusedWindowID ?? 0
+        )
+    }
+}
+
+extension String {
+    func ownedCString() -> UnsafeMutablePointer<CChar> {
+        let buffer = UnsafeMutablePointer<CChar>.allocate(capacity: utf8.count + 1)
+        utf8CString.withUnsafeBufferPointer { value in
+            buffer.initialize(from: value.baseAddress!, count: value.count)
+        }
+        return buffer
     }
 }

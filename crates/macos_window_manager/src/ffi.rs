@@ -51,6 +51,7 @@ pub(crate) mod test_support {
 #[cfg(target_os = "macos")]
 unsafe extern "C" {
     fn mwm_backend_new(out_backend: *mut *mut c_void, out_status: *mut c_void) -> i32;
+    fn mwm_backend_validate_environment(backend: *mut c_void, out_status: *mut c_void) -> i32;
     fn mwm_backend_free(backend: *mut c_void);
     fn mwm_backend_desktop_snapshot(
         backend: *mut c_void,
@@ -74,6 +75,28 @@ pub(crate) unsafe fn backend_new(out_backend: *mut *mut c_void, out_status: *mut
         }
     }
 
+    if !out_status.is_null() {
+        unsafe {
+            *out_status = MwmStatus::unavailable();
+        }
+    }
+
+    crate::transport::MWM_STATUS_UNAVAILABLE
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) unsafe fn backend_validate_environment(
+    backend: *mut c_void,
+    out_status: *mut MwmStatus,
+) -> i32 {
+    unsafe { mwm_backend_validate_environment(backend, out_status.cast()) }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) unsafe fn backend_validate_environment(
+    _backend: *mut c_void,
+    out_status: *mut MwmStatus,
+) -> i32 {
     if !out_status.is_null() {
         unsafe {
             *out_status = MwmStatus::unavailable();

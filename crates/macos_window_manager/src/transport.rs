@@ -2,9 +2,18 @@
 
 use std::ffi::{CStr, c_char};
 
+use crate::{
+    NativeBounds, NativeDesktopSnapshot, NativeSpaceSnapshot, NativeWindowSnapshot,
+    desktop_topology_snapshot::SpaceKind,
+};
+
 pub(crate) const MWM_STATUS_OK: i32 = 0;
 pub(crate) const MWM_STATUS_INVALID_ARGUMENT: i32 = 1;
 pub(crate) const MWM_STATUS_UNAVAILABLE: i32 = 2;
+pub(crate) const MWM_STATUS_CONNECT_MISSING_REQUIRED_SYMBOL: i32 = 10;
+pub(crate) const MWM_STATUS_CONNECT_MISSING_ACCESSIBILITY_PERMISSION: i32 = 11;
+pub(crate) const MWM_STATUS_CONNECT_MISSING_TOPOLOGY_PRECONDITION: i32 = 12;
+pub(crate) const MWM_STATUS_PROBE_MISSING_TOPOLOGY: i32 = 20;
 
 /// ABI layout assertions for the Swift transport contract.
 ///
@@ -176,6 +185,82 @@ impl MwmDesktopSnapshotAbi {
 
         Ok(())
     }
+}
+
+impl MwmRectAbi {
+    fn to_native_bounds(self) -> NativeBounds {
+        NativeBounds {
+            x: self.x,
+            y: self.y,
+            width: self.width,
+            height: self.height,
+        }
+    }
+}
+
+impl MwmSpaceAbi {
+    fn kind(self) -> SpaceKind {
+        match self.kind {
+            0 => SpaceKind::Desktop,
+            1 => SpaceKind::Fullscreen,
+            2 => SpaceKind::SplitView,
+            3 => SpaceKind::System,
+            4 => SpaceKind::StageManagerOpaque,
+            _ => SpaceKind::System,
+        }
+    }
+}
+
+impl MwmDesktopSnapshotAbi {
+    pub(crate) unsafe fn to_native_snapshot(&self) -> NativeDesktopSnapshot {
+        let spaces = if self.spaces_len == 0 {
+            &[][..]
+        } else {
+            unsafe { std::slice::from_raw_parts(self.spaces_ptr, self.spaces_len) }
+        }
+        .iter()
+        .copied()
+        .map(|space| NativeSpaceSnapshot {
+            id: space.id,
+            display_index: space.display_index,
+            active: space.active != 0,
+            kind: space.kind(),
+        })
+        .collect::<Vec<_>>();
+
+        let windows = if self.windows_len == 0 {
+            &[][..]
+        } else {
+            unsafe { std::slice::from_raw_parts(self.windows_ptr, self.windows_len) }
+        }
+        .iter()
+        .map(|window| NativeWindowSnapshot {
+            id: window.id,
+            pid: (window.has_pid != 0).then_some(window.pid),
+            app_id: unsafe { owned_string(window.app_id_ptr) },
+            title: unsafe { owned_string(window.title_ptr) },
+            bounds: (window.has_frame != 0).then_some(window.frame.to_native_bounds()),
+            level: window.level,
+            space_id: window.space_id,
+            order_index: (window.has_order_index != 0).then_some(window.order_index),
+        })
+        .collect::<Vec<_>>();
+
+        NativeDesktopSnapshot {
+            active_space_ids: spaces
+                .iter()
+                .filter(|space| space.active)
+                .map(|space| space.id)
+                .collect(),
+            spaces,
+            windows,
+            focused_window_id: (self.focused_window_id != 0).then_some(self.focused_window_id),
+        }
+    }
+}
+
+unsafe fn owned_string(ptr: *mut c_char) -> Option<String> {
+    (!ptr.is_null()).then(|| unsafe { CStr::from_ptr(ptr).to_string_lossy().into_owned() })
 }
 
 #[cfg(test)]

@@ -15,6 +15,7 @@ final class FFIContractTests: XCTestCase {
         let exports = try String(contentsOf: exportsURL, encoding: .utf8)
 
         XCTAssertTrue(exports.contains("@_cdecl(\"mwm_backend_new\")"))
+        XCTAssertTrue(exports.contains("@_cdecl(\"mwm_backend_validate_environment\")"))
         XCTAssertTrue(exports.contains("@_cdecl(\"mwm_backend_free\")"))
         XCTAssertTrue(exports.contains("@_cdecl(\"mwm_backend_desktop_snapshot\")"))
         XCTAssertTrue(exports.contains("@_cdecl(\"mwm_status_release\")"))

@@ -1,8 +1,14 @@
 import MacosWindowManagerCore
 
 private final class BackendHandle {
-    func desktopSnapshot() -> MwmDesktopSnapshotAbi {
-        MwmDesktopSnapshotAbi()
+    private let backend = Backend()
+
+    func validateEnvironment() throws {
+        try backend.validateEnvironment()
+    }
+
+    func desktopSnapshot() throws -> MwmDesktopSnapshotAbi {
+        MwmDesktopSnapshotAbi(try backend.desktopSnapshot())
     }
 }
 
@@ -19,6 +25,30 @@ private func writeStatus(
     outStatus
         .assumingMemoryBound(to: MwmStatus.self)
         .pointee = MwmStatus(code: code, message_ptr: message)
+}
+
+@inline(__always)
+private func writeErrorStatus(_ outStatus: UnsafeMutableRawPointer?, error: BackendError) -> Int32 {
+    let code: Int32
+    let message: String?
+
+    switch error {
+    case let .missingRequiredSymbol(symbol):
+        code = MWM_STATUS_CONNECT_MISSING_REQUIRED_SYMBOL
+        message = symbol
+    case .missingAccessibilityPermission:
+        code = MWM_STATUS_CONNECT_MISSING_ACCESSIBILITY_PERMISSION
+        message = nil
+    case let .missingTopologyPrecondition(precondition):
+        code = MWM_STATUS_CONNECT_MISSING_TOPOLOGY_PRECONDITION
+        message = precondition
+    case let .missingTopology(probe):
+        code = MWM_STATUS_PROBE_MISSING_TOPOLOGY
+        message = probe
+    }
+
+    writeStatus(outStatus, code: code, message: message?.ownedCString())
+    return code
 }
 
 @_cdecl("mwm_backend_smoke_test")
@@ -41,6 +71,31 @@ public func mwm_backend_new(
     outBackend.pointee = Unmanaged.passRetained(BackendHandle()).toOpaque()
     writeStatus(outStatus, code: MWM_STATUS_OK)
     return MWM_STATUS_OK
+}
+
+@_cdecl("mwm_backend_validate_environment")
+public func mwm_backend_validate_environment(
+    _ backend: UnsafeMutableRawPointer?,
+    _ outStatus: UnsafeMutableRawPointer?
+) -> Int32 {
+    verifyTransportAbiContract()
+
+    guard let backend else {
+        writeStatus(outStatus, code: MWM_STATUS_INVALID_ARGUMENT)
+        return MWM_STATUS_INVALID_ARGUMENT
+    }
+
+    let handle = Unmanaged<BackendHandle>.fromOpaque(backend).takeUnretainedValue()
+    do {
+        try handle.validateEnvironment()
+        writeStatus(outStatus, code: MWM_STATUS_OK)
+        return MWM_STATUS_OK
+    } catch let error as BackendError {
+        return writeErrorStatus(outStatus, error: error)
+    } catch {
+        writeStatus(outStatus, code: MWM_STATUS_UNAVAILABLE, message: String(describing: error).ownedCString())
+        return MWM_STATUS_UNAVAILABLE
+    }
 }
 
 @_cdecl("mwm_backend_free")
@@ -68,11 +123,18 @@ public func mwm_backend_desktop_snapshot(
     }
 
     let handle = Unmanaged<BackendHandle>.fromOpaque(backend).takeUnretainedValue()
-    outSnapshot
-        .assumingMemoryBound(to: MwmDesktopSnapshotAbi.self)
-        .pointee = handle.desktopSnapshot()
-    writeStatus(outStatus, code: MWM_STATUS_OK)
-    return MWM_STATUS_OK
+    do {
+        outSnapshot
+            .assumingMemoryBound(to: MwmDesktopSnapshotAbi.self)
+            .pointee = try handle.desktopSnapshot()
+        writeStatus(outStatus, code: MWM_STATUS_OK)
+        return MWM_STATUS_OK
+    } catch let error as BackendError {
+        return writeErrorStatus(outStatus, error: error)
+    } catch {
+        writeStatus(outStatus, code: MWM_STATUS_UNAVAILABLE, message: String(describing: error).ownedCString())
+        return MWM_STATUS_UNAVAILABLE
+    }
 }
 
 @_cdecl("mwm_status_release")

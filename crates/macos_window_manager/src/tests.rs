@@ -14,6 +14,15 @@ use std::{
     rc::Rc,
 };
 
+#[test]
+fn snapshot_wrapper_converts_ffi_snapshot() {
+    let snapshot = crate::shim::test_snapshot_from_ffi();
+
+    assert_eq!(snapshot.spaces.len(), 2);
+    assert_eq!(snapshot.windows.len(), 3);
+    assert_eq!(snapshot.focused_window_id, Some(9003));
+}
+
 #[cfg(target_os = "macos")]
 pub(crate) fn focused_window_id_via_ax<App, Window, FocusedApplication, FocusedWindow, WindowId>(
     focused_application: FocusedApplication,

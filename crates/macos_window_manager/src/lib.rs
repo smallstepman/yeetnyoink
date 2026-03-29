@@ -689,5 +689,15 @@ pub use error::{
 pub use real_api::RealNativeApi;
 
 #[cfg(test)]
+#[test]
+fn snapshot_wrapper_converts_ffi_snapshot() {
+    let snapshot = shim::test_snapshot_from_ffi();
+
+    assert_eq!(snapshot.spaces.len(), 2);
+    assert_eq!(snapshot.windows.len(), 3);
+    assert_eq!(snapshot.focused_window_id, Some(9003));
+}
+
+#[cfg(test)]
 #[allow(dead_code)]
 mod tests;
