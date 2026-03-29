@@ -10,129 +10,28 @@ use crate::engine::wm::{
 use crate::logging;
 use anyhow::{Context, bail};
 
-#[cfg(not(test))]
 use macos_window_manager::{
     ActiveSpaceFocusTargetHint, MacosNativeApi, MacosNativeConnectError, MacosNativeOperationError,
     MacosNativeProbeError, MissionControlHotkey, MissionControlModifiers, NativeBackendOptions,
-    NativeBounds, NativeDesktopSnapshot, NativeDiagnostics, NativeDirection, NativeWindowSnapshot,
-    RealNativeApi, SpaceKind,
-};
-#[cfg(test)]
-use macos_window_manager_test_support::{
-    ActiveSpaceFocusTargetHint, MacosNativeApi, MacosNativeConnectError, MacosNativeOperationError,
-    MacosNativeProbeError, MissionControlHotkey, MissionControlModifiers, NativeBackendOptions,
-    NativeBounds, NativeDesktopSnapshot, NativeDiagnostics, NativeDirection, NativeWindowSnapshot,
-    RealNativeApi, SpaceKind,
+    NativeBounds, NativeDesktopSnapshot, NativeDiagnostics, NativeDirection, NativeSpaceSnapshot,
+    NativeWindowSnapshot, RealNativeApi, SpaceKind,
 };
 
 #[cfg(test)]
+#[allow(dead_code, unused_imports)]
 mod macos_window_manager_test_support {
     use std::{
         collections::{HashMap, HashSet},
         ffi::{CString, c_void},
-        sync::Arc,
         time::Instant,
     };
-    #[allow(dead_code)]
-    type NativeSpaceId = u64;
-    #[allow(dead_code)]
-    type NativeWindowId = u64;
-
-    #[allow(dead_code)]
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    pub(crate) struct NativeDesktopSnapshot {
-        pub(crate) spaces: Vec<NativeSpaceSnapshot>,
-        pub(crate) active_space_ids: HashSet<NativeSpaceId>,
-        pub(crate) windows: Vec<NativeWindowSnapshot>,
-        pub(crate) focused_window_id: Option<NativeWindowId>,
-    }
-
-    #[allow(dead_code)]
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    pub(crate) struct NativeSpaceSnapshot {
-        pub(crate) id: NativeSpaceId,
-        pub(crate) display_index: usize,
-        pub(crate) active: bool,
-        pub(crate) kind: desktop_topology_snapshot::SpaceKind,
-    }
-
-    #[allow(dead_code)]
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    pub(crate) struct NativeWindowSnapshot {
-        pub(crate) id: NativeWindowId,
-        pub(crate) pid: Option<u32>,
-        pub(crate) app_id: Option<String>,
-        pub(crate) title: Option<String>,
-        pub(crate) bounds: Option<NativeBounds>,
-        pub(crate) level: i32,
-        pub(crate) space_id: NativeSpaceId,
-        pub(crate) order_index: Option<usize>,
-    }
-
-    #[allow(dead_code)]
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub(crate) struct NativeBounds {
-        pub(crate) x: i32,
-        pub(crate) y: i32,
-        pub(crate) width: i32,
-        pub(crate) height: i32,
-    }
-
-    #[allow(dead_code)]
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub(crate) enum NativeDirection {
-        West,
-        East,
-        North,
-        South,
-    }
-
-    #[allow(dead_code)]
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub(crate) struct ActiveSpaceFocusTargetHint {
-        pub(crate) space_id: NativeSpaceId,
-        pub(crate) bounds: NativeBounds,
-    }
-
-    impl std::fmt::Display for NativeDirection {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            match self {
-                Self::West => f.write_str("west"),
-                Self::East => f.write_str("east"),
-                Self::North => f.write_str("north"),
-                Self::South => f.write_str("south"),
-            }
-        }
-    }
-
-    #[allow(dead_code)]
-    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-    pub(crate) struct MissionControlModifiers {
-        pub(crate) control: bool,
-        pub(crate) option: bool,
-        pub(crate) command: bool,
-        pub(crate) shift: bool,
-        pub(crate) function: bool,
-    }
-
-    #[allow(dead_code)]
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub(crate) struct MissionControlHotkey {
-        pub(crate) key_code: u16,
-        pub(crate) mission_control: MissionControlModifiers,
-    }
-
-    #[allow(dead_code)]
-    pub(crate) struct NativeBackendOptions {
-        pub(crate) west_space_hotkey: MissionControlHotkey,
-        pub(crate) east_space_hotkey: MissionControlHotkey,
-        pub(crate) diagnostics: Option<Arc<dyn NativeDiagnostics>>,
-    }
-
-    #[allow(dead_code)]
-    pub(crate) trait NativeDiagnostics: Send + Sync {
-        fn debug(&self, message: &str);
-    }
+    pub(crate) use macos_window_manager::{
+        ActiveSpaceFocusTargetHint, MacosNativeApi, MacosNativeConnectError,
+        MacosNativeOperationError, MacosNativeProbeError, MissionControlHotkey,
+        MissionControlModifiers, NativeBackendOptions, NativeBounds, NativeDesktopSnapshot,
+        NativeDiagnostics, NativeDirection, NativeSpaceSnapshot, NativeWindowId,
+        NativeWindowSnapshot,
+    };
 
     pub(super) mod foundation {
         use super::{
@@ -1820,57 +1719,12 @@ mod macos_window_manager_test_support {
         };
         use std::collections::{HashMap, HashSet};
 
-        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-        pub(crate) enum SpaceKind {
-            Desktop,
-            Fullscreen,
-            SplitView,
-            System,
-            StageManagerOpaque,
-        }
+        pub(crate) use macos_window_manager::{
+            RawSpaceRecord, RawTopologySnapshot, RawWindow, SpaceKind, WindowSnapshot,
+        };
 
         pub(crate) const DESKTOP_SPACE_TYPE: i32 = 0;
         pub(crate) const FULLSCREEN_SPACE_TYPE: i32 = 4;
-
-        #[derive(Debug, Clone, PartialEq, Eq)]
-        pub(crate) struct RawSpaceRecord {
-            pub(crate) managed_space_id: u64,
-            pub(crate) display_index: usize,
-            pub(crate) space_type: i32,
-            pub(crate) tile_spaces: Vec<u64>,
-            pub(crate) has_tile_layout_manager: bool,
-            pub(crate) stage_manager_managed: bool,
-        }
-
-        #[derive(Debug, Clone, PartialEq, Eq)]
-        pub(crate) struct WindowSnapshot {
-            pub(crate) id: u64,
-            pub(crate) pid: Option<u32>,
-            pub(crate) app_id: Option<String>,
-            pub(crate) title: Option<String>,
-            pub(crate) space_id: u64,
-            pub(crate) order_index: Option<usize>,
-        }
-
-        #[derive(Debug, Clone, PartialEq, Eq)]
-        pub(crate) struct RawWindow {
-            pub(crate) id: u64,
-            pub(crate) pid: Option<u32>,
-            pub(crate) app_id: Option<String>,
-            pub(crate) title: Option<String>,
-            pub(crate) level: i32,
-            pub(crate) visible_index: Option<usize>,
-            pub(crate) frame: Option<NativeBounds>,
-        }
-
-        #[derive(Debug, Clone, PartialEq, Eq)]
-        pub(crate) struct RawTopologySnapshot {
-            pub(crate) spaces: Vec<RawSpaceRecord>,
-            pub(crate) active_space_ids: HashSet<u64>,
-            pub(crate) active_space_windows: HashMap<u64, Vec<RawWindow>>,
-            pub(crate) inactive_space_window_ids: HashMap<u64, Vec<u64>>,
-            pub(crate) focused_window_id: Option<u64>,
-        }
 
         pub(crate) fn classify_space(raw_space: &RawSpaceRecord) -> SpaceKind {
             if raw_space.stage_manager_managed {
@@ -2390,7 +2244,7 @@ mod macos_window_manager_test_support {
         }
     }
 
-    pub(super) fn validate_environment_with_api<A: MacosNativeApi + ?Sized>(
+    pub(crate) fn validate_environment_with_api<A: MacosNativeApi + ?Sized>(
         api: &A,
     ) -> Result<(), MacosNativeConnectError> {
         for symbol in REQUIRED_PRIVATE_SYMBOLS {
@@ -2410,200 +2264,6 @@ mod macos_window_manager_test_support {
         }
 
         Ok(())
-    }
-
-    pub(crate) trait MacosNativeApi {
-        fn has_symbol(&self, symbol: &'static str) -> bool;
-        fn ax_is_trusted(&self) -> bool;
-        fn minimal_topology_ready(&self) -> bool;
-        fn debug(&self, _message: &str) {}
-        fn validate_environment(&self) -> Result<(), MacosNativeConnectError> {
-            validate_environment_with_api(self)
-        }
-        #[allow(dead_code)]
-        fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError>;
-        fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError>;
-        fn active_space_ids(&self) -> Result<HashSet<u64>, MacosNativeProbeError>;
-        fn active_space_windows(
-            &self,
-            space_id: u64,
-        ) -> Result<Vec<RawWindow>, MacosNativeProbeError>;
-        fn inactive_space_window_ids(
-            &self,
-        ) -> Result<HashMap<u64, Vec<u64>>, MacosNativeProbeError>;
-        fn focused_window_id(&self) -> Result<Option<NativeWindowId>, MacosNativeProbeError> {
-            Ok(None)
-        }
-        fn focused_window_snapshot(&self) -> Result<WindowSnapshot, MacosNativeProbeError> {
-            let active_space_ids = self.active_space_ids()?;
-            let active_space_windows = active_space_ids
-                .into_iter()
-                .map(|space_id| {
-                    self.active_space_windows(space_id)
-                        .map(|windows| (space_id, windows))
-                })
-                .collect::<Result<HashMap<_, _>, _>>()?;
-            focused_window_from_active_space_windows(
-                &active_space_windows,
-                self.focused_window_id()?,
-            )
-        }
-        #[allow(dead_code)]
-        fn ax_window_ids_for_pid(&self, _pid: u32) -> Result<Vec<u64>, MacosNativeOperationError> {
-            Ok(Vec::new())
-        }
-        fn onscreen_window_ids(&self) -> Result<HashSet<NativeWindowId>, MacosNativeProbeError> {
-            Ok(HashSet::new())
-        }
-        fn switch_space(&self, space_id: u64) -> Result<(), MacosNativeOperationError>;
-        fn switch_adjacent_space(
-            &self,
-            _direction: NativeDirection,
-            space_id: u64,
-        ) -> Result<(), MacosNativeOperationError> {
-            self.switch_space(space_id)
-        }
-        fn focus_window(&self, window_id: u64) -> Result<(), MacosNativeOperationError>;
-        fn focus_window_with_known_pid(
-            &self,
-            window_id: u64,
-            _pid: u32,
-        ) -> Result<(), MacosNativeOperationError> {
-            self.focus_window(window_id)
-        }
-        fn focus_window_in_active_space_with_known_pid(
-            &self,
-            window_id: u64,
-            pid: u32,
-            target_hint: Option<ActiveSpaceFocusTargetHint>,
-        ) -> Result<(), MacosNativeOperationError> {
-            match self.focus_window_with_known_pid(window_id, pid) {
-                Err(MacosNativeOperationError::MissingWindow(missing_window_id))
-                    if missing_window_id == window_id =>
-                {
-                    if let Some(remapped_target_id) = active_space_ax_backed_same_pid_target(
-                        self,
-                        &self.desktop_snapshot()?,
-                        window_id,
-                        pid,
-                        target_hint,
-                    )? {
-                        self.debug(&format!(
-                            "macos_native: active-space focus remapped stale same-pid target {} to {}",
-                            window_id, remapped_target_id
-                        ));
-                        return self.focus_window_with_known_pid(remapped_target_id, pid);
-                    }
-                    Err(MacosNativeOperationError::MissingWindow(window_id))
-                }
-                other => other,
-            }
-        }
-        fn switch_space_in_snapshot(
-            &self,
-            snapshot: &NativeDesktopSnapshot,
-            space_id: u64,
-            adjacent_direction: Option<NativeDirection>,
-        ) -> Result<(), MacosNativeOperationError> {
-            switch_space_in_snapshot(self, snapshot, space_id, adjacent_direction)
-        }
-        fn focus_same_space_target_in_snapshot(
-            &self,
-            snapshot: &NativeDesktopSnapshot,
-            direction: NativeDirection,
-            target_window_id: u64,
-        ) -> Result<(), MacosNativeOperationError> {
-            focus_same_space_target_in_snapshot(self, snapshot, direction, target_window_id)
-        }
-        fn focus_window_by_id(&self, window_id: u64) -> Result<(), MacosNativeOperationError> {
-            let topology = self.topology_snapshot()?;
-            let target_space_id = space_id_for_window(&topology, window_id)
-                .ok_or(MacosNativeOperationError::MissingWindow(window_id))?;
-            ensure_supported_target_space(&topology, target_space_id)?;
-
-            let mut refreshed_topology = None;
-            if !topology.active_space_ids.contains(&target_space_id) {
-                let (source_focus_window_id, target_window_ids) =
-                    space_transition_window_ids(&topology, target_space_id);
-                self.debug(&format!(
-                    "macos_native: switching to space {target_space_id} source_focus={:?} target_windows={}",
-                    source_focus_window_id,
-                    target_window_ids.len()
-                ));
-                self.switch_space(target_space_id)?;
-                wait_for_space_presentation(
-                    self,
-                    target_space_id,
-                    source_focus_window_id,
-                    &target_window_ids,
-                )?;
-                refreshed_topology = Some(self.topology_snapshot()?);
-            }
-
-            let focus_topology = refreshed_topology.as_ref().unwrap_or(&topology);
-            if let Some(pid) = active_window_pid_from_topology(focus_topology, window_id) {
-                if refreshed_topology.is_some() {
-                    let target_hint =
-                        active_space_focus_target_hint_from_topology(focus_topology, window_id);
-                    self.debug(&format!(
-                        "macos_native: focusing window {window_id} in active space via known pid {pid}"
-                    ));
-                    self.focus_window_in_active_space_with_known_pid(window_id, pid, target_hint)
-                } else {
-                    self.debug(&format!(
-                        "macos_native: focusing window {window_id} via known pid {pid}"
-                    ));
-                    self.focus_window_with_known_pid(window_id, pid)
-                }
-            } else {
-                self.debug(&format!(
-                    "macos_native: focusing window {window_id} via description lookup"
-                ));
-                self.focus_window(window_id)
-            }
-        }
-        fn move_window_to_space(
-            &self,
-            window_id: u64,
-            space_id: u64,
-        ) -> Result<(), MacosNativeOperationError>;
-        fn swap_window_frames(
-            &self,
-            source_window_id: u64,
-            source_frame: NativeBounds,
-            target_window_id: u64,
-            target_frame: NativeBounds,
-        ) -> Result<(), MacosNativeOperationError>;
-
-        fn topology_snapshot(&self) -> Result<RawTopologySnapshot, MacosNativeProbeError> {
-            let spaces = self.managed_spaces()?;
-            let active_space_ids = self.active_space_ids()?;
-            let active_space_windows = active_space_ids
-                .iter()
-                .copied()
-                .map(|space_id| {
-                    self.active_space_windows(space_id)
-                        .map(|windows| (space_id, windows))
-                })
-                .collect::<Result<HashMap<_, _>, _>>()?;
-            let inactive_space_window_ids = self.inactive_space_window_ids()?;
-
-            Ok(RawTopologySnapshot {
-                spaces,
-                active_space_ids,
-                active_space_windows,
-                inactive_space_window_ids,
-                focused_window_id: self.focused_window_id()?,
-            })
-        }
-
-        fn topology_snapshot_without_focus(
-            &self,
-        ) -> Result<RawTopologySnapshot, MacosNativeProbeError> {
-            let mut topology = self.topology_snapshot()?;
-            topology.focused_window_id = None;
-            Ok(topology)
-        }
     }
 
     pub(super) fn wait_for_space_presentation<A: MacosNativeApi + ?Sized>(
@@ -3729,11 +3389,35 @@ mod macos_window_manager_test_support {
         }
     }
 
-    pub(crate) use desktop_topology_snapshot::*;
-    pub(crate) use error::*;
-    pub(crate) use foundation::*;
-    pub(crate) use skylight::*;
-    pub(crate) use window_server::*;
+    use desktop_topology_snapshot::*;
+    use foundation::*;
+    use skylight::*;
+    use window_server::*;
+
+    pub(crate) use desktop_topology_snapshot::{
+        best_window_id_from_windows, classify_space, ensure_supported_target_space,
+        enrich_real_window_app_ids, enrich_real_window_app_ids_with,
+        focused_window_from_active_space_windows, focused_window_from_topology,
+        native_desktop_snapshot_from_topology, order_active_space_windows,
+        parse_lsappinfo_bundle_identifier, space_id_for_window, space_transition_window_ids,
+        snapshots_for_inactive_space, stable_app_id_from_real_window,
+        window_ids_for_space, window_snapshots_from_topology, DESKTOP_SPACE_TYPE,
+        FULLSCREEN_SPACE_TYPE, RawSpaceRecord, RawTopologySnapshot, RawWindow, SpaceKind,
+        WindowSnapshot,
+    };
+    pub(crate) use foundation::{
+        array_from_type_refs, array_from_u64s, cf_number_to_u64, dictionary_i32,
+        dictionary_string, number_from_u64, string, CfOwned, REQUIRED_PRIVATE_SYMBOLS,
+        SPACE_SWITCH_POLL_INTERVAL, SPACE_SWITCH_SETTLE_TIMEOUT,
+        SPACE_SWITCH_STABLE_TARGET_POLLS,
+    };
+    pub(crate) use skylight::{
+        parse_display_identifiers, parse_managed_spaces, parse_raw_space_record, parse_window_ids,
+    };
+    pub(crate) use window_server::{
+        assemble_real_active_space_windows, filter_window_descriptions_raw,
+        parse_window_descriptions,
+    };
 
     #[cfg(test)]
     pub(crate) mod tests {
@@ -4727,7 +4411,29 @@ mod tests {
         SpaceSnapshot, dictionary_from_type_refs, focused_window_id_via_ax,
         space_snapshots_from_topology,
     };
-    use super::macos_window_manager_test_support::*;
+    use super::macos_window_manager_test_support::{
+        CfOwned, DESKTOP_SPACE_TYPE, FULLSCREEN_SPACE_TYPE, REQUIRED_PRIVATE_SYMBOLS,
+        RawSpaceRecord, RawTopologySnapshot, RawWindow, SPACE_SWITCH_POLL_INTERVAL,
+        SPACE_SWITCH_SETTLE_TIMEOUT, SPACE_SWITCH_STABLE_TARGET_POLLS, WindowSnapshot,
+        array_from_type_refs, array_from_u64s, best_window_id_from_windows, classify_space, dictionary_i32,
+        dictionary_string, ensure_supported_target_space, focused_window_from_topology,
+        enrich_real_window_app_ids_with, focus_window_via_make_key_and_raise,
+        focus_window_via_process_and_raise, native_desktop_snapshot_from_topology,
+        number_from_u64, order_active_space_windows,
+        parse_lsappinfo_bundle_identifier, parse_managed_spaces, parse_raw_space_record,
+        snapshots_for_inactive_space, space_id_for_window,
+        space_transition_window_ids, stable_app_id_from_real_window, string,
+        validate_environment_with_api, window_ids_for_space, window_snapshots_from_topology,
+    };
+    use super::macos_window_manager_test_support::foundation::{
+        CFArrayRef, CFDictionaryRef, CFTypeRef, K_CG_EVENT_FLAG_MASK_ALTERNATE,
+        K_CG_EVENT_FLAG_MASK_COMMAND, K_CG_EVENT_FLAG_MASK_SHIFT,
+        ProcessSerialNumber, cf_number_from_u64, cf_string, switch_adjacent_space_via_hotkey,
+    };
+    use super::macos_window_manager_test_support::window_server::{
+        cg_window_bounds_key, cg_window_layer_key, cg_window_name_key, cg_window_number_key,
+        cg_window_owner_pid_key, filter_window_descriptions_raw, parse_window_descriptions,
+    };
     use super::*;
     use crate::engine::topology::{Rect, select_closest_in_direction_with_strategy};
     use crate::logging;
@@ -7943,7 +7649,16 @@ mod tests {
         }
     }
 
-    impl RawWindow {
+    trait RawWindowTestExt {
+        fn with_level(self, level: i32) -> Self;
+        fn with_visible_index(self, visible_index: usize) -> Self;
+        fn with_pid(self, pid: u32) -> Self;
+        fn with_app_id(self, app_id: &str) -> Self;
+        fn with_title(self, title: &str) -> Self;
+        fn with_frame(self, frame: Rect) -> Self;
+    }
+
+    impl RawWindowTestExt for RawWindow {
         fn with_level(mut self, level: i32) -> Self {
             self.level = level;
             self
@@ -8295,6 +8010,20 @@ command = false
     fn source_adapter_has_no_inline_macos_backend_module() {
         let implementation = implementation_source();
         assert!(!implementation.contains("mod macos_window_manager_api {"));
+    }
+
+    #[test]
+    fn source_compiles_against_shared_macos_window_manager_contract_in_tests() {
+        let implementation = implementation_source();
+
+        assert!(
+            implementation.contains("use macos_window_manager::{"),
+            "adapter should import its backend contract from the shared macos_window_manager crate"
+        );
+        assert!(
+            !implementation.contains("#[cfg(test)]\nuse macos_window_manager_test_support::{"),
+            "adapter root should not switch backend contract imports to macos_window_manager_test_support under tests"
+        );
     }
 
     #[test]
