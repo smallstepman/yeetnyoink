@@ -40,3 +40,13 @@ pub enum MacosNativeOperationError {
     #[error("macOS native operation failed: {0}")]
     CallFailed(&'static str),
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum MacosNativeBridgeError {
+    #[error("swift macOS backend returned status {code} ({message:?})")]
+    BackendStatus { code: i32, message: Option<String> },
+    #[error("swift macOS backend returned a null handle")]
+    NullBackendHandle,
+    #[error("swift macOS backend returned invalid desktop snapshot transport: {0}")]
+    InvalidDesktopSnapshotTransport(&'static str),
+}

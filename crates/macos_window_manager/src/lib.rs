@@ -4,12 +4,15 @@ mod ax;
 mod desktop_topology_snapshot;
 mod environment;
 mod error;
+mod ffi;
 #[cfg(target_os = "macos")]
 mod foundation;
 mod navigation;
 mod real_api;
+mod shim;
 #[cfg(target_os = "macos")]
 mod skylight;
+mod transport;
 #[cfg(target_os = "macos")]
 mod window_server;
 
@@ -679,7 +682,10 @@ pub use desktop_topology_snapshot::SpaceKind;
 pub use desktop_topology_snapshot::{
     RawSpaceRecord, RawTopologySnapshot, RawWindow, WindowSnapshot,
 };
-pub use error::{MacosNativeConnectError, MacosNativeOperationError, MacosNativeProbeError};
+pub use error::{
+    MacosNativeBridgeError, MacosNativeConnectError, MacosNativeOperationError,
+    MacosNativeProbeError,
+};
 pub use real_api::RealNativeApi;
 
 #[cfg(test)]

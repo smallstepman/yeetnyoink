@@ -177,3 +177,18 @@ fn source_build_script_uses_cargo_target_and_out_dir_for_swiftpm() {
         "build script should not rely on SwiftPM's in-tree .build directory"
     );
 }
+
+#[test]
+fn source_swift_ffi_contract_is_explicit() {
+    let lib = std::fs::read_to_string(crate_source("src/lib.rs")).unwrap();
+    assert!(lib.contains("mod ffi;"));
+    assert!(lib.contains("mod transport;"));
+    assert!(lib.contains("mod shim;"));
+
+    let exports =
+        std::fs::read_to_string(crate_source("swift/Sources/MacosWindowManagerFFI/Exports.swift"))
+            .unwrap();
+    assert!(exports.contains("@_cdecl(\"mwm_backend_new\")"));
+    assert!(exports.contains("@_cdecl(\"mwm_backend_free\")"));
+    assert!(exports.contains("@_cdecl(\"mwm_backend_desktop_snapshot\")"));
+}
