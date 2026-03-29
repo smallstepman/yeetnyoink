@@ -3,6 +3,8 @@ pub(crate) use super::desktop_topology_snapshot::tests::{
     SpaceSnapshot, space_snapshots_from_topology,
 };
 #[cfg(target_os = "macos")]
+use super::foundation::ProcessSerialNumber;
+#[cfg(target_os = "macos")]
 #[allow(unused_imports)]
 pub(crate) use super::foundation::tests::dictionary_from_type_refs;
 use super::*;
@@ -13,13 +15,7 @@ use std::{
 };
 
 #[cfg(target_os = "macos")]
-pub(crate) fn focused_window_id_via_ax<
-    App,
-    Window,
-    FocusedApplication,
-    FocusedWindow,
-    WindowId,
->(
+pub(crate) fn focused_window_id_via_ax<App, Window, FocusedApplication, FocusedWindow, WindowId>(
     focused_application: FocusedApplication,
     focused_window: FocusedWindow,
     window_id: WindowId,
@@ -134,7 +130,9 @@ impl MacosNativeApi for SequencedTopologyApi {
         self.calls
             .borrow_mut()
             .push(format!("focus_window_with_known_pid:{window_id}:{pid}"));
-        let topology = self.topology_snapshot().map_err(MacosNativeOperationError::from)?;
+        let topology = self
+            .topology_snapshot()
+            .map_err(MacosNativeOperationError::from)?;
         if topology_contains_window(&topology, window_id) {
             Ok(())
         } else {
@@ -160,9 +158,9 @@ impl MacosNativeApi for SequencedTopologyApi {
         target_window_id: u64,
         _target_frame: NativeBounds,
     ) -> Result<(), MacosNativeOperationError> {
-        self.calls
-            .borrow_mut()
-            .push(format!("swap_window_frames:{source_window_id}:{target_window_id}"));
+        self.calls.borrow_mut().push(format!(
+            "swap_window_frames:{source_window_id}:{target_window_id}"
+        ));
         Ok(())
     }
 
@@ -344,6 +342,11 @@ fn raw_window(id: u64) -> RawWindow {
 }
 
 impl RawWindow {
+    fn with_level(mut self, level: i32) -> Self {
+        self.level = level;
+        self
+    }
+
     fn with_visible_index(mut self, visible_index: usize) -> Self {
         self.visible_index = Some(visible_index);
         self
@@ -390,6 +393,464 @@ fn raw_split_space(managed_space_id: u64, tile_spaces: &[u64]) -> RawSpaceRecord
         has_tile_layout_manager: true,
         stage_manager_managed: false,
     }
+}
+
+#[test]
+fn enrich_real_window_app_ids_resolves_bundle_ids_after_parsing() {
+    let windows = vec![raw_window(11).with_pid(42), raw_window(12)];
+
+    let enriched = enrich_real_window_app_ids_with(windows, |pid| match pid {
+        42 => Some("com.example.test".to_string()),
+        _ => None,
+    });
+
+    assert_eq!(
+        enriched,
+        vec![
+            raw_window(11).with_pid(42).with_app_id("com.example.test"),
+            raw_window(12)
+        ]
+    );
+}
+
+#[test]
+fn enrich_real_window_app_ids_reuses_pid_lookups_within_single_pass() {
+    let windows = vec![
+        raw_window(11).with_pid(42),
+        raw_window(12).with_pid(42),
+        raw_window(13).with_pid(7),
+        raw_window(14).with_pid(42),
+    ];
+    let mut resolved_pids = Vec::new();
+
+    let enriched = enrich_real_window_app_ids_with(windows, |pid| {
+        resolved_pids.push(pid);
+        Some(format!("com.example.{pid}"))
+    });
+
+    assert_eq!(resolved_pids, vec![42, 7]);
+    assert_eq!(
+        enriched,
+        vec![
+            raw_window(11).with_pid(42).with_app_id("com.example.42"),
+            raw_window(12).with_pid(42).with_app_id("com.example.42"),
+            raw_window(13).with_pid(7).with_app_id("com.example.7"),
+            raw_window(14).with_pid(42).with_app_id("com.example.42"),
+        ]
+    );
+}
+
+#[test]
+fn non_active_space_windows_remain_unordered() {
+    let snapshots = snapshots_for_inactive_space(99, &[21, 22]);
+    assert!(snapshots.iter().all(|window| window.order_index.is_none()));
+}
+
+#[test]
+fn best_window_id_from_windows_ignores_non_normal_layer_targets() {
+    let windows = vec![
+        raw_window(159)
+            .with_pid(946)
+            .with_level(0)
+            .with_frame(NativeBounds {
+                x: 1200,
+                y: 120,
+                width: 500,
+                height: 900,
+            }),
+        raw_window(52)
+            .with_pid(950)
+            .with_level(25)
+            .with_frame(NativeBounds {
+                x: 1739,
+                y: 0,
+                width: 63,
+                height: 39,
+            }),
+    ];
+
+    assert_eq!(
+        best_window_id_from_windows(NativeDirection::East, &windows),
+        Some(159)
+    );
+}
+
+#[test]
+fn focused_window_prefers_frontmost_window_across_active_spaces() {
+    let topology = RawTopologySnapshot {
+        spaces: vec![
+            RawSpaceRecord {
+                managed_space_id: 1,
+                display_index: 0,
+                space_type: desktop_topology_snapshot::DESKTOP_SPACE_TYPE,
+                tile_spaces: Vec::new(),
+                has_tile_layout_manager: false,
+                stage_manager_managed: false,
+            },
+            RawSpaceRecord {
+                managed_space_id: 3,
+                display_index: 1,
+                space_type: desktop_topology_snapshot::FULLSCREEN_SPACE_TYPE,
+                tile_spaces: Vec::new(),
+                has_tile_layout_manager: false,
+                stage_manager_managed: false,
+            },
+        ],
+        active_space_ids: HashSet::from([1, 3]),
+        active_space_windows: HashMap::from([
+            (
+                1,
+                vec![
+                    raw_window(11)
+                        .with_visible_index(2)
+                        .with_pid(1111)
+                        .with_app_id("com.example.left")
+                        .with_title("Left display"),
+                ],
+            ),
+            (
+                3,
+                vec![
+                    raw_window(31)
+                        .with_visible_index(0)
+                        .with_pid(3333)
+                        .with_app_id("com.example.right")
+                        .with_title("Right display"),
+                ],
+            ),
+        ]),
+        inactive_space_window_ids: HashMap::from([(2, vec![21, 22])]),
+        focused_window_id: Some(31),
+    };
+
+    let focused = focused_window_from_topology(&topology).unwrap();
+
+    assert_eq!(focused.id, 31);
+    assert_eq!(focused.space_id, 3);
+    assert_eq!(focused.order_index, Some(0));
+}
+
+#[test]
+fn focused_window_prefers_explicit_window_id_over_visible_order_heuristic() {
+    let topology = RawTopologySnapshot {
+        spaces: vec![raw_desktop_space(1)],
+        active_space_ids: HashSet::from([1]),
+        active_space_windows: HashMap::from([(
+            1,
+            vec![
+                raw_window(10).with_visible_index(0),
+                raw_window(20).with_visible_index(1),
+            ],
+        )]),
+        inactive_space_window_ids: HashMap::new(),
+        focused_window_id: Some(20),
+    };
+
+    let focused = focused_window_from_topology(&topology).unwrap();
+
+    assert_eq!(focused.id, 20);
+}
+
+#[test]
+fn active_space_snapshot_ordered_window_ids_match_window_ordering_contract() {
+    let topology = RawTopologySnapshot {
+        spaces: vec![raw_desktop_space(1)],
+        active_space_ids: HashSet::from([1]),
+        active_space_windows: HashMap::from([(
+            1,
+            vec![
+                raw_window(11).with_visible_index(1),
+                raw_window(12).with_visible_index(0),
+                raw_window(13).with_level(5),
+            ],
+        )]),
+        inactive_space_window_ids: HashMap::new(),
+        focused_window_id: Some(12),
+    };
+
+    let spaces = space_snapshots_from_topology(&topology);
+    let active = spaces.iter().find(|space| space.is_active).unwrap();
+    let windows = window_snapshots_from_topology(&topology);
+    let ordered_window_ids_from_windows = windows
+        .iter()
+        .filter(|window| topology.active_space_ids.contains(&window.space_id))
+        .map(|window| (window.id, window.order_index.unwrap()))
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        active.ordered_window_ids.as_deref(),
+        Some(&[12, 11, 13][..])
+    );
+    assert_eq!(
+        ordered_window_ids_from_windows,
+        vec![(12, 0), (11, 1), (13, 2)]
+    );
+}
+
+#[test]
+fn focus_window_via_process_and_raise_fronts_makes_key_then_raises_target_window() {
+    let calls = Rc::new(RefCell::new(Vec::new()));
+
+    focus_window_via_process_and_raise(
+        77,
+        |_| Ok(5151),
+        |pid| {
+            assert_eq!(pid, 5151);
+            Ok(ProcessSerialNumber {
+                high_long_of_psn: 1,
+                low_long_of_psn: 2,
+            })
+        },
+        {
+            let calls = calls.clone();
+            move |psn, window_id| {
+                calls.borrow_mut().push(format!(
+                    "front:{}:{}:{}",
+                    psn.high_long_of_psn, psn.low_long_of_psn, window_id
+                ));
+                Ok(())
+            }
+        },
+        {
+            let calls = calls.clone();
+            move |psn, window_id| {
+                calls.borrow_mut().push(format!(
+                    "make_key:{}:{}:{}",
+                    psn.high_long_of_psn, psn.low_long_of_psn, window_id
+                ));
+                Ok(())
+            }
+        },
+        {
+            let calls = calls.clone();
+            move |window_id, pid| {
+                calls.borrow_mut().push(format!("raise:{window_id}:{pid}"));
+                Ok(())
+            }
+        },
+    )
+    .unwrap();
+
+    assert_eq!(
+        take_calls(&calls),
+        vec!["front:1:2:77", "make_key:1:2:77", "raise:77:5151"]
+    );
+}
+
+#[test]
+fn focus_window_via_make_key_and_raise_skips_front_process() {
+    let calls = Rc::new(RefCell::new(Vec::new()));
+
+    focus_window_via_make_key_and_raise(
+        77,
+        |_| Ok(5151),
+        |pid| {
+            assert_eq!(pid, 5151);
+            Ok(ProcessSerialNumber {
+                high_long_of_psn: 1,
+                low_long_of_psn: 2,
+            })
+        },
+        {
+            let calls = calls.clone();
+            move |psn, window_id| {
+                calls.borrow_mut().push(format!(
+                    "make_key:{}:{}:{}",
+                    psn.high_long_of_psn, psn.low_long_of_psn, window_id
+                ));
+                Ok(())
+            }
+        },
+        {
+            let calls = calls.clone();
+            move |window_id, pid| {
+                calls.borrow_mut().push(format!("raise:{window_id}:{pid}"));
+                Ok(())
+            }
+        },
+    )
+    .unwrap();
+
+    assert_eq!(take_calls(&calls), vec!["make_key:1:2:77", "raise:77:5151"]);
+}
+
+#[test]
+fn focus_window_via_make_key_and_raise_retries_missing_ax_window_during_raise() {
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let attempts = Rc::new(RefCell::new(0usize));
+
+    focus_window_via_make_key_and_raise(
+        77,
+        |_| Ok(5151),
+        |_| {
+            Ok(ProcessSerialNumber {
+                high_long_of_psn: 1,
+                low_long_of_psn: 2,
+            })
+        },
+        {
+            let calls = calls.clone();
+            move |psn, window_id| {
+                calls.borrow_mut().push(format!(
+                    "make_key:{}:{}:{}",
+                    psn.high_long_of_psn, psn.low_long_of_psn, window_id
+                ));
+                Ok(())
+            }
+        },
+        {
+            let calls = calls.clone();
+            let attempts = attempts.clone();
+            move |window_id, pid| {
+                let mut attempts = attempts.borrow_mut();
+                *attempts += 1;
+                calls
+                    .borrow_mut()
+                    .push(format!("raise:{window_id}:{pid}:{}", *attempts));
+                if *attempts == 1 {
+                    Err(MacosNativeOperationError::MissingWindow(window_id))
+                } else {
+                    Ok(())
+                }
+            }
+        },
+    )
+    .unwrap();
+
+    assert_eq!(
+        take_calls(&calls),
+        vec!["make_key:1:2:77", "raise:77:5151:1", "raise:77:5151:2"]
+    );
+}
+
+#[test]
+fn focus_window_via_process_and_raise_retries_missing_ax_window_during_raise() {
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let attempts = Rc::new(RefCell::new(0usize));
+
+    focus_window_via_process_and_raise(
+        77,
+        |_| Ok(5151),
+        |_| {
+            Ok(ProcessSerialNumber {
+                high_long_of_psn: 1,
+                low_long_of_psn: 2,
+            })
+        },
+        {
+            let calls = calls.clone();
+            move |psn, window_id| {
+                calls.borrow_mut().push(format!(
+                    "front:{}:{}:{}",
+                    psn.high_long_of_psn, psn.low_long_of_psn, window_id
+                ));
+                Ok(())
+            }
+        },
+        {
+            let calls = calls.clone();
+            move |psn, window_id| {
+                calls.borrow_mut().push(format!(
+                    "make_key:{}:{}:{}",
+                    psn.high_long_of_psn, psn.low_long_of_psn, window_id
+                ));
+                Ok(())
+            }
+        },
+        {
+            let calls = calls.clone();
+            let attempts = attempts.clone();
+            move |window_id, pid| {
+                let mut attempts = attempts.borrow_mut();
+                *attempts += 1;
+                calls
+                    .borrow_mut()
+                    .push(format!("raise:{window_id}:{pid}:{}", *attempts));
+                if *attempts == 1 {
+                    Err(MacosNativeOperationError::MissingWindow(window_id))
+                } else {
+                    Ok(())
+                }
+            }
+        },
+    )
+    .unwrap();
+
+    assert_eq!(
+        take_calls(&calls),
+        vec![
+            "front:1:2:77",
+            "make_key:1:2:77",
+            "raise:77:5151:1",
+            "raise:77:5151:2",
+        ]
+    );
+}
+
+#[test]
+fn focus_window_via_process_and_raise_waits_past_three_missing_ax_retries() {
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let attempts = Rc::new(RefCell::new(0usize));
+
+    focus_window_via_process_and_raise(
+        77,
+        |_| Ok(5151),
+        |_| {
+            Ok(ProcessSerialNumber {
+                high_long_of_psn: 1,
+                low_long_of_psn: 2,
+            })
+        },
+        {
+            let calls = calls.clone();
+            move |psn, window_id| {
+                calls.borrow_mut().push(format!(
+                    "front:{}:{}:{}",
+                    psn.high_long_of_psn, psn.low_long_of_psn, window_id
+                ));
+                Ok(())
+            }
+        },
+        {
+            let calls = calls.clone();
+            move |psn, window_id| {
+                calls.borrow_mut().push(format!(
+                    "make_key:{}:{}:{}",
+                    psn.high_long_of_psn, psn.low_long_of_psn, window_id
+                ));
+                Ok(())
+            }
+        },
+        {
+            let calls = calls.clone();
+            let attempts = attempts.clone();
+            move |window_id, pid| {
+                let mut attempts = attempts.borrow_mut();
+                *attempts += 1;
+                calls
+                    .borrow_mut()
+                    .push(format!("raise:{window_id}:{pid}:{}", *attempts));
+                if *attempts < 4 {
+                    Err(MacosNativeOperationError::MissingWindow(window_id))
+                } else {
+                    Ok(())
+                }
+            }
+        },
+    )
+    .unwrap();
+
+    assert_eq!(
+        take_calls(&calls),
+        vec![
+            "front:1:2:77",
+            "make_key:1:2:77",
+            "raise:77:5151:1",
+            "raise:77:5151:2",
+            "raise:77:5151:3",
+            "raise:77:5151:4",
+        ]
+    );
 }
 
 #[test]
@@ -463,7 +924,8 @@ fn backend_focus_direction_keeps_selected_target_when_next_snapshot_drops_it() {
 }
 
 #[test]
-fn backend_focus_direction_remaps_post_switch_same_pid_splitview_target_before_active_space_focus() {
+fn backend_focus_direction_remaps_post_switch_same_pid_splitview_target_before_active_space_focus()
+{
     let calls = Rc::new(RefCell::new(Vec::new()));
     let initial_topology = RawTopologySnapshot {
         spaces: vec![raw_split_space(2, &[11, 12]), raw_desktop_space(1)],

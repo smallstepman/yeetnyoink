@@ -945,24 +945,12 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::macos_window_manager_test_support::foundation::ProcessSerialNumber;
-    use super::macos_window_manager_test_support::tests::{
-        SpaceSnapshot, space_snapshots_from_topology,
-    };
-    use super::macos_window_manager_test_support::{
-        DESKTOP_SPACE_TYPE, FULLSCREEN_SPACE_TYPE, NativeSpaceSnapshot, REQUIRED_PRIVATE_SYMBOLS,
-        RawSpaceRecord, RawTopologySnapshot, RawWindow, SPACE_SWITCH_POLL_INTERVAL,
-        SPACE_SWITCH_SETTLE_TIMEOUT, SPACE_SWITCH_STABLE_TARGET_POLLS, WindowSnapshot,
-        best_window_id_from_windows, enrich_real_window_app_ids_with,
-        ensure_supported_target_space, focus_window_via_make_key_and_raise,
-        focus_window_via_process_and_raise, focused_window_from_topology,
-        native_desktop_snapshot_from_topology, order_active_space_windows,
-        snapshots_for_inactive_space, space_id_for_window, space_transition_window_ids,
-        validate_environment_with_api, window_ids_for_space, window_snapshots_from_topology,
-    };
     use super::*;
     use crate::engine::topology::{Rect, select_closest_in_direction_with_strategy};
     use crate::logging;
+    use macos_window_manager::{
+        NativeSpaceSnapshot, RawSpaceRecord, RawTopologySnapshot, RawWindow, WindowSnapshot,
+    };
     use std::time::Instant;
     use std::{
         cell::RefCell,
@@ -971,15 +959,29 @@ mod tests {
         sync::{Arc, Mutex},
     };
 
+    const DESKTOP_SPACE_TYPE: i32 = 0;
+    const FULLSCREEN_SPACE_TYPE: i32 = 4;
+    const REQUIRED_PRIVATE_SYMBOLS: &[&str] = &[
+        "SLSMainConnectionID",
+        "SLSCopyManagedDisplaySpaces",
+        "SLSManagedDisplayGetCurrentSpace",
+        "SLSManagedDisplaySetCurrentSpace",
+        "SLSCopyManagedDisplayForSpace",
+        "SLSCopyWindowsWithOptionsAndTags",
+        "SLSMoveWindowsToManagedSpace",
+        "AXIsProcessTrusted",
+        "_AXUIElementGetWindow",
+        "_SLPSSetFrontProcessWithOptions",
+        "GetProcessForPID",
+    ];
+    const SPACE_SWITCH_SETTLE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(300);
+    const SPACE_SWITCH_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(10);
+    const SPACE_SWITCH_STABLE_TARGET_POLLS: usize = 3;
+
     impl<A> MacosNativeContext<A>
     where
         A: MacosNativeApi,
     {
-        pub(crate) fn spaces(&self) -> Result<Vec<SpaceSnapshot>, MacosNativeProbeError> {
-            let topology = self.topology_snapshot()?;
-            Ok(space_snapshots_from_topology(&topology))
-        }
-
         pub(crate) fn focused_window(&self) -> Result<WindowSnapshot, MacosNativeProbeError> {
             self.api.focused_window_snapshot()
         }
@@ -1153,6 +1155,275 @@ mod tests {
         fn topology_snapshot(&self) -> Result<RawTopologySnapshot, MacosNativeProbeError> {
             self.api.topology_snapshot()
         }
+    }
+
+    fn validate_environment_with_api<A: MacosNativeApi + ?Sized>(
+        api: &A,
+    ) -> Result<(), MacosNativeConnectError> {
+        for symbol in REQUIRED_PRIVATE_SYMBOLS {
+            if !api.has_symbol(symbol) {
+                return Err(MacosNativeConnectError::MissingRequiredSymbol(symbol));
+            }
+        }
+
+        if !api.ax_is_trusted() {
+            return Err(MacosNativeConnectError::MissingAccessibilityPermission);
+        }
+
+        if !api.minimal_topology_ready() {
+            return Err(MacosNativeConnectError::MissingTopologyPrecondition(
+                "main SkyLight connection",
+            ));
+        }
+
+        Ok(())
+    }
+
+    fn compare_active_windows(left: &RawWindow, right: &RawWindow) -> std::cmp::Ordering {
+        match (left.visible_index, right.visible_index) {
+            (Some(left_index), Some(right_index)) => left_index.cmp(&right_index),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        }
+        .then_with(|| right.level.cmp(&left.level))
+        .then_with(|| left.id.cmp(&right.id))
+    }
+
+    fn order_active_space_windows(windows: &[RawWindow]) -> Vec<RawWindow> {
+        let mut ordered = windows.to_vec();
+        ordered.sort_by(compare_active_windows);
+        ordered
+    }
+
+    fn focused_window_from_active_space_windows(
+        active_space_windows: &HashMap<u64, Vec<RawWindow>>,
+        focused_window_id: Option<u64>,
+    ) -> Result<WindowSnapshot, MacosNativeProbeError> {
+        if let Some(target_window_id) = focused_window_id {
+            if let Some(snapshot) = active_space_windows.iter().find_map(|(space_id, windows)| {
+                active_window_snapshot(*space_id, windows, target_window_id)
+            }) {
+                return Ok(snapshot);
+            }
+        }
+
+        active_space_windows
+            .iter()
+            .flat_map(|(space_id, windows)| {
+                windows
+                    .iter()
+                    .cloned()
+                    .map(move |window| (*space_id, window))
+            })
+            .min_by(|(_, left), (_, right)| compare_active_windows(left, right))
+            .and_then(|(space_id, window)| {
+                active_window_snapshot(space_id, active_space_windows.get(&space_id)?, window.id)
+            })
+            .ok_or(MacosNativeProbeError::MissingFocusedWindow)
+    }
+
+    fn active_window_snapshot(
+        space_id: u64,
+        windows: &[RawWindow],
+        window_id: u64,
+    ) -> Option<WindowSnapshot> {
+        order_active_space_windows(windows)
+            .into_iter()
+            .enumerate()
+            .find_map(|(index, window)| {
+                (window.id == window_id).then_some(WindowSnapshot {
+                    id: window.id,
+                    pid: window.pid,
+                    app_id: window.app_id,
+                    title: window.title,
+                    space_id,
+                    order_index: Some(index),
+                })
+            })
+    }
+
+    fn focused_window_from_topology(
+        topology: &RawTopologySnapshot,
+    ) -> Result<WindowSnapshot, MacosNativeProbeError> {
+        focused_window_from_active_space_windows(
+            &topology.active_space_windows,
+            topology.focused_window_id,
+        )
+    }
+
+    fn classify_space(space: &RawSpaceRecord) -> SpaceKind {
+        if space.stage_manager_managed {
+            SpaceKind::StageManagerOpaque
+        } else if space.has_tile_layout_manager || !space.tile_spaces.is_empty() {
+            SpaceKind::SplitView
+        } else if space.space_type == FULLSCREEN_SPACE_TYPE {
+            SpaceKind::Fullscreen
+        } else if space.space_type == DESKTOP_SPACE_TYPE {
+            SpaceKind::Desktop
+        } else {
+            SpaceKind::System
+        }
+    }
+
+    fn native_desktop_snapshot_from_topology(
+        topology: &RawTopologySnapshot,
+    ) -> NativeDesktopSnapshot {
+        let spaces = topology
+            .spaces
+            .iter()
+            .map(|space| NativeSpaceSnapshot {
+                id: space.managed_space_id,
+                display_index: space.display_index,
+                active: topology.active_space_ids.contains(&space.managed_space_id),
+                kind: classify_space(space),
+            })
+            .collect();
+        let mut windows = Vec::new();
+
+        for space in &topology.spaces {
+            if topology.active_space_ids.contains(&space.managed_space_id) {
+                windows.extend(
+                    order_active_space_windows(
+                        topology
+                            .active_space_windows
+                            .get(&space.managed_space_id)
+                            .map(Vec::as_slice)
+                            .unwrap_or(&[]),
+                    )
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, window)| NativeWindowSnapshot {
+                        id: window.id,
+                        pid: window.pid,
+                        app_id: window.app_id,
+                        title: window.title,
+                        bounds: window.frame,
+                        level: window.level,
+                        space_id: space.managed_space_id,
+                        order_index: Some(index),
+                    }),
+                );
+            } else {
+                windows.extend(
+                    topology
+                        .inactive_space_window_ids
+                        .get(&space.managed_space_id)
+                        .map(Vec::as_slice)
+                        .unwrap_or(&[])
+                        .iter()
+                        .copied()
+                        .map(|window_id| NativeWindowSnapshot {
+                            id: window_id,
+                            pid: None,
+                            app_id: None,
+                            title: None,
+                            bounds: None,
+                            level: 0,
+                            space_id: space.managed_space_id,
+                            order_index: None,
+                        }),
+                );
+            }
+        }
+
+        NativeDesktopSnapshot {
+            spaces,
+            active_space_ids: topology.active_space_ids.clone(),
+            windows,
+            focused_window_id: topology.focused_window_id,
+        }
+    }
+
+    fn space_id_for_window(topology: &RawTopologySnapshot, window_id: u64) -> Option<u64> {
+        topology
+            .active_space_windows
+            .iter()
+            .find_map(|(space_id, windows)| {
+                windows
+                    .iter()
+                    .any(|window| window.id == window_id)
+                    .then_some(*space_id)
+            })
+            .or_else(|| {
+                topology
+                    .inactive_space_window_ids
+                    .iter()
+                    .find_map(|(space_id, windows)| {
+                        windows.contains(&window_id).then_some(*space_id)
+                    })
+            })
+    }
+
+    fn display_index_for_space(topology: &RawTopologySnapshot, space_id: u64) -> Option<usize> {
+        topology
+            .spaces
+            .iter()
+            .find(|space| space.managed_space_id == space_id)
+            .map(|space| space.display_index)
+    }
+
+    fn active_space_on_display(
+        topology: &RawTopologySnapshot,
+        display_index: usize,
+    ) -> Option<u64> {
+        topology
+            .active_space_ids
+            .iter()
+            .copied()
+            .find(|space_id| display_index_for_space(topology, *space_id) == Some(display_index))
+    }
+
+    fn window_ids_for_space(topology: &RawTopologySnapshot, space_id: u64) -> HashSet<u64> {
+        if topology.active_space_ids.contains(&space_id) {
+            return topology
+                .active_space_windows
+                .get(&space_id)
+                .into_iter()
+                .flat_map(|windows| windows.iter().map(|window| window.id))
+                .collect();
+        }
+
+        topology
+            .inactive_space_window_ids
+            .get(&space_id)
+            .into_iter()
+            .flat_map(|window_ids| window_ids.iter().copied())
+            .collect()
+    }
+
+    fn space_transition_window_ids(
+        topology: &RawTopologySnapshot,
+        target_space_id: u64,
+    ) -> (Option<u64>, HashSet<u64>) {
+        let source_space_id = display_index_for_space(topology, target_space_id)
+            .and_then(|display_index| active_space_on_display(topology, display_index))
+            .filter(|source_space_id| *source_space_id != target_space_id);
+        let source_focus_window_id = topology
+            .focused_window_id
+            .filter(|window_id| space_id_for_window(topology, *window_id) == source_space_id);
+        let target_window_ids = window_ids_for_space(topology, target_space_id);
+
+        (source_focus_window_id, target_window_ids)
+    }
+
+    fn ensure_supported_target_space(
+        topology: &RawTopologySnapshot,
+        space_id: u64,
+    ) -> Result<(), MacosNativeOperationError> {
+        let Some(space) = topology
+            .spaces
+            .iter()
+            .find(|space| space.managed_space_id == space_id)
+        else {
+            return Err(MacosNativeOperationError::MissingSpace(space_id));
+        };
+
+        (classify_space(space) != SpaceKind::StageManagerOpaque)
+            .then_some(())
+            .ok_or(MacosNativeOperationError::UnsupportedStageManagerSpace(
+                space_id,
+            ))
     }
 
     #[derive(Debug, Clone)]
@@ -4517,6 +4788,15 @@ command = false
     }
 
     #[test]
+    fn source_adapter_tests_do_not_import_macos_test_support() {
+        let source = include_str!("macos_native.rs");
+        assert!(!source.lines().any(|line| {
+            line.trim_start()
+                .starts_with("use super::macos_window_manager_test_support::")
+        }));
+    }
+
+    #[test]
     fn source_compiles_against_shared_macos_window_manager_contract_in_tests() {
         let implementation = implementation_source();
 
@@ -4555,86 +4835,6 @@ command = false
         assert!(
             !implementation.contains("fn outer_space_transition_window_ids("),
             "production adapter should not define outer_space_transition_window_ids once it only serves test support"
-        );
-    }
-
-    #[test]
-    fn enrich_real_window_app_ids_resolves_bundle_ids_after_parsing() {
-        let windows = vec![raw_window(11).with_pid(42), raw_window(12)];
-
-        let enriched = enrich_real_window_app_ids_with(windows, |pid| match pid {
-            42 => Some("com.example.test".to_string()),
-            _ => None,
-        });
-
-        assert_eq!(
-            enriched,
-            vec![
-                raw_window(11).with_pid(42).with_app_id("com.example.test"),
-                raw_window(12)
-            ]
-        );
-    }
-
-    #[test]
-    fn enrich_real_window_app_ids_reuses_pid_lookups_within_single_pass() {
-        let windows = vec![
-            raw_window(11).with_pid(42),
-            raw_window(12).with_pid(42),
-            raw_window(13).with_pid(7),
-            raw_window(14).with_pid(42),
-        ];
-        let mut resolved_pids = Vec::new();
-
-        let enriched = enrich_real_window_app_ids_with(windows, |pid| {
-            resolved_pids.push(pid);
-            Some(format!("com.example.{pid}"))
-        });
-
-        assert_eq!(resolved_pids, vec![42, 7]);
-        assert_eq!(
-            enriched,
-            vec![
-                raw_window(11).with_pid(42).with_app_id("com.example.42"),
-                raw_window(12).with_pid(42).with_app_id("com.example.42"),
-                raw_window(13).with_pid(7).with_app_id("com.example.7"),
-                raw_window(14).with_pid(42).with_app_id("com.example.42"),
-            ]
-        );
-    }
-
-    #[test]
-    fn non_active_space_windows_remain_unordered() {
-        let snapshots = snapshots_for_inactive_space(99, &[21, 22]);
-        assert!(snapshots.iter().all(|window| window.order_index.is_none()));
-    }
-
-    #[test]
-    fn best_window_id_from_windows_ignores_non_normal_layer_targets() {
-        let windows = vec![
-            raw_window(159)
-                .with_pid(946)
-                .with_level(0)
-                .with_frame(Rect {
-                    x: 1200,
-                    y: 120,
-                    w: 500,
-                    h: 900,
-                }),
-            raw_window(52)
-                .with_pid(950)
-                .with_level(25)
-                .with_frame(Rect {
-                    x: 1739,
-                    y: 0,
-                    w: 63,
-                    h: 39,
-                }),
-        ];
-
-        assert_eq!(
-            best_window_id_from_windows(NativeDirection::East, &windows),
-            Some(159)
         );
     }
 
@@ -4741,51 +4941,20 @@ command = false
     fn context_uses_api_topology_snapshot_override() {
         let ctx = MacosNativeContext::connect_with_api(SnapshotOverrideApi::default()).unwrap();
 
-        let spaces = ctx.spaces().unwrap();
+        let snapshot = ctx.api.desktop_snapshot().unwrap();
         let focused = ctx.focused_window().unwrap();
 
         assert_eq!(
-            spaces
+            snapshot
+                .spaces
                 .iter()
-                .filter(|space| space.is_active)
+                .filter(|space| space.active)
                 .map(|space| space.id)
                 .collect::<Vec<_>>(),
             vec![1, 3]
         );
         assert_eq!(focused.id, 31);
         assert_eq!(focused.space_id, 3);
-    }
-
-    #[test]
-    fn focused_window_prefers_frontmost_window_across_active_spaces() {
-        let topology = FakeNativeApi::multi_display_topology_fixture();
-
-        let focused = focused_window_from_topology(&topology).unwrap();
-
-        assert_eq!(focused.id, 31);
-        assert_eq!(focused.space_id, 3);
-        assert_eq!(focused.order_index, Some(0));
-    }
-
-    #[test]
-    fn focused_window_prefers_explicit_window_id_over_visible_order_heuristic() {
-        let topology = RawTopologySnapshot {
-            spaces: vec![raw_desktop_space(1)],
-            active_space_ids: HashSet::from([1]),
-            active_space_windows: HashMap::from([(
-                1,
-                vec![
-                    raw_window(10).with_visible_index(0),
-                    raw_window(20).with_visible_index(1),
-                ],
-            )]),
-            inactive_space_window_ids: HashMap::new(),
-            focused_window_id: Some(20),
-        };
-
-        let focused = focused_window_from_topology(&topology).unwrap();
-
-        assert_eq!(focused.id, 20);
     }
 
     #[test]
@@ -5249,272 +5418,6 @@ command = false
         assert_eq!(windows[0].title.as_deref(), Some("Front"));
         assert_eq!(windows[3].pid, None);
         assert_eq!(windows[3].app_id, None);
-    }
-
-    #[test]
-    fn focus_window_via_process_and_raise_fronts_makes_key_then_raises_target_window() {
-        let calls = Rc::new(RefCell::new(Vec::new()));
-
-        focus_window_via_process_and_raise(
-            77,
-            |_| Ok(5151),
-            |pid| {
-                assert_eq!(pid, 5151);
-                Ok(ProcessSerialNumber {
-                    high_long_of_psn: 1,
-                    low_long_of_psn: 2,
-                })
-            },
-            {
-                let calls = calls.clone();
-                move |psn, window_id| {
-                    calls.borrow_mut().push(format!(
-                        "front:{}:{}:{}",
-                        psn.high_long_of_psn, psn.low_long_of_psn, window_id
-                    ));
-                    Ok(())
-                }
-            },
-            {
-                let calls = calls.clone();
-                move |psn, window_id| {
-                    calls.borrow_mut().push(format!(
-                        "make_key:{}:{}:{}",
-                        psn.high_long_of_psn, psn.low_long_of_psn, window_id
-                    ));
-                    Ok(())
-                }
-            },
-            {
-                let calls = calls.clone();
-                move |window_id, pid| {
-                    calls.borrow_mut().push(format!("raise:{window_id}:{pid}"));
-                    Ok(())
-                }
-            },
-        )
-        .unwrap();
-
-        assert_eq!(
-            take_calls(&calls),
-            vec!["front:1:2:77", "make_key:1:2:77", "raise:77:5151"]
-        );
-    }
-
-    #[test]
-    fn focus_window_via_make_key_and_raise_skips_front_process() {
-        let calls = Rc::new(RefCell::new(Vec::new()));
-
-        focus_window_via_make_key_and_raise(
-            77,
-            |_| Ok(5151),
-            |pid| {
-                assert_eq!(pid, 5151);
-                Ok(ProcessSerialNumber {
-                    high_long_of_psn: 1,
-                    low_long_of_psn: 2,
-                })
-            },
-            {
-                let calls = calls.clone();
-                move |psn, window_id| {
-                    calls.borrow_mut().push(format!(
-                        "make_key:{}:{}:{}",
-                        psn.high_long_of_psn, psn.low_long_of_psn, window_id
-                    ));
-                    Ok(())
-                }
-            },
-            {
-                let calls = calls.clone();
-                move |window_id, pid| {
-                    calls.borrow_mut().push(format!("raise:{window_id}:{pid}"));
-                    Ok(())
-                }
-            },
-        )
-        .unwrap();
-
-        assert_eq!(take_calls(&calls), vec!["make_key:1:2:77", "raise:77:5151"]);
-    }
-
-    #[test]
-    fn focus_window_via_make_key_and_raise_retries_missing_ax_window_during_raise() {
-        let calls = Rc::new(RefCell::new(Vec::new()));
-        let attempts = Rc::new(RefCell::new(0usize));
-
-        focus_window_via_make_key_and_raise(
-            77,
-            |_| Ok(5151),
-            |_| {
-                Ok(ProcessSerialNumber {
-                    high_long_of_psn: 1,
-                    low_long_of_psn: 2,
-                })
-            },
-            {
-                let calls = calls.clone();
-                move |psn, window_id| {
-                    calls.borrow_mut().push(format!(
-                        "make_key:{}:{}:{}",
-                        psn.high_long_of_psn, psn.low_long_of_psn, window_id
-                    ));
-                    Ok(())
-                }
-            },
-            {
-                let calls = calls.clone();
-                let attempts = attempts.clone();
-                move |window_id, pid| {
-                    let mut attempts = attempts.borrow_mut();
-                    *attempts += 1;
-                    calls
-                        .borrow_mut()
-                        .push(format!("raise:{window_id}:{pid}:{}", *attempts));
-                    if *attempts == 1 {
-                        Err(MacosNativeOperationError::MissingWindow(window_id))
-                    } else {
-                        Ok(())
-                    }
-                }
-            },
-        )
-        .unwrap();
-
-        assert_eq!(
-            take_calls(&calls),
-            vec!["make_key:1:2:77", "raise:77:5151:1", "raise:77:5151:2"]
-        );
-    }
-
-    #[test]
-    fn focus_window_via_process_and_raise_retries_missing_ax_window_during_raise() {
-        let calls = Rc::new(RefCell::new(Vec::new()));
-        let attempts = Rc::new(RefCell::new(0usize));
-
-        focus_window_via_process_and_raise(
-            77,
-            |_| Ok(5151),
-            |_| {
-                Ok(ProcessSerialNumber {
-                    high_long_of_psn: 1,
-                    low_long_of_psn: 2,
-                })
-            },
-            {
-                let calls = calls.clone();
-                move |psn, window_id| {
-                    calls.borrow_mut().push(format!(
-                        "front:{}:{}:{}",
-                        psn.high_long_of_psn, psn.low_long_of_psn, window_id
-                    ));
-                    Ok(())
-                }
-            },
-            {
-                let calls = calls.clone();
-                move |psn, window_id| {
-                    calls.borrow_mut().push(format!(
-                        "make_key:{}:{}:{}",
-                        psn.high_long_of_psn, psn.low_long_of_psn, window_id
-                    ));
-                    Ok(())
-                }
-            },
-            {
-                let calls = calls.clone();
-                let attempts = attempts.clone();
-                move |window_id, pid| {
-                    let mut attempts = attempts.borrow_mut();
-                    *attempts += 1;
-                    calls
-                        .borrow_mut()
-                        .push(format!("raise:{window_id}:{pid}:{}", *attempts));
-                    if *attempts == 1 {
-                        Err(MacosNativeOperationError::MissingWindow(window_id))
-                    } else {
-                        Ok(())
-                    }
-                }
-            },
-        )
-        .unwrap();
-
-        assert_eq!(
-            take_calls(&calls),
-            vec![
-                "front:1:2:77",
-                "make_key:1:2:77",
-                "raise:77:5151:1",
-                "raise:77:5151:2",
-            ]
-        );
-    }
-
-    #[test]
-    fn focus_window_via_process_and_raise_waits_past_three_missing_ax_retries() {
-        let calls = Rc::new(RefCell::new(Vec::new()));
-        let attempts = Rc::new(RefCell::new(0usize));
-
-        focus_window_via_process_and_raise(
-            77,
-            |_| Ok(5151),
-            |_| {
-                Ok(ProcessSerialNumber {
-                    high_long_of_psn: 1,
-                    low_long_of_psn: 2,
-                })
-            },
-            {
-                let calls = calls.clone();
-                move |psn, window_id| {
-                    calls.borrow_mut().push(format!(
-                        "front:{}:{}:{}",
-                        psn.high_long_of_psn, psn.low_long_of_psn, window_id
-                    ));
-                    Ok(())
-                }
-            },
-            {
-                let calls = calls.clone();
-                move |psn, window_id| {
-                    calls.borrow_mut().push(format!(
-                        "make_key:{}:{}:{}",
-                        psn.high_long_of_psn, psn.low_long_of_psn, window_id
-                    ));
-                    Ok(())
-                }
-            },
-            {
-                let calls = calls.clone();
-                let attempts = attempts.clone();
-                move |window_id, pid| {
-                    let mut attempts = attempts.borrow_mut();
-                    *attempts += 1;
-                    calls
-                        .borrow_mut()
-                        .push(format!("raise:{window_id}:{pid}:{}", *attempts));
-                    if *attempts < 4 {
-                        Err(MacosNativeOperationError::MissingWindow(window_id))
-                    } else {
-                        Ok(())
-                    }
-                }
-            },
-        )
-        .unwrap();
-
-        assert_eq!(
-            take_calls(&calls),
-            vec![
-                "front:1:2:77",
-                "make_key:1:2:77",
-                "raise:77:5151:1",
-                "raise:77:5151:2",
-                "raise:77:5151:3",
-                "raise:77:5151:4",
-            ]
-        );
     }
 
     #[test]
@@ -8352,41 +8255,5 @@ command = false
 
         assert_eq!(err, MacosNativeOperationError::MissingWindow(999));
         assert!(take_calls(&calls).is_empty());
-    }
-
-    #[test]
-    fn active_space_snapshot_ordered_window_ids_match_window_ordering_contract() {
-        let topology = RawTopologySnapshot {
-            spaces: vec![raw_desktop_space(1)],
-            active_space_ids: HashSet::from([1]),
-            active_space_windows: HashMap::from([(
-                1,
-                vec![
-                    raw_window(11).with_visible_index(1),
-                    raw_window(12).with_visible_index(0),
-                    raw_window(13).with_level(5),
-                ],
-            )]),
-            inactive_space_window_ids: HashMap::new(),
-            focused_window_id: Some(12),
-        };
-
-        let spaces = space_snapshots_from_topology(&topology);
-        let active = spaces.iter().find(|space| space.is_active).unwrap();
-        let windows = window_snapshots_from_topology(&topology);
-        let ordered_window_ids_from_windows = windows
-            .iter()
-            .filter(|window| topology.active_space_ids.contains(&window.space_id))
-            .map(|window| (window.id, window.order_index.unwrap()))
-            .collect::<Vec<_>>();
-
-        assert_eq!(
-            active.ordered_window_ids.as_deref(),
-            Some(&[12, 11, 13][..])
-        );
-        assert_eq!(
-            ordered_window_ids_from_windows,
-            vec![(12, 0), (11, 1), (13, 2)]
-        );
     }
 }
