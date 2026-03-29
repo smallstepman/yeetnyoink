@@ -110,3 +110,16 @@ fn source_backend_crate_stays_facade_focused() {
         );
     }
 }
+
+fn crate_source(path: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join(path)
+}
+
+#[test]
+fn source_crate_root_is_a_thin_facade() {
+    let lib = std::fs::read_to_string(crate_source("src/lib.rs")).unwrap();
+    assert!(lib.contains("mod api;"));
+    assert!(lib.contains("mod real_api;"));
+    assert!(!lib.contains("pub trait MacosNativeApi {"));
+    assert!(!lib.contains("pub struct RealNativeApi"));
+}
