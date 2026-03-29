@@ -1,10 +1,12 @@
+#![cfg(target_os = "macos")]
+
 use std::sync::Arc;
 
 use macos_window_manager::{
-    ActiveSpaceFocusTargetHint, MacosNativeApi, MacosNativeConnectError,
-    MacosNativeOperationError, MacosNativeProbeError, MissionControlHotkey,
-    MissionControlModifiers, NativeBackendOptions, NativeBounds, NativeDesktopSnapshot,
-    NativeDiagnostics, NativeDirection, NativeWindowSnapshot, RealNativeApi,
+    ActiveSpaceFocusTargetHint, MacosNativeApi, MacosNativeConnectError, MacosNativeOperationError,
+    MacosNativeProbeError, MissionControlHotkey, MissionControlModifiers, NativeBackendOptions,
+    NativeBounds, NativeDesktopSnapshot, NativeDiagnostics, NativeDirection, NativeWindowSnapshot,
+    RawSpaceRecord, RawTopologySnapshot, RawWindow, RealNativeApi, SpaceKind, WindowSnapshot,
 };
 
 struct SmokeDiagnostics;
@@ -53,6 +55,40 @@ fn public_api_smoke_test() {
     };
     let _desktop_snapshot: Option<NativeDesktopSnapshot> = None;
     let _window_snapshot: Option<NativeWindowSnapshot> = None;
+    let _space_kind = SpaceKind::Desktop;
+
+    let raw_space = RawSpaceRecord {
+        managed_space_id: 7,
+        display_index: 0,
+        space_type: 0,
+        tile_spaces: Vec::new(),
+        has_tile_layout_manager: false,
+        stage_manager_managed: false,
+    };
+    let raw_window = RawWindow {
+        id: 11,
+        pid: Some(22),
+        app_id: Some("com.example.smoke".to_string()),
+        title: Some("Smoke".to_string()),
+        level: 0,
+        visible_index: Some(0),
+        frame: Some(hint.bounds),
+    };
+    let window_snapshot = WindowSnapshot {
+        id: raw_window.id,
+        pid: raw_window.pid,
+        app_id: raw_window.app_id.clone(),
+        title: raw_window.title.clone(),
+        space_id: raw_space.managed_space_id,
+        order_index: Some(0),
+    };
+    let _raw_topology_snapshot = RawTopologySnapshot {
+        spaces: vec![raw_space],
+        active_space_ids: [hint.space_id].into_iter().collect(),
+        active_space_windows: [(hint.space_id, vec![raw_window])].into_iter().collect(),
+        inactive_space_window_ids: std::collections::HashMap::new(),
+        focused_window_id: Some(window_snapshot.id),
+    };
 
     let connect_error = MacosNativeConnectError::MissingRequiredSymbol("SLSMainConnectionID");
     let probe_error = MacosNativeProbeError::MissingTopology("CGWindowListCopyWindowInfo");
