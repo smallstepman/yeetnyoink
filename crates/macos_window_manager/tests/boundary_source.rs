@@ -147,3 +147,33 @@ fn source_swift_backend_scaffold_exists() {
     let cargo = std::fs::read_to_string(crate_source("Cargo.toml")).unwrap();
     assert!(cargo.contains("build = \"build.rs\""));
 }
+
+#[test]
+fn source_build_script_uses_cargo_target_and_out_dir_for_swiftpm() {
+    let build = std::fs::read_to_string(crate_source("build.rs")).unwrap();
+
+    assert!(
+        build.contains("TARGET"),
+        "build script should derive the Swift build target from Cargo target env"
+    );
+    assert!(
+        build.contains("CARGO_CFG_TARGET_ARCH"),
+        "build script should read Cargo target architecture instead of assuming the host arch"
+    );
+    assert!(
+        build.contains("--triple"),
+        "build script should pass an explicit target triple to swift build"
+    );
+    assert!(
+        build.contains("OUT_DIR"),
+        "build script should place SwiftPM scratch output under Cargo OUT_DIR"
+    );
+    assert!(
+        build.contains("--scratch-path"),
+        "build script should keep SwiftPM artifacts out of the source tree"
+    );
+    assert!(
+        !build.contains(".build"),
+        "build script should not rely on SwiftPM's in-tree .build directory"
+    );
+}
