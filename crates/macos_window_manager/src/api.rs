@@ -6,13 +6,14 @@ use std::{
 use crate::desktop_topology_snapshot::{
     RawSpaceRecord, RawTopologySnapshot, RawWindow, WindowSnapshot,
 };
+use crate::environment;
 use crate::error::{MacosNativeConnectError, MacosNativeOperationError, MacosNativeProbeError};
+use crate::navigation;
 use crate::{
     active_space_ax_backed_same_pid_target, active_space_focus_target_hint_from_topology,
     active_window_pid_from_topology, desktop_topology_snapshot, ensure_supported_target_space,
     focus_same_space_target_in_snapshot, focused_window_from_active_space_windows,
-    space_id_for_window, space_transition_window_ids, switch_space_in_snapshot,
-    validate_environment_with_api, wait_for_space_presentation,
+    space_id_for_window, space_transition_window_ids,
 };
 
 pub type NativeSpaceId = u64;
@@ -118,7 +119,7 @@ pub trait MacosNativeApi {
     fn minimal_topology_ready(&self) -> bool;
     fn debug(&self, _message: &str) {}
     fn validate_environment(&self) -> Result<(), MacosNativeConnectError> {
-        validate_environment_with_api(self)
+        environment::validate_environment_with_api(self)
     }
     #[allow(dead_code)]
     fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError>;
@@ -197,7 +198,7 @@ pub trait MacosNativeApi {
         space_id: u64,
         adjacent_direction: Option<NativeDirection>,
     ) -> Result<(), MacosNativeOperationError> {
-        switch_space_in_snapshot(self, snapshot, space_id, adjacent_direction)
+        navigation::switch_space_in_snapshot(self, snapshot, space_id, adjacent_direction)
     }
     fn focus_same_space_target_in_snapshot(
         &self,
@@ -223,7 +224,7 @@ pub trait MacosNativeApi {
                 target_window_ids.len()
             ));
             self.switch_space(target_space_id)?;
-            wait_for_space_presentation(
+            navigation::wait_for_space_presentation(
                 self,
                 target_space_id,
                 source_focus_window_id,

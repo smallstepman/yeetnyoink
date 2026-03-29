@@ -129,3 +129,12 @@ fn source_crate_root_is_a_thin_facade() {
     assert!(!macos_real_api.contains("use crate::*;"));
     assert!(!stub_real_api.contains("use crate::*;"));
 }
+
+#[test]
+fn source_navigation_helpers_leave_lib_rs() {
+    let lib = std::fs::read_to_string(crate_source("src/lib.rs")).unwrap();
+    assert!(lib.contains("mod environment;"));
+    assert!(lib.contains("mod navigation;"));
+    assert!(!lib.contains("fn wait_for_space_presentation("));
+    assert!(!lib.contains("fn switch_space_in_snapshot("));
+}

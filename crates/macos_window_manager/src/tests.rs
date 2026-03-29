@@ -1334,7 +1334,7 @@ impl MacosNativeApi for ValidationApi {
         if let Some(err) = self.validate_environment_override {
             return Err(err);
         }
-        validate_environment_with_api(self)
+        environment::validate_environment_with_api(self)
     }
 
     fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
