@@ -509,6 +509,221 @@ pub(crate) fn active_space_focus_target_hint_from_topology(
 pub(super) mod tests {
     use super::*;
 
+    fn raw_window(id: u64) -> RawWindow {
+        RawWindow {
+            id,
+            pid: None,
+            app_id: None,
+            title: None,
+            level: 0,
+            visible_index: None,
+            frame: None,
+        }
+    }
+
+    trait RawWindowTestExt {
+        fn with_level(self, level: i32) -> Self;
+        fn with_visible_index(self, visible_index: usize) -> Self;
+    }
+
+    impl RawWindowTestExt for RawWindow {
+        fn with_level(mut self, level: i32) -> Self {
+            self.level = level;
+            self
+        }
+
+        fn with_visible_index(mut self, visible_index: usize) -> Self {
+            self.visible_index = Some(visible_index);
+            self
+        }
+    }
+
+    fn raw_desktop_space_on_display(managed_space_id: u64, display_index: usize) -> RawSpaceRecord {
+        RawSpaceRecord {
+            managed_space_id,
+            display_index,
+            space_type: DESKTOP_SPACE_TYPE,
+            tile_spaces: Vec::new(),
+            has_tile_layout_manager: false,
+            stage_manager_managed: false,
+        }
+    }
+
+    fn raw_desktop_space(managed_space_id: u64) -> RawSpaceRecord {
+        raw_desktop_space_on_display(managed_space_id, 0)
+    }
+
+    fn raw_fullscreen_space(managed_space_id: u64) -> RawSpaceRecord {
+        RawSpaceRecord {
+            managed_space_id,
+            display_index: 0,
+            space_type: FULLSCREEN_SPACE_TYPE,
+            tile_spaces: Vec::new(),
+            has_tile_layout_manager: false,
+            stage_manager_managed: false,
+        }
+    }
+
+    fn raw_split_space(managed_space_id: u64, tile_spaces: &[u64]) -> RawSpaceRecord {
+        RawSpaceRecord {
+            managed_space_id,
+            display_index: 0,
+            space_type: DESKTOP_SPACE_TYPE,
+            tile_spaces: tile_spaces.to_vec(),
+            has_tile_layout_manager: true,
+            stage_manager_managed: false,
+        }
+    }
+
+    fn raw_stage_manager_space(managed_space_id: u64) -> RawSpaceRecord {
+        RawSpaceRecord {
+            managed_space_id,
+            display_index: 0,
+            space_type: DESKTOP_SPACE_TYPE,
+            tile_spaces: Vec::new(),
+            has_tile_layout_manager: false,
+            stage_manager_managed: true,
+        }
+    }
+
+    #[test]
+    fn classify_space_distinguishes_desktop_fullscreen_split_and_stage_manager() {
+        assert_eq!(classify_space(&raw_desktop_space(1)), SpaceKind::Desktop);
+        assert_eq!(
+            classify_space(&raw_fullscreen_space(2)),
+            SpaceKind::Fullscreen
+        );
+        assert_eq!(
+            classify_space(&raw_split_space(3, &[11, 12])),
+            SpaceKind::SplitView
+        );
+        assert_eq!(
+            classify_space(&raw_stage_manager_space(4)),
+            SpaceKind::StageManagerOpaque
+        );
+    }
+
+    #[test]
+    fn real_path_app_id_ignores_owner_name_display_label() {
+        assert_eq!(stable_app_id_from_real_window(None, Some("Finder")), None);
+    }
+
+    #[test]
+    fn parse_lsappinfo_bundle_identifier_extracts_stable_app_id() {
+        let output = "\"LSDisplayName\"=\"Finder\"\n\"CFBundleIdentifier\"=\"com.apple.finder\"\n";
+
+        assert_eq!(
+            parse_lsappinfo_bundle_identifier(output),
+            Some("com.apple.finder".to_string())
+        );
+    }
+
+    #[test]
+    fn active_space_ordering_prefers_frontmost_visible_windows() {
+        let windows = vec![
+            raw_window(11).with_level(10).with_visible_index(1),
+            raw_window(12).with_level(20).with_visible_index(0),
+        ];
+
+        let ordered = order_active_space_windows(&windows);
+        assert_eq!(
+            ordered.iter().map(|window| window.id).collect::<Vec<_>>(),
+            vec![12, 11]
+        );
+    }
+
+    #[test]
+    fn active_space_ordering_uses_window_level_when_visible_order_is_missing() {
+        let windows = vec![raw_window(21).with_level(10), raw_window(22).with_level(20)];
+
+        let ordered = order_active_space_windows(&windows);
+        assert_eq!(
+            ordered.iter().map(|window| window.id).collect::<Vec<_>>(),
+            vec![22, 21]
+        );
+    }
+
+    #[test]
+    fn active_space_ordering_prefers_visible_windows_over_fallback_ordering() {
+        let windows = vec![
+            raw_window(31).with_level(50),
+            raw_window(32).with_visible_index(0),
+        ];
+
+        let ordered = order_active_space_windows(&windows);
+        assert_eq!(
+            ordered.iter().map(|window| window.id).collect::<Vec<_>>(),
+            vec![32, 31]
+        );
+    }
+
+    #[test]
+    fn spaces_snapshot_includes_active_flags_and_classified_kinds() {
+        let topology = RawTopologySnapshot {
+            spaces: vec![raw_desktop_space(1), raw_split_space(2, &[21, 22])],
+            active_space_ids: HashSet::from([1]),
+            active_space_windows: HashMap::from([(1, vec![raw_window(11)])]),
+            inactive_space_window_ids: HashMap::from([(2, vec![21, 22])]),
+            focused_window_id: Some(11),
+        };
+
+        let spaces = space_snapshots_from_topology(&topology);
+
+        assert!(
+            spaces
+                .iter()
+                .any(|space| space.kind == SpaceKind::Desktop && space.is_active)
+        );
+        assert!(
+            spaces
+                .iter()
+                .any(|space| space.kind == SpaceKind::SplitView && !space.is_active)
+        );
+    }
+
+    #[test]
+    fn spaces_snapshot_marks_all_active_display_spaces_active() {
+        let topology = RawTopologySnapshot {
+            spaces: vec![
+                raw_desktop_space_on_display(1, 0),
+                raw_desktop_space_on_display(2, 0),
+                raw_desktop_space_on_display(3, 1),
+            ],
+            active_space_ids: HashSet::from([1, 3]),
+            active_space_windows: HashMap::from([
+                (1, vec![raw_window(11)]),
+                (3, vec![raw_window(31)]),
+            ]),
+            inactive_space_window_ids: HashMap::from([(2, vec![21])]),
+            focused_window_id: Some(31),
+        };
+
+        let spaces = space_snapshots_from_topology(&topology);
+
+        assert_eq!(
+            spaces
+                .iter()
+                .filter(|space| space.is_active)
+                .map(|space| space.id)
+                .collect::<Vec<_>>(),
+            vec![1, 3]
+        );
+        assert_eq!(
+            spaces
+                .iter()
+                .find(|space| space.id == 1)
+                .and_then(|space| space.ordered_window_ids.as_deref()),
+            Some(&[11][..])
+        );
+        assert_eq!(
+            spaces
+                .iter()
+                .find(|space| space.id == 3)
+                .and_then(|space| space.ordered_window_ids.as_deref()),
+            Some(&[31][..])
+        );
+    }
+
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub(crate) struct SpaceSnapshot {
         pub(crate) id: u64,

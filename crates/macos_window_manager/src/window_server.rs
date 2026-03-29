@@ -347,3 +347,92 @@ fn cg_window_bounds(description: CFDictionaryRef) -> Option<NativeBounds> {
         height: cf_dictionary_i32(bounds, height_key.as_type_ref() as CFStringRef)?,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core_foundation::base::CFTypeRef;
+
+    fn cf_test_dictionary(entries: &[(CFTypeRef, CFTypeRef)]) -> CfOwned {
+        CfOwned::from_servo(crate::tests::dictionary_from_type_refs(entries))
+    }
+
+    fn cf_test_array(values: &[CFTypeRef]) -> CfOwned {
+        CfOwned::from_servo(array_from_type_refs(values))
+    }
+
+    #[test]
+    fn matching_onscreen_window_descriptions_preserve_target_window_metadata() {
+        let window_number_key = cg_window_number_key();
+        let window_owner_pid_key = cg_window_owner_pid_key();
+        let window_name_key = cg_window_name_key();
+        let window_layer_key = cg_window_layer_key();
+        let window_bounds_key = cg_window_bounds_key();
+        let x_key = cf_string("X").unwrap();
+        let y_key = cf_string("Y").unwrap();
+        let width_key = cf_string("Width").unwrap();
+        let height_key = cf_string("Height").unwrap();
+        let id_11 = cf_number_from_u64(11).unwrap();
+        let pid_101 = cf_number_from_u64(101).unwrap();
+        let level_5 = cf_number_from_u64(5).unwrap();
+        let x_10 = cf_number_from_u64(10).unwrap();
+        let y_20 = cf_number_from_u64(20).unwrap();
+        let width_300 = cf_number_from_u64(300).unwrap();
+        let height_400 = cf_number_from_u64(400).unwrap();
+        let title_alpha = cf_string("alpha").unwrap();
+        let id_22 = cf_number_from_u64(22).unwrap();
+        let pid_202 = cf_number_from_u64(202).unwrap();
+        let level_7 = cf_number_from_u64(7).unwrap();
+        let title_beta = cf_string("beta").unwrap();
+        let first_bounds = cf_test_dictionary(&[
+            (x_key.as_type_ref(), x_10.as_type_ref()),
+            (y_key.as_type_ref(), y_20.as_type_ref()),
+            (width_key.as_type_ref(), width_300.as_type_ref()),
+            (height_key.as_type_ref(), height_400.as_type_ref()),
+        ]);
+        let first_window = cf_test_dictionary(&[
+            (window_number_key as CFTypeRef, id_11.as_type_ref()),
+            (window_owner_pid_key as CFTypeRef, pid_101.as_type_ref()),
+            (window_name_key as CFTypeRef, title_alpha.as_type_ref()),
+            (window_layer_key as CFTypeRef, level_5.as_type_ref()),
+            (window_bounds_key as CFTypeRef, first_bounds.as_type_ref()),
+        ]);
+        let second_window = cf_test_dictionary(&[
+            (window_number_key as CFTypeRef, id_22.as_type_ref()),
+            (window_owner_pid_key as CFTypeRef, pid_202.as_type_ref()),
+            (window_name_key as CFTypeRef, title_beta.as_type_ref()),
+            (window_layer_key as CFTypeRef, level_7.as_type_ref()),
+        ]);
+        let onscreen_descriptions =
+            cf_test_array(&[first_window.as_type_ref(), second_window.as_type_ref()]);
+
+        let filtered = filter_window_descriptions_raw(
+            onscreen_descriptions.as_type_ref() as CFArrayRef,
+            &[11],
+        )
+        .unwrap();
+        let parsed = parse_window_descriptions(
+            filtered.as_type_ref() as CFArrayRef,
+            &HashMap::from([(11, 0usize)]),
+        )
+        .unwrap();
+
+        assert_eq!(
+            parsed,
+            vec![RawWindow {
+                id: 11,
+                pid: Some(101),
+                app_id: None,
+                title: Some("alpha".to_string()),
+                level: 5,
+                visible_index: Some(0),
+                frame: Some(NativeBounds {
+                    x: 10,
+                    y: 20,
+                    width: 300,
+                    height: 400,
+                }),
+            }]
+        );
+    }
+}

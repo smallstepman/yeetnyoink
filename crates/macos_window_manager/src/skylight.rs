@@ -331,3 +331,116 @@ pub(crate) fn parse_window_ids(payload: CFArrayRef) -> Result<Vec<u64>, MacosNat
         })
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::DESKTOP_SPACE_TYPE;
+    use core_foundation::base::CFTypeRef;
+
+    fn cf_test_dictionary(entries: &[(CFTypeRef, CFTypeRef)]) -> CfOwned {
+        CfOwned::from_servo(crate::tests::dictionary_from_type_refs(entries))
+    }
+
+    fn cf_test_array(values: &[CFTypeRef]) -> CfOwned {
+        CfOwned::from_servo(array_from_type_refs(values))
+    }
+
+    #[test]
+    fn parse_raw_space_record_ignores_non_dictionary_tile_space_entries() {
+        let managed_space_id_key = cf_string("ManagedSpaceID").unwrap();
+        let space_type_key = cf_string("type").unwrap();
+        let tile_layout_manager_key = cf_string("TileLayoutManager").unwrap();
+        let tile_spaces_key = cf_string("TileSpaces").unwrap();
+        let id64_key = cf_string("id64").unwrap();
+        let managed_space_id = cf_number_from_u64(7).unwrap();
+        let space_type = cf_number_from_u64(DESKTOP_SPACE_TYPE as u64).unwrap();
+        let split_left_id = cf_number_from_u64(11).unwrap();
+        let split_right_id = cf_number_from_u64(12).unwrap();
+        let non_dictionary_entry = cf_number_from_u64(999).unwrap();
+
+        let tile_space_with_managed_space_id = cf_test_dictionary(&[(
+            managed_space_id_key.as_type_ref(),
+            split_left_id.as_type_ref(),
+        )]);
+        let tile_space_with_id64 =
+            cf_test_dictionary(&[(id64_key.as_type_ref(), split_right_id.as_type_ref())]);
+        let tile_spaces = cf_test_array(&[
+            tile_space_with_managed_space_id.as_type_ref(),
+            non_dictionary_entry.as_type_ref(),
+            tile_space_with_id64.as_type_ref(),
+        ]);
+        let tile_layout_manager =
+            cf_test_dictionary(&[(tile_spaces_key.as_type_ref(), tile_spaces.as_type_ref())]);
+        let raw_space = cf_test_dictionary(&[
+            (
+                managed_space_id_key.as_type_ref(),
+                managed_space_id.as_type_ref(),
+            ),
+            (space_type_key.as_type_ref(), space_type.as_type_ref()),
+            (
+                tile_layout_manager_key.as_type_ref(),
+                tile_layout_manager.as_type_ref(),
+            ),
+        ]);
+
+        let parsed = parse_raw_space_record(raw_space.as_type_ref() as CFDictionaryRef, 3).unwrap();
+
+        assert_eq!(parsed.managed_space_id, 7);
+        assert_eq!(parsed.display_index, 3);
+        assert_eq!(parsed.tile_spaces, vec![11, 12]);
+        assert!(parsed.has_tile_layout_manager);
+    }
+
+    #[test]
+    fn parse_managed_spaces_preserves_display_grouping() {
+        let display_identifier_key = cf_string("Display Identifier").unwrap();
+        let spaces_key = cf_string("Spaces").unwrap();
+        let managed_space_id_key = cf_string("ManagedSpaceID").unwrap();
+        let space_type_key = cf_string("type").unwrap();
+        let space_type = cf_number_from_u64(DESKTOP_SPACE_TYPE as u64).unwrap();
+
+        let display0_space = cf_test_dictionary(&[
+            (
+                managed_space_id_key.as_type_ref(),
+                cf_number_from_u64(1).unwrap().as_type_ref(),
+            ),
+            (space_type_key.as_type_ref(), space_type.as_type_ref()),
+        ]);
+        let display1_space = cf_test_dictionary(&[
+            (
+                managed_space_id_key.as_type_ref(),
+                cf_number_from_u64(9).unwrap().as_type_ref(),
+            ),
+            (space_type_key.as_type_ref(), space_type.as_type_ref()),
+        ]);
+        let display0 = cf_test_dictionary(&[
+            (
+                display_identifier_key.as_type_ref(),
+                cf_string("display-0").unwrap().as_type_ref(),
+            ),
+            (
+                spaces_key.as_type_ref(),
+                cf_test_array(&[display0_space.as_type_ref()]).as_type_ref(),
+            ),
+        ]);
+        let display1 = cf_test_dictionary(&[
+            (
+                display_identifier_key.as_type_ref(),
+                cf_string("display-1").unwrap().as_type_ref(),
+            ),
+            (
+                spaces_key.as_type_ref(),
+                cf_test_array(&[display1_space.as_type_ref()]).as_type_ref(),
+            ),
+        ]);
+        let payload = cf_test_array(&[display0.as_type_ref(), display1.as_type_ref()]);
+
+        let parsed = parse_managed_spaces(payload.as_type_ref() as CFArrayRef).unwrap();
+
+        assert_eq!(parsed[0].managed_space_id, 1);
+        assert_eq!(parsed[0].display_index, 0);
+        assert_eq!(parsed[1].managed_space_id, 9);
+        assert_eq!(parsed[1].display_index, 1);
+    }
+}

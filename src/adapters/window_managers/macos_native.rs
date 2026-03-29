@@ -945,28 +945,20 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::macos_window_manager_test_support::foundation::{
-        CFArrayRef, CFDictionaryRef, CFTypeRef, ProcessSerialNumber, cf_number_from_u64, cf_string,
-    };
+    use super::macos_window_manager_test_support::foundation::ProcessSerialNumber;
     use super::macos_window_manager_test_support::tests::{
-        SpaceSnapshot, dictionary_from_type_refs, space_snapshots_from_topology,
-    };
-    use super::macos_window_manager_test_support::window_server::{
-        cg_window_bounds_key, cg_window_layer_key, cg_window_name_key, cg_window_number_key,
-        cg_window_owner_pid_key, filter_window_descriptions_raw, parse_window_descriptions,
+        SpaceSnapshot, space_snapshots_from_topology,
     };
     use super::macos_window_manager_test_support::{
-        CfOwned, DESKTOP_SPACE_TYPE, FULLSCREEN_SPACE_TYPE, NativeSpaceSnapshot,
-        REQUIRED_PRIVATE_SYMBOLS, RawSpaceRecord, RawTopologySnapshot, RawWindow,
-        SPACE_SWITCH_POLL_INTERVAL, SPACE_SWITCH_SETTLE_TIMEOUT, SPACE_SWITCH_STABLE_TARGET_POLLS,
-        WindowSnapshot, array_from_type_refs, best_window_id_from_windows, classify_space,
-        enrich_real_window_app_ids_with, ensure_supported_target_space,
-        focus_window_via_make_key_and_raise, focus_window_via_process_and_raise,
-        focused_window_from_topology, native_desktop_snapshot_from_topology,
-        order_active_space_windows, parse_lsappinfo_bundle_identifier, parse_managed_spaces,
-        parse_raw_space_record, snapshots_for_inactive_space, space_id_for_window,
-        space_transition_window_ids, stable_app_id_from_real_window, validate_environment_with_api,
-        window_ids_for_space, window_snapshots_from_topology,
+        DESKTOP_SPACE_TYPE, FULLSCREEN_SPACE_TYPE, NativeSpaceSnapshot, REQUIRED_PRIVATE_SYMBOLS,
+        RawSpaceRecord, RawTopologySnapshot, RawWindow, SPACE_SWITCH_POLL_INTERVAL,
+        SPACE_SWITCH_SETTLE_TIMEOUT, SPACE_SWITCH_STABLE_TARGET_POLLS, WindowSnapshot,
+        best_window_id_from_windows, enrich_real_window_app_ids_with,
+        ensure_supported_target_space, focus_window_via_make_key_and_raise,
+        focus_window_via_process_and_raise, focused_window_from_topology,
+        native_desktop_snapshot_from_topology, order_active_space_windows,
+        snapshots_for_inactive_space, space_id_for_window, space_transition_window_ids,
+        validate_environment_with_api, window_ids_for_space, window_snapshots_from_topology,
     };
     use super::*;
     use crate::engine::topology::{Rect, select_closest_in_direction_with_strategy};
@@ -4250,10 +4242,6 @@ mod tests {
         }
     }
 
-    fn raw_fullscreen_space(managed_space_id: u64) -> RawSpaceRecord {
-        raw_fullscreen_space_on_display(managed_space_id, 0)
-    }
-
     fn raw_split_space_on_display(
         managed_space_id: u64,
         tile_spaces: &[u64],
@@ -4289,10 +4277,6 @@ mod tests {
 
     fn raw_stage_manager_space(managed_space_id: u64) -> RawSpaceRecord {
         raw_stage_manager_space_on_display(managed_space_id, 0)
-    }
-
-    fn fake_context_with_spaces() -> MacosNativeContext<FakeNativeApi> {
-        MacosNativeContext::connect_with_api(FakeNativeApi::default()).unwrap()
     }
 
     fn fake_context_with_active_window(window_id: u64) -> MacosNativeContext<FakeNativeApi> {
@@ -4435,14 +4419,6 @@ command = false
         ))
     }
 
-    fn cf_test_array(values: &[CFTypeRef]) -> CfOwned {
-        CfOwned::from_servo(array_from_type_refs(values))
-    }
-
-    fn cf_test_dictionary(entries: &[(CFTypeRef, CFTypeRef)]) -> CfOwned {
-        CfOwned::from_servo(dictionary_from_type_refs(entries))
-    }
-
     fn implementation_source() -> &'static str {
         let source = include_str!("macos_native.rs");
         source
@@ -4583,28 +4559,6 @@ command = false
     }
 
     #[test]
-    fn classify_space_distinguishes_desktop_fullscreen_split_and_stage_manager() {
-        assert_eq!(classify_space(&raw_desktop_space(1)), SpaceKind::Desktop);
-        assert_eq!(
-            classify_space(&raw_fullscreen_space(2)),
-            SpaceKind::Fullscreen
-        );
-        assert_eq!(
-            classify_space(&raw_split_space(3, &[11, 12])),
-            SpaceKind::SplitView
-        );
-        assert_eq!(
-            classify_space(&raw_stage_manager_space(4)),
-            SpaceKind::StageManagerOpaque
-        );
-    }
-
-    #[test]
-    fn real_path_app_id_ignores_owner_name_display_label() {
-        assert_eq!(stable_app_id_from_real_window(None, Some("Finder")), None);
-    }
-
-    #[test]
     fn enrich_real_window_app_ids_resolves_bundle_ids_after_parsing() {
         let windows = vec![raw_window(11).with_pid(42), raw_window(12)];
 
@@ -4646,55 +4600,6 @@ command = false
                 raw_window(13).with_pid(7).with_app_id("com.example.7"),
                 raw_window(14).with_pid(42).with_app_id("com.example.42"),
             ]
-        );
-    }
-
-    #[test]
-    fn parse_lsappinfo_bundle_identifier_extracts_stable_app_id() {
-        let output = "\"LSDisplayName\"=\"Finder\"\n\"CFBundleIdentifier\"=\"com.apple.finder\"\n";
-
-        assert_eq!(
-            parse_lsappinfo_bundle_identifier(output),
-            Some("com.apple.finder".to_string())
-        );
-    }
-
-    #[test]
-    fn active_space_ordering_prefers_frontmost_visible_windows() {
-        let windows = vec![
-            raw_window(11).with_level(10).with_visible_index(1),
-            raw_window(12).with_level(20).with_visible_index(0),
-        ];
-
-        let ordered = order_active_space_windows(&windows);
-        assert_eq!(
-            ordered.iter().map(|w| w.id).collect::<Vec<_>>(),
-            vec![12, 11]
-        );
-    }
-
-    #[test]
-    fn active_space_ordering_uses_window_level_when_visible_order_is_missing() {
-        let windows = vec![raw_window(21).with_level(10), raw_window(22).with_level(20)];
-
-        let ordered = order_active_space_windows(&windows);
-        assert_eq!(
-            ordered.iter().map(|w| w.id).collect::<Vec<_>>(),
-            vec![22, 21]
-        );
-    }
-
-    #[test]
-    fn active_space_ordering_prefers_visible_windows_over_fallback_ordering() {
-        let windows = vec![
-            raw_window(31).with_level(50),
-            raw_window(32).with_visible_index(0),
-        ];
-
-        let ordered = order_active_space_windows(&windows);
-        assert_eq!(
-            ordered.iter().map(|w| w.id).collect::<Vec<_>>(),
-            vec![32, 31]
         );
     }
 
@@ -4825,23 +4730,6 @@ command = false
     }
 
     #[test]
-    fn spaces_snapshot_includes_active_flags_and_classified_kinds() {
-        let ctx = fake_context_with_spaces();
-        let spaces = ctx.spaces().unwrap();
-
-        assert!(
-            spaces
-                .iter()
-                .any(|space| space.kind == SpaceKind::Desktop && space.is_active)
-        );
-        assert!(
-            spaces
-                .iter()
-                .any(|space| space.kind == SpaceKind::SplitView)
-        );
-    }
-
-    #[test]
     fn focused_window_comes_from_active_space_snapshot() {
         let ctx = fake_context_with_active_window(42);
         let focused = ctx.focused_window().unwrap();
@@ -4866,36 +4754,6 @@ command = false
         );
         assert_eq!(focused.id, 31);
         assert_eq!(focused.space_id, 3);
-    }
-
-    #[test]
-    fn spaces_snapshot_marks_all_active_display_spaces_active() {
-        let topology = FakeNativeApi::multi_display_topology_fixture();
-
-        let spaces = space_snapshots_from_topology(&topology);
-
-        assert_eq!(
-            spaces
-                .iter()
-                .filter(|space| space.is_active)
-                .map(|space| space.id)
-                .collect::<Vec<_>>(),
-            vec![1, 3]
-        );
-        assert_eq!(
-            spaces
-                .iter()
-                .find(|space| space.id == 1)
-                .and_then(|space| space.ordered_window_ids.as_deref()),
-            Some(&[11][..])
-        );
-        assert_eq!(
-            spaces
-                .iter()
-                .find(|space| space.id == 3)
-                .and_then(|space| space.ordered_window_ids.as_deref()),
-            Some(&[31][..])
-        );
     }
 
     #[test]
@@ -8530,177 +8388,5 @@ command = false
             ordered_window_ids_from_windows,
             vec![(12, 0), (11, 1), (13, 2)]
         );
-    }
-
-    #[test]
-    fn matching_onscreen_window_descriptions_preserve_target_window_metadata() {
-        let window_number_key = cg_window_number_key();
-        let window_owner_pid_key = cg_window_owner_pid_key();
-        let window_name_key = cg_window_name_key();
-        let window_layer_key = cg_window_layer_key();
-        let window_bounds_key = cg_window_bounds_key();
-        let x_key = cf_string("X").unwrap();
-        let y_key = cf_string("Y").unwrap();
-        let width_key = cf_string("Width").unwrap();
-        let height_key = cf_string("Height").unwrap();
-        let id_11 = cf_number_from_u64(11).unwrap();
-        let pid_101 = cf_number_from_u64(101).unwrap();
-        let level_5 = cf_number_from_u64(5).unwrap();
-        let x_10 = cf_number_from_u64(10).unwrap();
-        let y_20 = cf_number_from_u64(20).unwrap();
-        let width_300 = cf_number_from_u64(300).unwrap();
-        let height_400 = cf_number_from_u64(400).unwrap();
-        let title_alpha = cf_string("alpha").unwrap();
-        let id_22 = cf_number_from_u64(22).unwrap();
-        let pid_202 = cf_number_from_u64(202).unwrap();
-        let level_7 = cf_number_from_u64(7).unwrap();
-        let title_beta = cf_string("beta").unwrap();
-        let first_bounds = cf_test_dictionary(&[
-            (x_key.as_type_ref(), x_10.as_type_ref()),
-            (y_key.as_type_ref(), y_20.as_type_ref()),
-            (width_key.as_type_ref(), width_300.as_type_ref()),
-            (height_key.as_type_ref(), height_400.as_type_ref()),
-        ]);
-        let first_window = cf_test_dictionary(&[
-            (window_number_key as CFTypeRef, id_11.as_type_ref()),
-            (window_owner_pid_key as CFTypeRef, pid_101.as_type_ref()),
-            (window_name_key as CFTypeRef, title_alpha.as_type_ref()),
-            (window_layer_key as CFTypeRef, level_5.as_type_ref()),
-            (window_bounds_key as CFTypeRef, first_bounds.as_type_ref()),
-        ]);
-        let second_window = cf_test_dictionary(&[
-            (window_number_key as CFTypeRef, id_22.as_type_ref()),
-            (window_owner_pid_key as CFTypeRef, pid_202.as_type_ref()),
-            (window_name_key as CFTypeRef, title_beta.as_type_ref()),
-            (window_layer_key as CFTypeRef, level_7.as_type_ref()),
-        ]);
-        let onscreen_descriptions =
-            cf_test_array(&[first_window.as_type_ref(), second_window.as_type_ref()]);
-
-        let filtered = filter_window_descriptions_raw(
-            onscreen_descriptions.as_type_ref() as CFArrayRef,
-            &[11],
-        )
-        .unwrap();
-        let parsed = parse_window_descriptions(
-            filtered.as_type_ref() as CFArrayRef,
-            &HashMap::from([(11, 0usize)]),
-        )
-        .unwrap();
-
-        assert_eq!(
-            parsed,
-            vec![
-                raw_window(11)
-                    .with_pid(101)
-                    .with_title("alpha")
-                    .with_level(5)
-                    .with_visible_index(0)
-                    .with_frame(Rect {
-                        x: 10,
-                        y: 20,
-                        w: 300,
-                        h: 400,
-                    }),
-            ]
-        );
-    }
-
-    #[test]
-    fn parse_raw_space_record_ignores_non_dictionary_tile_space_entries() {
-        let managed_space_id_key = cf_string("ManagedSpaceID").unwrap();
-        let space_type_key = cf_string("type").unwrap();
-        let tile_layout_manager_key = cf_string("TileLayoutManager").unwrap();
-        let tile_spaces_key = cf_string("TileSpaces").unwrap();
-        let id64_key = cf_string("id64").unwrap();
-        let managed_space_id = cf_number_from_u64(7).unwrap();
-        let space_type = cf_number_from_u64(DESKTOP_SPACE_TYPE as u64).unwrap();
-        let split_left_id = cf_number_from_u64(11).unwrap();
-        let split_right_id = cf_number_from_u64(12).unwrap();
-        let non_dictionary_entry = cf_number_from_u64(999).unwrap();
-
-        let tile_space_with_managed_space_id = cf_test_dictionary(&[(
-            managed_space_id_key.as_type_ref(),
-            split_left_id.as_type_ref(),
-        )]);
-        let tile_space_with_id64 =
-            cf_test_dictionary(&[(id64_key.as_type_ref(), split_right_id.as_type_ref())]);
-        let tile_spaces = cf_test_array(&[
-            tile_space_with_managed_space_id.as_type_ref(),
-            non_dictionary_entry.as_type_ref(),
-            tile_space_with_id64.as_type_ref(),
-        ]);
-        let tile_layout_manager =
-            cf_test_dictionary(&[(tile_spaces_key.as_type_ref(), tile_spaces.as_type_ref())]);
-        let raw_space = cf_test_dictionary(&[
-            (
-                managed_space_id_key.as_type_ref(),
-                managed_space_id.as_type_ref(),
-            ),
-            (space_type_key.as_type_ref(), space_type.as_type_ref()),
-            (
-                tile_layout_manager_key.as_type_ref(),
-                tile_layout_manager.as_type_ref(),
-            ),
-        ]);
-
-        let parsed = parse_raw_space_record(raw_space.as_type_ref() as CFDictionaryRef, 3).unwrap();
-
-        assert_eq!(parsed.managed_space_id, 7);
-        assert_eq!(parsed.display_index, 3);
-        assert_eq!(parsed.tile_spaces, vec![11, 12]);
-        assert!(parsed.has_tile_layout_manager);
-    }
-
-    #[test]
-    fn parse_managed_spaces_preserves_display_grouping() {
-        let display_identifier_key = cf_string("Display Identifier").unwrap();
-        let spaces_key = cf_string("Spaces").unwrap();
-        let managed_space_id_key = cf_string("ManagedSpaceID").unwrap();
-        let space_type_key = cf_string("type").unwrap();
-        let space_type = cf_number_from_u64(DESKTOP_SPACE_TYPE as u64).unwrap();
-
-        let display0_space = cf_test_dictionary(&[
-            (
-                managed_space_id_key.as_type_ref(),
-                cf_number_from_u64(1).unwrap().as_type_ref(),
-            ),
-            (space_type_key.as_type_ref(), space_type.as_type_ref()),
-        ]);
-        let display1_space = cf_test_dictionary(&[
-            (
-                managed_space_id_key.as_type_ref(),
-                cf_number_from_u64(9).unwrap().as_type_ref(),
-            ),
-            (space_type_key.as_type_ref(), space_type.as_type_ref()),
-        ]);
-        let display0 = cf_test_dictionary(&[
-            (
-                display_identifier_key.as_type_ref(),
-                cf_string("display-0").unwrap().as_type_ref(),
-            ),
-            (
-                spaces_key.as_type_ref(),
-                cf_test_array(&[display0_space.as_type_ref()]).as_type_ref(),
-            ),
-        ]);
-        let display1 = cf_test_dictionary(&[
-            (
-                display_identifier_key.as_type_ref(),
-                cf_string("display-1").unwrap().as_type_ref(),
-            ),
-            (
-                spaces_key.as_type_ref(),
-                cf_test_array(&[display1_space.as_type_ref()]).as_type_ref(),
-            ),
-        ]);
-        let payload = cf_test_array(&[display0.as_type_ref(), display1.as_type_ref()]);
-
-        let parsed = parse_managed_spaces(payload.as_type_ref() as CFArrayRef).unwrap();
-
-        assert_eq!(parsed[0].managed_space_id, 1);
-        assert_eq!(parsed[0].display_index, 0);
-        assert_eq!(parsed[1].managed_space_id, 9);
-        assert_eq!(parsed[1].display_index, 1);
     }
 }
