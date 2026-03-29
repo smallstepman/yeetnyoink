@@ -1054,112 +1054,12 @@ mod tests {
         }
     }
 
-    #[derive(Debug, Clone)]
-    struct SendRecordingApi {
-        topology: RawTopologySnapshot,
-        calls: Arc<Mutex<Vec<String>>>,
-    }
-
-    impl MacosNativeApi for SendRecordingApi {
-        fn has_symbol(&self, _symbol: &'static str) -> bool {
-            true
-        }
-
-        fn ax_is_trusted(&self) -> bool {
-            true
-        }
-
-        fn minimal_topology_ready(&self) -> bool {
-            true
-        }
-
-        fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
-            Ok(native_desktop_snapshot_from_topology(
-                &self.topology_snapshot()?,
-            ))
-        }
-
-        fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
-            Ok(self.topology.spaces.clone())
-        }
-
-        fn active_space_ids(&self) -> Result<HashSet<u64>, MacosNativeProbeError> {
-            Ok(self.topology.active_space_ids.clone())
-        }
-
-        fn active_space_windows(
-            &self,
-            space_id: u64,
-        ) -> Result<Vec<RawWindow>, MacosNativeProbeError> {
-            Ok(self
-                .topology
-                .active_space_windows
-                .get(&space_id)
-                .cloned()
-                .unwrap_or_default())
-        }
-
-        fn inactive_space_window_ids(
-            &self,
-        ) -> Result<HashMap<u64, Vec<u64>>, MacosNativeProbeError> {
-            Ok(self.topology.inactive_space_window_ids.clone())
-        }
-
-        fn focused_window_id(&self) -> Result<Option<u64>, MacosNativeProbeError> {
-            Ok(self.topology.focused_window_id)
-        }
-
-        fn switch_space(&self, space_id: u64) -> Result<(), MacosNativeOperationError> {
-            self.calls
-                .lock()
-                .unwrap()
-                .push(format!("switch_space:{space_id}"));
-            Ok(())
-        }
-
-        fn focus_window(&self, window_id: u64) -> Result<(), MacosNativeOperationError> {
-            self.calls
-                .lock()
-                .unwrap()
-                .push(format!("focus_window:{window_id}"));
-            Ok(())
-        }
-
-        fn move_window_to_space(
-            &self,
-            window_id: u64,
-            space_id: u64,
-        ) -> Result<(), MacosNativeOperationError> {
-            self.calls
-                .lock()
-                .unwrap()
-                .push(format!("move_window_to_space:{window_id}:{space_id}"));
-            Ok(())
-        }
-
-        fn swap_window_frames(
-            &self,
-            source_window_id: u64,
-            _source_frame: NativeBounds,
-            target_window_id: u64,
-            _target_frame: NativeBounds,
-        ) -> Result<(), MacosNativeOperationError> {
-            self.calls.lock().unwrap().push(format!(
-                "swap_window_frames:{source_window_id}:{target_window_id}"
-            ));
-            Ok(())
-        }
-
-        fn topology_snapshot(&self) -> Result<RawTopologySnapshot, MacosNativeProbeError> {
-            Ok(self.topology.clone())
-        }
-    }
-
     #[derive(Debug, Clone, PartialEq, Eq)]
     enum NativeCall {
         DesktopSnapshot,
         SwitchSpaceInSnapshot(u64, Option<NativeDirection>),
         FocusSameSpaceTargetInSnapshot(NativeDirection, u64),
+        FocusWindowById(u64),
         FocusWindowWithPid(u64, u32),
         SwapWindowFrames { source: u64, target: u64 },
         MoveWindowToSpace { window_id: u64, space_id: u64 },
@@ -1945,6 +1845,14 @@ mod tests {
             panic!("recording move api must not focus windows in this test")
         }
 
+        fn focus_window_by_id(&self, window_id: u64) -> Result<(), MacosNativeOperationError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(NativeCall::FocusWindowById(window_id));
+            Ok(())
+        }
+
         fn move_window_to_space(
             &self,
             window_id: u64,
@@ -1978,114 +1886,6 @@ mod tests {
         }
     }
 
-    #[derive(Debug, Clone)]
-    struct DirectOperationOverrideApi {
-        topology: RawTopologySnapshot,
-        calls: Arc<Mutex<Vec<String>>>,
-    }
-
-    impl MacosNativeApi for DirectOperationOverrideApi {
-        fn has_symbol(&self, _symbol: &'static str) -> bool {
-            true
-        }
-
-        fn ax_is_trusted(&self) -> bool {
-            true
-        }
-
-        fn minimal_topology_ready(&self) -> bool {
-            true
-        }
-
-        fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
-            Ok(native_desktop_snapshot_from_topology(
-                &self.topology_snapshot()?,
-            ))
-        }
-
-        fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
-            Ok(self.topology.spaces.clone())
-        }
-
-        fn active_space_ids(&self) -> Result<HashSet<u64>, MacosNativeProbeError> {
-            Ok(self.topology.active_space_ids.clone())
-        }
-
-        fn active_space_windows(
-            &self,
-            space_id: u64,
-        ) -> Result<Vec<RawWindow>, MacosNativeProbeError> {
-            Ok(self
-                .topology
-                .active_space_windows
-                .get(&space_id)
-                .cloned()
-                .unwrap_or_default())
-        }
-
-        fn inactive_space_window_ids(
-            &self,
-        ) -> Result<HashMap<u64, Vec<u64>>, MacosNativeProbeError> {
-            Ok(self.topology.inactive_space_window_ids.clone())
-        }
-
-        fn focused_window_id(&self) -> Result<Option<u64>, MacosNativeProbeError> {
-            Ok(self.topology.focused_window_id)
-        }
-
-        fn focus_window_by_id(&self, window_id: u64) -> Result<(), MacosNativeOperationError> {
-            self.calls
-                .lock()
-                .unwrap()
-                .push(format!("focus_window_by_id:{window_id}"));
-            Ok(())
-        }
-
-        fn switch_space(&self, space_id: u64) -> Result<(), MacosNativeOperationError> {
-            self.calls
-                .lock()
-                .unwrap()
-                .push(format!("switch_space:{space_id}"));
-            Ok(())
-        }
-
-        fn focus_window(&self, window_id: u64) -> Result<(), MacosNativeOperationError> {
-            self.calls
-                .lock()
-                .unwrap()
-                .push(format!("focus_window:{window_id}"));
-            Ok(())
-        }
-
-        fn move_window_to_space(
-            &self,
-            window_id: u64,
-            space_id: u64,
-        ) -> Result<(), MacosNativeOperationError> {
-            self.calls
-                .lock()
-                .unwrap()
-                .push(format!("move_window_to_space:{window_id}:{space_id}"));
-            Ok(())
-        }
-
-        fn swap_window_frames(
-            &self,
-            source_window_id: u64,
-            _source_frame: NativeBounds,
-            target_window_id: u64,
-            _target_frame: NativeBounds,
-        ) -> Result<(), MacosNativeOperationError> {
-            self.calls.lock().unwrap().push(format!(
-                "swap_window_frames:{source_window_id}:{target_window_id}"
-            ));
-            Ok(())
-        }
-
-        fn topology_snapshot(&self) -> Result<RawTopologySnapshot, MacosNativeProbeError> {
-            Ok(self.topology.clone())
-        }
-    }
     struct FocusedIdTopologyApi;
 
     impl MacosNativeApi for FocusedIdTopologyApi {
@@ -2383,20 +2183,13 @@ mod tests {
     }
 
     trait RawWindowTestExt {
-        fn with_level(self, level: i32) -> Self;
         fn with_visible_index(self, visible_index: usize) -> Self;
         fn with_pid(self, pid: u32) -> Self;
         fn with_app_id(self, app_id: &str) -> Self;
         fn with_title(self, title: &str) -> Self;
-        fn with_frame(self, frame: Rect) -> Self;
     }
 
     impl RawWindowTestExt for RawWindow {
-        fn with_level(mut self, level: i32) -> Self {
-            self.level = level;
-            self
-        }
-
         fn with_visible_index(mut self, visible_index: usize) -> Self {
             self.visible_index = Some(visible_index);
             self
@@ -2416,11 +2209,6 @@ mod tests {
             self.title = Some(title.to_string());
             self
         }
-
-        fn with_frame(mut self, frame: Rect) -> Self {
-            self.frame = Some(native_bounds_from_outer(frame));
-            self
-        }
     }
 
     fn raw_desktop_space_on_display(managed_space_id: u64, display_index: usize) -> RawSpaceRecord {
@@ -2436,25 +2224,6 @@ mod tests {
 
     fn raw_desktop_space(managed_space_id: u64) -> RawSpaceRecord {
         raw_desktop_space_on_display(managed_space_id, 0)
-    }
-
-    fn raw_split_space_on_display(
-        managed_space_id: u64,
-        tile_spaces: &[u64],
-        display_index: usize,
-    ) -> RawSpaceRecord {
-        RawSpaceRecord {
-            managed_space_id,
-            display_index,
-            space_type: DESKTOP_SPACE_TYPE,
-            tile_spaces: tile_spaces.to_vec(),
-            has_tile_layout_manager: true,
-            stage_manager_managed: false,
-        }
-    }
-
-    fn raw_split_space(managed_space_id: u64, tile_spaces: &[u64]) -> RawSpaceRecord {
-        raw_split_space_on_display(managed_space_id, tile_spaces, 0)
     }
 
     struct InstalledConfigGuard {
@@ -2576,9 +2345,15 @@ command = false
             concat!("include!(\"", "macos_native_backend_tests.rs", "\")"),
             concat!("fn back", "end_"),
             concat!("struct Sequenced", "SamePidAxFallbackApi"),
+            concat!("struct Send", "RecordingApi"),
+            concat!("struct DirectOperation", "OverrideApi"),
             concat!(
                 "fn focus_direction_uses_planning_",
                 "snapshot_for_same_pid_ax_fallback"
+            ),
+            concat!(
+                "fn outer_directional_selection_ignores_non_normal_",
+                "layer_targets_from_raw_snapshot"
             ),
         ] {
             assert!(
@@ -2770,47 +2545,65 @@ command = false
     }
 
     #[test]
-    fn outer_directional_selection_ignores_non_normal_layer_targets_from_raw_snapshot() {
-        let topology = RawTopologySnapshot {
-            spaces: vec![raw_split_space(1, &[11, 12])],
+    fn outer_directional_selection_ignores_non_normal_layer_targets_from_native_snapshot() {
+        let snapshot = NativeDesktopSnapshot {
+            spaces: vec![NativeSpaceSnapshot {
+                id: 1,
+                display_index: 0,
+                active: true,
+                kind: SpaceKind::SplitView,
+            }],
             active_space_ids: HashSet::from([1]),
-            active_space_windows: HashMap::from([(
-                1,
-                vec![
-                    raw_window(100)
-                        .with_level(0)
-                        .with_pid(4001)
-                        .with_frame(Rect {
-                            x: 0,
-                            y: 120,
-                            w: 500,
-                            h: 900,
-                        }),
-                    raw_window(159)
-                        .with_level(0)
-                        .with_pid(946)
-                        .with_frame(Rect {
-                            x: 1200,
-                            y: 120,
-                            w: 500,
-                            h: 900,
-                        }),
-                    raw_window(52)
-                        .with_level(25)
-                        .with_pid(950)
-                        .with_frame(Rect {
-                            x: 1739,
-                            y: 0,
-                            w: 63,
-                            h: 39,
-                        }),
-                ],
-            )]),
-            inactive_space_window_ids: HashMap::new(),
+            windows: vec![
+                NativeWindowSnapshot {
+                    id: 100,
+                    pid: Some(4001),
+                    app_id: None,
+                    title: None,
+                    bounds: Some(NativeBounds {
+                        x: 0,
+                        y: 120,
+                        width: 500,
+                        height: 900,
+                    }),
+                    level: 0,
+                    space_id: 1,
+                    order_index: Some(0),
+                },
+                NativeWindowSnapshot {
+                    id: 159,
+                    pid: Some(946),
+                    app_id: None,
+                    title: None,
+                    bounds: Some(NativeBounds {
+                        x: 1200,
+                        y: 120,
+                        width: 500,
+                        height: 900,
+                    }),
+                    level: 0,
+                    space_id: 1,
+                    order_index: Some(1),
+                },
+                NativeWindowSnapshot {
+                    id: 52,
+                    pid: Some(950),
+                    app_id: None,
+                    title: None,
+                    bounds: Some(NativeBounds {
+                        x: 1739,
+                        y: 0,
+                        width: 63,
+                        height: 39,
+                    }),
+                    level: 25,
+                    space_id: 1,
+                    order_index: Some(2),
+                },
+            ],
             focused_window_id: Some(100),
         };
 
-        let snapshot = native_desktop_snapshot_from_topology(&topology);
         let outer_topology = outer_topology_from_native_snapshot(&snapshot).unwrap();
 
         let target = select_focus_target_from_outer_topology(
@@ -3061,37 +2854,78 @@ command = false
 
     #[test]
     fn adapter_windows_reflect_snapshot_order_and_focus_state() {
-        let topology = RawTopologySnapshot {
-            spaces: vec![raw_desktop_space(1), raw_split_space(2, &[21, 22])],
-            active_space_ids: HashSet::from([1]),
-            active_space_windows: HashMap::from([(
-                1,
-                vec![
-                    raw_window(11)
-                        .with_visible_index(1)
-                        .with_pid(1111)
-                        .with_app_id("com.example.back")
-                        .with_title("Back"),
-                    raw_window(12)
-                        .with_visible_index(0)
-                        .with_pid(2222)
-                        .with_app_id("com.example.front")
-                        .with_title("Front"),
-                    raw_window(13)
-                        .with_level(5)
-                        .with_pid(3333)
-                        .with_app_id("com.example.overlay")
-                        .with_title("Overlay"),
+        let mut adapter =
+            MacosNativeAdapter::connect_with_api(SnapshotOnlyApi::new(NativeDesktopSnapshot {
+                spaces: vec![
+                    NativeSpaceSnapshot {
+                        id: 1,
+                        display_index: 0,
+                        active: true,
+                        kind: SpaceKind::Desktop,
+                    },
+                    NativeSpaceSnapshot {
+                        id: 2,
+                        display_index: 0,
+                        active: false,
+                        kind: SpaceKind::SplitView,
+                    },
                 ],
-            )]),
-            inactive_space_window_ids: HashMap::from([(2, vec![21, 22])]),
-            focused_window_id: Some(12),
-        };
-        let api = SendRecordingApi {
-            topology,
-            calls: Arc::new(Mutex::new(Vec::new())),
-        };
-        let mut adapter = MacosNativeAdapter::connect_with_api(api).unwrap();
+                active_space_ids: HashSet::from([1]),
+                windows: vec![
+                    NativeWindowSnapshot {
+                        id: 12,
+                        pid: Some(2222),
+                        app_id: Some("com.example.front".to_string()),
+                        title: Some("Front".to_string()),
+                        bounds: None,
+                        level: 0,
+                        space_id: 1,
+                        order_index: Some(0),
+                    },
+                    NativeWindowSnapshot {
+                        id: 11,
+                        pid: Some(1111),
+                        app_id: Some("com.example.back".to_string()),
+                        title: Some("Back".to_string()),
+                        bounds: None,
+                        level: 0,
+                        space_id: 1,
+                        order_index: Some(1),
+                    },
+                    NativeWindowSnapshot {
+                        id: 13,
+                        pid: Some(3333),
+                        app_id: Some("com.example.overlay".to_string()),
+                        title: Some("Overlay".to_string()),
+                        bounds: None,
+                        level: 5,
+                        space_id: 1,
+                        order_index: Some(2),
+                    },
+                    NativeWindowSnapshot {
+                        id: 21,
+                        pid: None,
+                        app_id: None,
+                        title: None,
+                        bounds: None,
+                        level: 0,
+                        space_id: 2,
+                        order_index: None,
+                    },
+                    NativeWindowSnapshot {
+                        id: 22,
+                        pid: None,
+                        app_id: None,
+                        title: None,
+                        bounds: None,
+                        level: 0,
+                        space_id: 2,
+                        order_index: None,
+                    },
+                ],
+                focused_window_id: Some(12),
+            }))
+            .unwrap();
 
         let windows = WindowManagerSession::windows(&mut adapter).unwrap();
 
@@ -4382,46 +4216,69 @@ command = false
 
     #[test]
     fn direct_operations_delegate_to_backend_contract() {
-        let calls = Arc::new(Mutex::new(Vec::new()));
-        let topology = RawTopologySnapshot {
-            spaces: vec![raw_desktop_space(1)],
+        let snapshot = NativeDesktopSnapshot {
+            spaces: vec![NativeSpaceSnapshot {
+                id: 1,
+                display_index: 0,
+                active: true,
+                kind: SpaceKind::Desktop,
+            }],
             active_space_ids: HashSet::from([1]),
-            active_space_windows: HashMap::from([(
-                1,
-                vec![
-                    raw_window(20).with_visible_index(0).with_frame(Rect {
+            windows: vec![
+                NativeWindowSnapshot {
+                    id: 20,
+                    pid: None,
+                    app_id: None,
+                    title: None,
+                    bounds: Some(NativeBounds {
                         x: 120,
                         y: 0,
-                        w: 100,
-                        h: 100,
+                        width: 100,
+                        height: 100,
                     }),
-                    raw_window(30).with_visible_index(1).with_frame(Rect {
+                    level: 0,
+                    space_id: 1,
+                    order_index: Some(0),
+                },
+                NativeWindowSnapshot {
+                    id: 30,
+                    pid: None,
+                    app_id: None,
+                    title: None,
+                    bounds: Some(NativeBounds {
                         x: 240,
                         y: 0,
-                        w: 100,
-                        h: 100,
+                        width: 100,
+                        height: 100,
                     }),
-                ],
-            )]),
-            inactive_space_window_ids: HashMap::new(),
+                    level: 0,
+                    space_id: 1,
+                    order_index: Some(1),
+                },
+            ],
             focused_window_id: Some(20),
         };
-        let api = DirectOperationOverrideApi {
-            topology,
-            calls: calls.clone(),
-        };
-        let mut adapter = MacosNativeAdapter::connect_with_api(api.clone()).unwrap();
+        let api = RecordingMoveApi::from_snapshot(snapshot);
+        let recorded = api.clone();
+        let mut adapter = MacosNativeAdapter::connect_with_api(api).unwrap();
 
         WindowManagerSession::focus_window_by_id(&mut adapter, 77).unwrap();
         WindowManagerSession::move_direction(&mut adapter, Direction::East).unwrap();
-        api.move_window_to_space(20, 1).unwrap();
+        recorded.move_window_to_space(20, 1).unwrap();
 
         assert_eq!(
-            std::mem::take(&mut *calls.lock().unwrap()),
+            recorded.api_calls(),
             vec![
-                "focus_window_by_id:77",
-                "swap_window_frames:20:30",
-                "move_window_to_space:20:1",
+                NativeCall::FocusWindowById(77),
+                NativeCall::DesktopSnapshot,
+                NativeCall::SwapWindowFrames {
+                    source: 20,
+                    target: 30,
+                },
+                NativeCall::MoveWindowToSpace {
+                    window_id: 20,
+                    space_id: 1,
+                },
             ]
         );
     }
