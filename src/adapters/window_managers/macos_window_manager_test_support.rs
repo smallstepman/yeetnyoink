@@ -2258,7 +2258,7 @@ fn switch_space_in_snapshot<A: MacosNativeApi + ?Sized>(
     }
 
     let (source_focus_window_id, target_window_ids) =
-        super::outer_space_transition_window_ids(snapshot, space_id);
+        outer_space_transition_window_ids(snapshot, space_id);
     api.debug(&format!(
         "macos_native: switching to space {space_id} source_focus={:?} target_windows={}",
         source_focus_window_id,
@@ -2332,6 +2332,42 @@ fn switch_space_in_snapshot<A: MacosNativeApi + ?Sized>(
         api.switch_space(space_id)?;
         wait_for_space_presentation(api, space_id, source_focus_window_id, &target_window_ids)
     }
+}
+
+fn outer_space_transition_window_ids(
+    snapshot: &NativeDesktopSnapshot,
+    target_space_id: u64,
+) -> (Option<u64>, HashSet<u64>) {
+    let target_display_index = snapshot
+        .spaces
+        .iter()
+        .find(|space| space.id == target_space_id)
+        .map(|space| space.display_index);
+    let source_space_id = target_display_index.and_then(|display_index| {
+        snapshot
+            .spaces
+            .iter()
+            .find(|space| {
+                space.active && space.display_index == display_index && space.id != target_space_id
+            })
+            .map(|space| space.id)
+    });
+    let source_focus_window_id = snapshot.focused_window_id.filter(|window_id| {
+        snapshot
+            .windows
+            .iter()
+            .find(|window| window.id == *window_id)
+            .map(|window| window.space_id)
+            == source_space_id
+    });
+    let target_window_ids = snapshot
+        .windows
+        .iter()
+        .filter(|window| window.space_id == target_space_id)
+        .map(|window| window.id)
+        .collect();
+
+    (source_focus_window_id, target_window_ids)
 }
 
 fn native_window(

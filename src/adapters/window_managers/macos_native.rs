@@ -13,8 +13,8 @@ use anyhow::{Context, bail};
 use macos_window_manager::{
     ActiveSpaceFocusTargetHint, MacosNativeApi, MacosNativeConnectError, MacosNativeOperationError,
     MacosNativeProbeError, MissionControlHotkey, MissionControlModifiers, NativeBackendOptions,
-    NativeBounds, NativeDesktopSnapshot, NativeDiagnostics, NativeDirection, NativeSpaceSnapshot,
-    NativeWindowSnapshot, RealNativeApi, SpaceKind,
+    NativeBounds, NativeDesktopSnapshot, NativeDiagnostics, NativeDirection, NativeWindowSnapshot,
+    RealNativeApi, SpaceKind,
 };
 
 #[cfg(test)]
@@ -802,42 +802,6 @@ fn outer_best_window_in_space(
         })
 }
 
-fn outer_space_transition_window_ids(
-    snapshot: &NativeDesktopSnapshot,
-    target_space_id: u64,
-) -> (Option<u64>, std::collections::HashSet<u64>) {
-    let target_display_index = snapshot
-        .spaces
-        .iter()
-        .find(|space| space.id == target_space_id)
-        .map(|space| space.display_index);
-    let source_space_id = target_display_index.and_then(|display_index| {
-        snapshot
-            .spaces
-            .iter()
-            .find(|space| {
-                space.active && space.display_index == display_index && space.id != target_space_id
-            })
-            .map(|space| space.id)
-    });
-    let source_focus_window_id = snapshot.focused_window_id.filter(|window_id| {
-        snapshot
-            .windows
-            .iter()
-            .find(|window| window.id == *window_id)
-            .map(|window| window.space_id)
-            == source_space_id
-    });
-    let target_window_ids = snapshot
-        .windows
-        .iter()
-        .filter(|window| window.space_id == target_space_id)
-        .map(|window| window.id)
-        .collect();
-
-    (source_focus_window_id, target_window_ids)
-}
-
 fn compare_native_active_windows(
     left: &NativeWindowSnapshot,
     right: &NativeWindowSnapshot,
@@ -996,10 +960,10 @@ mod tests {
     };
     use super::macos_window_manager_test_support::{
         CfOwned, DESKTOP_SPACE_TYPE, FULLSCREEN_SPACE_TYPE, REQUIRED_PRIVATE_SYMBOLS,
-        RawSpaceRecord, RawTopologySnapshot, RawWindow, SPACE_SWITCH_POLL_INTERVAL,
-        SPACE_SWITCH_SETTLE_TIMEOUT, SPACE_SWITCH_STABLE_TARGET_POLLS, WindowSnapshot,
-        array_from_type_refs, array_from_u64s, best_window_id_from_windows, classify_space,
-        dictionary_i32, dictionary_string, enrich_real_window_app_ids_with,
+        NativeSpaceSnapshot, RawSpaceRecord, RawTopologySnapshot, RawWindow,
+        SPACE_SWITCH_POLL_INTERVAL, SPACE_SWITCH_SETTLE_TIMEOUT, SPACE_SWITCH_STABLE_TARGET_POLLS,
+        WindowSnapshot, array_from_type_refs, array_from_u64s, best_window_id_from_windows,
+        classify_space, dictionary_i32, dictionary_string, enrich_real_window_app_ids_with,
         ensure_supported_target_space, focus_window_via_make_key_and_raise,
         focus_window_via_process_and_raise, focused_window_from_topology,
         native_desktop_snapshot_from_topology, number_from_u64, order_active_space_windows,
@@ -4613,6 +4577,34 @@ command = false
         assert!(
             !implementation.contains("#[cfg(test)]\nuse macos_window_manager_test_support::{"),
             "adapter root should not switch backend contract imports to macos_window_manager_test_support under tests"
+        );
+    }
+
+    #[test]
+    fn source_adapter_root_imports_do_not_include_native_space_snapshot() {
+        let implementation = implementation_source();
+        let import_start = implementation
+            .find("use macos_window_manager::{")
+            .expect("adapter should import the shared macos window manager contract");
+        let import_end = implementation[import_start..]
+            .find("};")
+            .map(|idx| import_start + idx)
+            .expect("root macos_window_manager import should close");
+        let import_block = &implementation[import_start..import_end];
+
+        assert!(
+            !import_block.contains("NativeSpaceSnapshot"),
+            "production adapter root import should keep NativeSpaceSnapshot scoped to tests"
+        );
+    }
+
+    #[test]
+    fn source_adapter_does_not_define_outer_space_transition_window_ids() {
+        let implementation = implementation_source();
+
+        assert!(
+            !implementation.contains("fn outer_space_transition_window_ids("),
+            "production adapter should not define outer_space_transition_window_ids once it only serves test support"
         );
     }
 
