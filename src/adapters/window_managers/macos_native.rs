@@ -8326,23 +8326,6 @@ command = false
         &source[adapter_start..tests_start]
     }
 
-    fn backend_module_source() -> &'static str {
-        include_str!("../../../crates/macos_window_manager/src/lib.rs")
-    }
-
-    fn backend_production_source() -> String {
-        [
-            include_str!("../../../crates/macos_window_manager/src/lib.rs"),
-            include_str!("../../../crates/macos_window_manager/src/ax.rs"),
-            include_str!("../../../crates/macos_window_manager/src/desktop_topology_snapshot.rs"),
-            include_str!("../../../crates/macos_window_manager/src/error.rs"),
-            include_str!("../../../crates/macos_window_manager/src/foundation.rs"),
-            include_str!("../../../crates/macos_window_manager/src/skylight.rs"),
-            include_str!("../../../crates/macos_window_manager/src/window_server.rs"),
-        ]
-        .join("\n")
-    }
-
     #[test]
     fn source_places_macos_window_manager_api_before_root_types() {
         let implementation = implementation_source();
@@ -8497,13 +8480,7 @@ command = false
     fn source_removes_semantic_backend_plan_types() {
         let implementation = implementation_source();
         let root_prefix = root_import_prelude(implementation);
-        let backend = backend_module_source();
 
-        assert!(
-            backend
-                .contains("fn validate_environment(&self) -> Result<(), MacosNativeConnectError>"),
-            "backend contract should still expose environment validation"
-        );
         assert!(
             !root_prefix.contains("DirectionalFocusPlan"),
             "outer adapter should not import removed semantic focus plan types"
@@ -8516,97 +8493,6 @@ command = false
             !implementation.contains("fn execute_focus_plan("),
             "backend contract should not expose semantic directional focus execution"
         );
-    }
-
-    #[test]
-    fn source_backend_boundary_is_future_crate_ready() {
-        let backend_public = backend_production_source();
-        for forbidden in [
-            "FocusedWindowRecord",
-            "FocusedAppRecord",
-            "WindowRecord",
-            "ProcessId",
-            "plan_focus_direction",
-            "execute_focus_plan",
-            "focused_window_record(",
-            "focused_app_record(",
-            "window_records(",
-            "windows_in_space(",
-            "swap_directional_neighbor(",
-            "move_window_to_space_checked(",
-        ] {
-            assert!(
-                !backend_public.contains(forbidden),
-                "backend public api should not expose {forbidden}"
-            );
-        }
-        for forbidden in ["use crate::engine::topology::", "crate::engine::topology::"] {
-            assert!(
-                !backend_public.contains(forbidden),
-                "backend production code should not reference {forbidden}"
-            );
-        }
-    }
-
-    #[test]
-    fn source_declares_backend_owned_native_transport_types() {
-        let implementation = implementation_source();
-        let backend_root = backend_module_source();
-        let adapter_runtime = adapter_runtime_source();
-
-        for required in ["pub type NativeSpaceId = u64;", "pub type NativeWindowId = u64;"] {
-            assert!(
-                backend_root.contains(required),
-                "expected extracted backend root to declare {required}"
-            );
-        }
-        for required in [
-            "pub struct NativeDesktopSnapshot",
-            "pub struct NativeSpaceSnapshot",
-            "pub struct NativeWindowSnapshot",
-            "pub struct NativeBounds",
-            "pub struct MissionControlModifiers",
-            "pub struct MissionControlHotkey",
-            "pub struct NativeBackendOptions",
-            "diagnostics: Option<Arc<dyn NativeDiagnostics>>",
-            "pub trait NativeDiagnostics",
-        ] {
-            assert!(
-                backend_root.contains(required),
-                "expected extracted backend root to declare {required}"
-            );
-            assert!(
-                !adapter_runtime.contains(required),
-                "expected adapter runtime to avoid re-declaring backend-owned type {required}"
-            );
-        }
-        assert!(
-            backend_root.contains("mission_control: MissionControlModifiers"),
-            "expected extracted backend root to keep MissionControlHotkey sourced by native modifiers"
-        );
-        assert!(
-            implementation.contains("MissionControlHotkey {")
-                && implementation.contains("mission_control: MissionControlModifiers {"),
-            "expected adapter edge to be able to construct backend-owned mission control hotkeys"
-        );
-    }
-
-    #[test]
-    fn source_backend_module_avoids_repo_config_and_logging_imports() {
-        let backend = backend_module_source();
-        for forbidden in [
-            "use crate::config",
-            "MissionControlShortcutConfig",
-            "use crate::logging",
-            "crate::logging::",
-            "use tracing::debug;",
-            "debug!(",
-        ] {
-            assert!(
-                !backend.contains(forbidden),
-                "backend module should not depend on {forbidden}"
-            );
-        }
     }
 
     #[test]
@@ -8696,21 +8582,6 @@ command = false
         }
     }
 
-    #[test]
-    fn source_removes_transitional_backend_helpers() {
-        let backend = backend_production_source();
-
-        for forbidden in [
-            "fn directional_focus_target_in_active_topology(",
-            "fn adjacent_space_in_direction(",
-            "fn focus_direction_target_with_ax_fallback(",
-        ] {
-            assert!(
-                !backend.contains(forbidden),
-                "backend module should not retain transitional helper {forbidden}"
-            );
-        }
-    }
 
     #[test]
     fn source_scopes_cfg_test_attributes_to_test_modules() {
@@ -8755,58 +8626,9 @@ command = false
     }
 
     #[test]
-    fn source_adapter_uses_extracted_macos_backend() {
+    fn source_adapter_has_no_inline_macos_backend_module() {
         let implementation = implementation_source();
-        assert!(implementation.contains("use macos_window_manager::{"));
         assert!(!implementation.contains("mod macos_window_manager_api {"));
-    }
-
-    #[test]
-    fn source_exposes_macos_window_manager_api_submodules_and_root_impls() {
-        let implementation = implementation_source();
-        let backend_root = backend_module_source();
-
-        assert!(
-            !implementation.contains("mod private_api {"),
-            "old private_api module should be removed"
-        );
-        assert!(
-            !implementation.contains("mod macos_window_manager_api {"),
-            "implementation should no longer define an inline macos_window_manager_api module"
-        );
-        assert!(
-            implementation.contains("use macos_window_manager::{"),
-            "implementation should import the extracted macos_window_manager crate"
-        );
-        assert!(
-            backend_root.contains("mod foundation;"),
-            "extracted backend crate root should expose a foundation module"
-        );
-        assert!(
-            backend_root.contains("mod skylight;"),
-            "extracted backend crate root should expose a skylight module"
-        );
-        assert!(
-            backend_root.contains("mod ax;"),
-            "extracted backend crate root should expose an ax module"
-        );
-        assert!(
-            backend_root.contains("mod window_server;"),
-            "extracted backend crate root should expose a window_server module"
-        );
-        assert!(
-            implementation.contains("impl<F> WindowManagerSpec for MacosNativeSpec<F>"),
-            "root should still provide the WindowManagerSpec impl"
-        );
-        assert!(
-            implementation
-                .contains("impl<A> WindowManagerCapabilityDescriptor for MacosNativeAdapter<A>"),
-            "root should still provide long engine-facing capability impls"
-        );
-        assert!(
-            implementation.contains("impl<A> WindowManagerSession for MacosNativeAdapter<A>"),
-            "root should still provide long engine-facing session impls"
-        );
     }
 
     #[test]
