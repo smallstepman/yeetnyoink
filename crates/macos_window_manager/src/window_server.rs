@@ -1,9 +1,8 @@
 use crate::ax;
 use crate::foundation::{
     CFArrayRef, CFDictionaryRef, CFStringRef, CGEventCreateKeyboardEvent, CGEventFlags,
-    CGEventPost, CGEventSetFlags, CGKeyCode, CGWindowID,
-    CGWindowListCreateDescriptionFromArray, CPS_USER_GENERATED, CfOwned,
-    GetProcessForPidFn, K_CG_HID_EVENT_TAP, K_CG_NULL_WINDOW_ID,
+    CGEventPost, CGEventSetFlags, CGKeyCode, CGWindowID, CGWindowListCreateDescriptionFromArray,
+    CPS_USER_GENERATED, CfOwned, GetProcessForPidFn, K_CG_HID_EVENT_TAP, K_CG_NULL_WINDOW_ID,
     K_CG_WINDOW_LIST_EXCLUDE_DESKTOP_ELEMENTS, K_CG_WINDOW_LIST_OPTION_ON_SCREEN_ONLY,
     ProcessSerialNumber, SlpsPostEventRecordToFn, SlpsSetFrontProcessWithOptionsFn,
     array_from_type_refs, cf_array_count, cf_array_iter, cf_as_dictionary,
@@ -12,8 +11,8 @@ use crate::foundation::{
 };
 use crate::skylight;
 use crate::{
-    MacosNativeOperationError, MacosNativeProbeError, NativeBounds, RawWindow,
-    RealNativeApi, enrich_real_window_app_ids, focus_window_via_process_and_raise,
+    MacosNativeOperationError, MacosNativeProbeError, NativeBounds, RawWindow, RealNativeApi,
+    enrich_real_window_app_ids, focus_window_via_process_and_raise,
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -43,17 +42,15 @@ pub(crate) fn front_process_window(
     psn: &ProcessSerialNumber,
     window_id: u64,
 ) -> Result<(), MacosNativeOperationError> {
-    let Some(front_process_symbol) = api.resolve_symbol("_SLPSSetFrontProcessWithOptions")
-    else {
+    let Some(front_process_symbol) = api.resolve_symbol("_SLPSSetFrontProcessWithOptions") else {
         return Err(MacosNativeOperationError::CallFailed(
             "_SLPSSetFrontProcessWithOptions",
         ));
     };
     let front_process_with_options: SlpsSetFrontProcessWithOptionsFn =
         unsafe { std::mem::transmute(front_process_symbol) };
-    let status = unsafe {
-        front_process_with_options(psn, window_id as CGWindowID, CPS_USER_GENERATED)
-    };
+    let status =
+        unsafe { front_process_with_options(psn, window_id as CGWindowID, CPS_USER_GENERATED) };
 
     (status == 0)
         .then_some(())
@@ -83,8 +80,7 @@ pub(crate) fn make_key_window(
     event_bytes[0x20..0x30].fill(0xff);
 
     event_bytes[0x08] = 0x01;
-    let press_status =
-        unsafe { post_event_record_to(psn, event_bytes.as_ptr().cast::<c_void>()) };
+    let press_status = unsafe { post_event_record_to(psn, event_bytes.as_ptr().cast::<c_void>()) };
     if press_status != 0 {
         return Err(MacosNativeOperationError::CallFailed(
             "SLPSPostEventRecordTo",
@@ -134,12 +130,11 @@ pub(crate) fn copy_window_descriptions_raw(
 ) -> Result<CfOwned, MacosNativeProbeError> {
     // Keep this raw for now: current callers build CFNumber-object arrays for this flow,
     // while Servo models create_description_from_array as CFArray<CGWindowID> copyables.
-    let descriptions = unsafe {
-        CfOwned::from_create_rule(CGWindowListCreateDescriptionFromArray(window_ids))
-    }
-    .ok_or(MacosNativeProbeError::MissingTopology(
-        "CGWindowListCreateDescriptionFromArray",
-    ))?;
+    let descriptions =
+        unsafe { CfOwned::from_create_rule(CGWindowListCreateDescriptionFromArray(window_ids)) }
+            .ok_or(MacosNativeProbeError::MissingTopology(
+                "CGWindowListCreateDescriptionFromArray",
+            ))?;
 
     if cf_array_count(descriptions.as_type_ref() as CFArrayRef) > 0 {
         return Ok(descriptions);
@@ -162,8 +157,7 @@ pub(crate) fn active_space_windows_without_app_ids(
     let payload = skylight::copy_windows_for_space_raw(api, space_id)?;
     let raw_window_ids = skylight::parse_window_ids(payload.as_type_ref() as CFArrayRef)?;
     let visible_order = query_visible_window_order(&raw_window_ids)?;
-    let descriptions =
-        copy_window_descriptions_raw(api, payload.as_type_ref() as CFArrayRef)?;
+    let descriptions = copy_window_descriptions_raw(api, payload.as_type_ref() as CFArrayRef)?;
     parse_window_descriptions(descriptions.as_type_ref() as CFArrayRef, &visible_order)
 }
 
@@ -192,12 +186,9 @@ pub(crate) fn window_description(
     api: &RealNativeApi,
     window_id: u64,
 ) -> Result<RawWindow, MacosNativeOperationError> {
-    let window_number =
-        cf_number_from_u64(window_id).map_err(MacosNativeOperationError::from)?;
-    let window_list =
-        CfOwned::from_servo(array_from_type_refs(&[window_number.as_type_ref()]));
-    let descriptions =
-        copy_window_descriptions_raw(api, window_list.as_type_ref() as CFArrayRef)?;
+    let window_number = cf_number_from_u64(window_id).map_err(MacosNativeOperationError::from)?;
+    let window_list = CfOwned::from_servo(array_from_type_refs(&[window_number.as_type_ref()]));
+    let descriptions = copy_window_descriptions_raw(api, window_list.as_type_ref() as CFArrayRef)?;
     let visible_order = HashMap::new();
 
     parse_window_descriptions(descriptions.as_type_ref() as CFArrayRef, &visible_order)?
@@ -232,8 +223,7 @@ pub(crate) fn query_visible_window_order(
     Ok(visible_order)
 }
 
-pub(crate) fn copy_onscreen_window_descriptions_raw()
--> Result<CfOwned, MacosNativeProbeError> {
+pub(crate) fn copy_onscreen_window_descriptions_raw() -> Result<CfOwned, MacosNativeProbeError> {
     core_graphics::window::copy_window_info(
         K_CG_WINDOW_LIST_OPTION_ON_SCREEN_ONLY | K_CG_WINDOW_LIST_EXCLUDE_DESKTOP_ELEMENTS,
         K_CG_NULL_WINDOW_ID,
@@ -294,14 +284,11 @@ pub(crate) fn parse_window_descriptions(
     let window_layer_key = cg_window_layer_key();
 
     for description in cf_array_iter(payload) {
-        let description =
-            cf_as_dictionary(description).ok_or(MacosNativeProbeError::MissingTopology(
-                "CGWindowListCreateDescriptionFromArray",
-            ))?;
+        let description = cf_as_dictionary(description).ok_or(
+            MacosNativeProbeError::MissingTopology("CGWindowListCreateDescriptionFromArray"),
+        )?;
         let id = cf_dictionary_u64(description, window_number_key).ok_or(
-            MacosNativeProbeError::MissingTopology(
-                "CGWindowListCreateDescriptionFromArray",
-            ),
+            MacosNativeProbeError::MissingTopology("CGWindowListCreateDescriptionFromArray"),
         )?;
         let pid = cf_dictionary_u32(description, window_owner_pid_key);
 

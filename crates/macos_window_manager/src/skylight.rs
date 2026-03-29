@@ -1,21 +1,15 @@
-
 use crate::foundation::{
     CFArrayRef, CFDictionaryRef, CFStringRef, CfOwned, SlsCopyManagedDisplayForSpaceFn,
-    SlsCopyManagedDisplaySpacesFn, SlsCopyWindowsWithOptionsAndTagsFn,
-    SlsMainConnectionIdFn, SlsManagedDisplayGetCurrentSpaceFn,
-    SlsManagedDisplaySetCurrentSpaceFn, array_from_type_refs, cf_array_iter,
-    cf_as_dictionary, cf_dictionary_array, cf_dictionary_dictionary, cf_dictionary_i32,
-    cf_dictionary_string, cf_dictionary_u64, cf_number_from_u64, cf_number_to_u64,
-    cf_string,
+    SlsCopyManagedDisplaySpacesFn, SlsCopyWindowsWithOptionsAndTagsFn, SlsMainConnectionIdFn,
+    SlsManagedDisplayGetCurrentSpaceFn, SlsManagedDisplaySetCurrentSpaceFn, array_from_type_refs,
+    cf_array_iter, cf_as_dictionary, cf_dictionary_array, cf_dictionary_dictionary,
+    cf_dictionary_i32, cf_dictionary_string, cf_dictionary_u64, cf_number_from_u64,
+    cf_number_to_u64, cf_string,
 };
-use crate::{
-    MacosNativeOperationError, MacosNativeProbeError, RawSpaceRecord, RealNativeApi,
-};
+use crate::{MacosNativeOperationError, MacosNativeProbeError, RawSpaceRecord, RealNativeApi};
 use std::collections::HashSet;
 
-pub(crate) fn main_connection_id(
-    api: &RealNativeApi,
-) -> Result<u32, MacosNativeProbeError> {
+pub(crate) fn main_connection_id(api: &RealNativeApi) -> Result<u32, MacosNativeProbeError> {
     let Some(symbol) = api.resolve_symbol("SLSMainConnectionID") else {
         return Err(MacosNativeProbeError::MissingTopology(
             "SLSMainConnectionID",
@@ -25,9 +19,11 @@ pub(crate) fn main_connection_id(
     let main_connection_id: SlsMainConnectionIdFn = unsafe { std::mem::transmute(symbol) };
     let connection_id = unsafe { main_connection_id() };
 
-    (connection_id != 0).then_some(connection_id).ok_or(
-        MacosNativeProbeError::MissingTopology("SLSMainConnectionID"),
-    )
+    (connection_id != 0)
+        .then_some(connection_id)
+        .ok_or(MacosNativeProbeError::MissingTopology(
+            "SLSMainConnectionID",
+        ))
 }
 
 pub(crate) fn copy_managed_display_spaces_raw(
@@ -42,11 +38,10 @@ pub(crate) fn copy_managed_display_spaces_raw(
     let copy_managed_display_spaces: SlsCopyManagedDisplaySpacesFn =
         unsafe { std::mem::transmute(symbol) };
     let connection_id = main_connection_id(api)?;
-    let payload =
-        unsafe { CfOwned::from_create_rule(copy_managed_display_spaces(connection_id)) }
-            .ok_or(MacosNativeProbeError::MissingTopology(
-                "SLSCopyManagedDisplaySpaces",
-            ))?;
+    let payload = unsafe { CfOwned::from_create_rule(copy_managed_display_spaces(connection_id)) }
+        .ok_or(MacosNativeProbeError::MissingTopology(
+            "SLSCopyManagedDisplaySpaces",
+        ))?;
 
     Ok(payload)
 }
@@ -65,9 +60,8 @@ pub(crate) fn current_space_for_display(
         unsafe { std::mem::transmute(symbol) };
     let connection_id = main_connection_id(api)?;
     let display_identifier = cf_string(display_identifier)?;
-    let space_id = unsafe {
-        current_space_for_display(connection_id, display_identifier.as_type_ref())
-    };
+    let space_id =
+        unsafe { current_space_for_display(connection_id, display_identifier.as_type_ref()) };
 
     (space_id != 0)
         .then_some(space_id)
@@ -90,8 +84,7 @@ pub(crate) fn copy_windows_for_space_raw(
         unsafe { std::mem::transmute(symbol) };
     let connection_id = main_connection_id(api)?;
     let space_number = cf_number_from_u64(space_id)?;
-    let space_list =
-        CfOwned::from_servo(array_from_type_refs(&[space_number.as_type_ref()]));
+    let space_list = CfOwned::from_servo(array_from_type_refs(&[space_number.as_type_ref()]));
     let mut set_tags = 0i64;
     let mut clear_tags = 0i64;
     let payload = unsafe {
@@ -174,10 +167,8 @@ pub(crate) fn move_window_to_space(
     let move_windows_to_managed_space: unsafe extern "C" fn(u32, CFArrayRef, u64) =
         unsafe { std::mem::transmute(symbol) };
     let connection_id = main_connection_id(api)?;
-    let window_number =
-        cf_number_from_u64(window_id).map_err(MacosNativeOperationError::from)?;
-    let window_list =
-        CfOwned::from_servo(array_from_type_refs(&[window_number.as_type_ref()]));
+    let window_number = cf_number_from_u64(window_id).map_err(MacosNativeOperationError::from)?;
+    let window_list = CfOwned::from_servo(array_from_type_refs(&[window_number.as_type_ref()]));
 
     unsafe {
         move_windows_to_managed_space(
@@ -222,20 +213,16 @@ pub(crate) fn parse_active_space_ids(
             )?;
 
             cf_dictionary_u64(display, current_space_id_key.as_type_ref())
+                .or_else(|| cf_dictionary_u64(display, current_managed_space_id_key.as_type_ref()))
                 .or_else(|| {
-                    cf_dictionary_u64(display, current_managed_space_id_key.as_type_ref())
-                })
-                .or_else(|| {
-                    cf_dictionary_dictionary(display, current_space_key.as_type_ref())
-                        .and_then(|current_space| {
-                            cf_dictionary_u64(
-                                current_space,
-                                managed_space_id_key.as_type_ref(),
-                            )
-                            .or_else(|| {
-                                cf_dictionary_u64(current_space, id64_key.as_type_ref())
-                            })
-                        })
+                    cf_dictionary_dictionary(display, current_space_key.as_type_ref()).and_then(
+                        |current_space| {
+                            cf_dictionary_u64(current_space, managed_space_id_key.as_type_ref())
+                                .or_else(|| {
+                                    cf_dictionary_u64(current_space, id64_key.as_type_ref())
+                                })
+                        },
+                    )
                 })
                 .ok_or(MacosNativeProbeError::MissingTopology(
                     "SLSCopyManagedDisplaySpaces",
@@ -257,18 +244,18 @@ pub(crate) fn parse_managed_spaces(
     let mut spaces = Vec::new();
 
     for (display_index, display) in cf_array_iter(payload).enumerate() {
-        let display = cf_as_dictionary(display).ok_or(
-            MacosNativeProbeError::MissingTopology("SLSCopyManagedDisplaySpaces"),
-        )?;
-        let display_spaces =
-            cf_dictionary_array(display, spaces_key.as_type_ref() as CFStringRef).ok_or(
-                MacosNativeProbeError::MissingTopology("SLSCopyManagedDisplaySpaces"),
-            )?;
+        let display = cf_as_dictionary(display).ok_or(MacosNativeProbeError::MissingTopology(
+            "SLSCopyManagedDisplaySpaces",
+        ))?;
+        let display_spaces = cf_dictionary_array(display, spaces_key.as_type_ref() as CFStringRef)
+            .ok_or(MacosNativeProbeError::MissingTopology(
+                "SLSCopyManagedDisplaySpaces",
+            ))?;
 
         for space in cf_array_iter(display_spaces) {
-            let space = cf_as_dictionary(space).ok_or(
-                MacosNativeProbeError::MissingTopology("SLSCopyManagedDisplaySpaces"),
-            )?;
+            let space = cf_as_dictionary(space).ok_or(MacosNativeProbeError::MissingTopology(
+                "SLSCopyManagedDisplaySpaces",
+            ))?;
             spaces.push(parse_raw_space_record(space, display_index)?);
         }
     }
@@ -286,10 +273,9 @@ pub(crate) fn parse_raw_space_record(
     let tile_spaces_key = cf_string("TileSpaces")?;
     let id64_key = cf_string("id64")?;
 
-    let managed_space_id = cf_dictionary_u64(space, managed_space_id_key.as_type_ref())
-        .ok_or(MacosNativeProbeError::MissingTopology(
-            "SLSCopyManagedDisplaySpaces",
-        ))?;
+    let managed_space_id = cf_dictionary_u64(space, managed_space_id_key.as_type_ref()).ok_or(
+        MacosNativeProbeError::MissingTopology("SLSCopyManagedDisplaySpaces"),
+    )?;
     let space_type = cf_dictionary_i32(space, space_type_key.as_type_ref()).ok_or(
         MacosNativeProbeError::MissingTopology("SLSCopyManagedDisplaySpaces"),
     )?;
@@ -303,9 +289,7 @@ pub(crate) fn parse_raw_space_record(
                 .filter_map(|tile_space| {
                     cf_as_dictionary(tile_space).and_then(|tile_space| {
                         cf_dictionary_u64(tile_space, managed_space_id_key.as_type_ref())
-                            .or_else(|| {
-                                cf_dictionary_u64(tile_space, id64_key.as_type_ref())
-                            })
+                            .or_else(|| cf_dictionary_u64(tile_space, id64_key.as_type_ref()))
                     })
                 })
                 .collect::<Vec<_>>()
@@ -338,9 +322,7 @@ fn stage_manager_managed(dictionary: CFDictionaryRef) -> bool {
     })
 }
 
-pub(crate) fn parse_window_ids(
-    payload: CFArrayRef,
-) -> Result<Vec<u64>, MacosNativeProbeError> {
+pub(crate) fn parse_window_ids(payload: CFArrayRef) -> Result<Vec<u64>, MacosNativeProbeError> {
     cf_array_iter(payload)
         .map(|window_id| {
             cf_number_to_u64(window_id).ok_or(MacosNativeProbeError::MissingTopology(

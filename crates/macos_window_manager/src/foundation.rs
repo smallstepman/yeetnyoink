@@ -69,12 +69,9 @@ pub(crate) const AX_RAISE_RETRY_INTERVAL: Duration = Duration::from_millis(10);
 
 pub(crate) type SlsMainConnectionIdFn = unsafe extern "C" fn() -> u32;
 pub(crate) type SlsCopyManagedDisplaySpacesFn = unsafe extern "C" fn(u32) -> CFArrayRef;
-pub(crate) type SlsManagedDisplayGetCurrentSpaceFn =
-    unsafe extern "C" fn(u32, CFStringRef) -> u64;
-pub(crate) type SlsManagedDisplaySetCurrentSpaceFn =
-    unsafe extern "C" fn(u32, CFStringRef, u64);
-pub(crate) type SlsCopyManagedDisplayForSpaceFn =
-    unsafe extern "C" fn(u32, u64) -> CFStringRef;
+pub(crate) type SlsManagedDisplayGetCurrentSpaceFn = unsafe extern "C" fn(u32, CFStringRef) -> u64;
+pub(crate) type SlsManagedDisplaySetCurrentSpaceFn = unsafe extern "C" fn(u32, CFStringRef, u64);
+pub(crate) type SlsCopyManagedDisplayForSpaceFn = unsafe extern "C" fn(u32, u64) -> CFStringRef;
 pub(crate) type SlsCopyWindowsWithOptionsAndTagsFn =
     unsafe extern "C" fn(u32, u32, CFArrayRef, i32, *mut i64, *mut i64) -> CFArrayRef;
 pub(crate) type SlpsSetFrontProcessWithOptionsFn =
@@ -103,9 +100,7 @@ unsafe extern "C" {
 
 #[link(name = "CoreGraphics", kind = "framework")]
 unsafe extern "C" {
-    pub(crate) fn CGWindowListCreateDescriptionFromArray(
-        window_array: CFArrayRef,
-    ) -> CFArrayRef;
+    pub(crate) fn CGWindowListCreateDescriptionFromArray(window_array: CFArrayRef) -> CFArrayRef;
 }
 
 #[repr(C)]
@@ -169,8 +164,7 @@ impl CfOwned {
         // Transfer ownership from the Servo wrapper into our generic CF owner.
         let raw = value.as_CFTypeRef();
         std::mem::forget(value);
-        unsafe { Self::from_create_rule(raw) }
-            .expect("Servo CF wrappers should never be null")
+        unsafe { Self::from_create_rule(raw) }.expect("Servo CF wrappers should never be null")
     }
 
     pub(crate) fn as_type_ref(&self) -> CFTypeRef {
@@ -260,8 +254,7 @@ pub(crate) fn switch_adjacent_space_via_hotkey<PostKeyEvent>(
     mut post_key_event: PostKeyEvent,
 ) -> Result<(), MacosNativeOperationError>
 where
-    PostKeyEvent:
-        FnMut(CGKeyCode, bool, CGEventFlags) -> Result<(), MacosNativeOperationError>,
+    PostKeyEvent: FnMut(CGKeyCode, bool, CGEventFlags) -> Result<(), MacosNativeOperationError>,
 {
     let (key_code, flags) = configured_mission_control_shortcut(options, direction)?;
 
@@ -284,9 +277,7 @@ fn typed_dictionary(dictionary: CFDictionaryRef) -> Option<CFDictionary<CFType, 
     let cf_type = cf_type(dictionary as CFTypeRef)?;
     cf_type
         .instance_of::<UntypedCFDictionary>()
-        .then(|| unsafe {
-            CFDictionary::<CFType, CFType>::wrap_under_get_rule(dictionary as _)
-        })
+        .then(|| unsafe { CFDictionary::<CFType, CFType>::wrap_under_get_rule(dictionary as _) })
 }
 
 pub(crate) fn array_len(array: CFArrayRef) -> usize {
@@ -314,15 +305,12 @@ pub(crate) fn string(value: &str) -> CFString {
 }
 
 pub(crate) fn number_from_u64(value: u64) -> Result<CFNumber, MacosNativeProbeError> {
-    let value = i64::try_from(value).map_err(|_| {
-        MacosNativeProbeError::MissingTopology("SLSCopyWindowsWithOptionsAndTags")
-    })?;
+    let value = i64::try_from(value)
+        .map_err(|_| MacosNativeProbeError::MissingTopology("SLSCopyWindowsWithOptionsAndTags"))?;
     Ok(CFNumber::from(value))
 }
 
-pub(crate) fn array_from_u64s(
-    values: &[u64],
-) -> Result<CFArray<CFNumber>, MacosNativeProbeError> {
+pub(crate) fn array_from_u64s(values: &[u64]) -> Result<CFArray<CFNumber>, MacosNativeProbeError> {
     let numbers = values
         .iter()
         .map(|value| number_from_u64(*value))
@@ -333,9 +321,7 @@ pub(crate) fn array_from_u64s(
 pub(crate) fn array_from_type_refs(values: &[CFTypeRef]) -> CFArray<CFType> {
     let values = values
         .iter()
-        .map(|value| {
-            cf_type(*value).expect("array_from_type_refs expects non-null CFTypeRef")
-        })
+        .map(|value| cf_type(*value).expect("array_from_type_refs expects non-null CFTypeRef"))
         .collect::<Vec<_>>();
     CFArray::from_CFTypes(&values)
 }
@@ -353,10 +339,7 @@ fn dictionary_value(dictionary: CFDictionaryRef, key: &CFString) -> Option<CFTyp
         .map(|value| value.clone())
 }
 
-pub(crate) fn dictionary_string(
-    dictionary: CFDictionaryRef,
-    key: &CFString,
-) -> Option<String> {
+pub(crate) fn dictionary_string(dictionary: CFDictionaryRef, key: &CFString) -> Option<String> {
     dictionary_value(dictionary, key)?
         .downcast::<CFString>()
         .map(|value| value.to_string())
@@ -383,10 +366,7 @@ pub(crate) fn dictionary_i32(dictionary: CFDictionaryRef, key: &CFString) -> Opt
         .and_then(|value| i32::try_from(value).ok())
 }
 
-pub(crate) fn dictionary_array(
-    dictionary: CFDictionaryRef,
-    key: &CFString,
-) -> Option<CFArrayRef> {
+pub(crate) fn dictionary_array(dictionary: CFDictionaryRef, key: &CFString) -> Option<CFArrayRef> {
     let value = dictionary_value(dictionary, key)?;
     value
         .instance_of::<UntypedCFArray>()
@@ -449,10 +429,7 @@ pub(crate) fn cf_dictionary_string(
     dictionary_string(dictionary, &key)
 }
 
-pub(crate) fn cf_dictionary_u64(
-    dictionary: CFDictionaryRef,
-    key: CFStringRef,
-) -> Option<u64> {
+pub(crate) fn cf_dictionary_u64(dictionary: CFDictionaryRef, key: CFStringRef) -> Option<u64> {
     let key = unsafe {
         core_foundation::string::CFString::wrap_under_get_rule(
             key as core_foundation::string::CFStringRef,
@@ -461,10 +438,7 @@ pub(crate) fn cf_dictionary_u64(
     dictionary_u64(dictionary, &key)
 }
 
-pub(crate) fn cf_dictionary_u32(
-    dictionary: CFDictionaryRef,
-    key: CFStringRef,
-) -> Option<u32> {
+pub(crate) fn cf_dictionary_u32(dictionary: CFDictionaryRef, key: CFStringRef) -> Option<u32> {
     let key = unsafe {
         core_foundation::string::CFString::wrap_under_get_rule(
             key as core_foundation::string::CFStringRef,
@@ -473,10 +447,7 @@ pub(crate) fn cf_dictionary_u32(
     dictionary_u32(dictionary, &key)
 }
 
-pub(crate) fn cf_dictionary_i32(
-    dictionary: CFDictionaryRef,
-    key: CFStringRef,
-) -> Option<i32> {
+pub(crate) fn cf_dictionary_i32(dictionary: CFDictionaryRef, key: CFStringRef) -> Option<i32> {
     let key = unsafe {
         core_foundation::string::CFString::wrap_under_get_rule(
             key as core_foundation::string::CFStringRef,
@@ -521,8 +492,7 @@ pub(super) mod tests {
             .map(|(key, value)| {
                 (
                     cf_type(*key).expect("dictionary_from_type_refs expects non-null keys"),
-                    cf_type(*value)
-                        .expect("dictionary_from_type_refs expects non-null values"),
+                    cf_type(*value).expect("dictionary_from_type_refs expects non-null values"),
                 )
             })
             .collect::<Vec<_>>();

@@ -1,11 +1,9 @@
-
 use crate::foundation::{
     CFArrayRef, CFRetain, CFTypeRef, CfOwned, OSStatus, cf_array_iter, cf_string,
 };
 use crate::window_server;
 use crate::{
-    MacosNativeApi, MacosNativeOperationError, MacosNativeProbeError, NativeBounds,
-    RealNativeApi,
+    MacosNativeApi, MacosNativeOperationError, MacosNativeProbeError, NativeBounds, RealNativeApi,
 };
 use std::{
     ffi::{c_int, c_void},
@@ -55,10 +53,7 @@ unsafe extern "C" {
     ) -> OSStatus;
     #[allow(dead_code)]
     pub(crate) fn AXUIElementGetPid(element: AXUIElementRef, pid: *mut c_int) -> OSStatus;
-    pub(crate) fn AXValueCreate(
-        value_type: AXValueType,
-        value_ptr: *const c_void,
-    ) -> CFTypeRef;
+    pub(crate) fn AXValueCreate(value_type: AXValueType, value_ptr: *const c_void) -> CFTypeRef;
 }
 
 pub(crate) fn is_process_trusted(api: &RealNativeApi) -> bool {
@@ -66,8 +61,7 @@ pub(crate) fn is_process_trusted(api: &RealNativeApi) -> bool {
         return false;
     };
 
-    let ax_is_process_trusted: AxIsProcessTrustedFn =
-        unsafe { std::mem::transmute(symbol) };
+    let ax_is_process_trusted: AxIsProcessTrustedFn = unsafe { std::mem::transmute(symbol) };
     unsafe { ax_is_process_trusted() != 0 }
 }
 
@@ -111,9 +105,8 @@ pub(crate) fn copy_ax_attribute_value(
     .entered();
     let attribute = cf_string(attribute_name)?;
     let mut value = ptr::null();
-    let status = unsafe {
-        AXUIElementCopyAttributeValue(element, attribute.as_type_ref(), &mut value)
-    };
+    let status =
+        unsafe { AXUIElementCopyAttributeValue(element, attribute.as_type_ref(), &mut value) };
 
     if status != 0 {
         return Ok(None);
@@ -150,8 +143,7 @@ pub(crate) fn ax_pid(
     element: &CfOwned,
 ) -> Result<u32, MacosNativeProbeError> {
     let mut pid = 0;
-    let status =
-        unsafe { AXUIElementGetPid(element.as_type_ref() as AXUIElementRef, &mut pid) };
+    let status = unsafe { AXUIElementGetPid(element.as_type_ref() as AXUIElementRef, &mut pid) };
     if status != 0 || pid <= 0 {
         return Err(MacosNativeProbeError::MissingFocusedWindow);
     }
@@ -167,8 +159,7 @@ pub(crate) fn ax_window_id(
             "_AXUIElementGetWindow",
         ));
     };
-    let ax_ui_element_get_window: AxUiElementGetWindowFn =
-        unsafe { std::mem::transmute(symbol) };
+    let ax_ui_element_get_window: AxUiElementGetWindowFn = unsafe { std::mem::transmute(symbol) };
     let mut window_id = 0u32;
     let status = unsafe {
         ax_ui_element_get_window(element.as_type_ref() as AXUIElementRef, &mut window_id)
@@ -186,8 +177,7 @@ pub(crate) fn probe_focused_window_id(
 ) -> Result<Option<u64>, MacosNativeProbeError> {
     focused_window_id(
         || {
-            let _span =
-                tracing::debug_span!("macos_native.ax.focused_application").entered();
+            let _span = tracing::debug_span!("macos_native.ax.focused_application").entered();
             copy_focused_application_ax(api)
         },
         |application| {
@@ -205,12 +195,10 @@ pub(crate) fn copy_application_ax_element(
     _api: &RealNativeApi,
     pid: u32,
 ) -> Result<CfOwned, MacosNativeOperationError> {
-    unsafe {
-        CfOwned::from_create_rule(AXUIElementCreateApplication(pid as c_int) as CFTypeRef)
-    }
-    .ok_or(MacosNativeOperationError::CallFailed(
-        "AXUIElementCreateApplication",
-    ))
+    unsafe { CfOwned::from_create_rule(AXUIElementCreateApplication(pid as c_int) as CFTypeRef) }
+        .ok_or(MacosNativeOperationError::CallFailed(
+            "AXUIElementCreateApplication",
+        ))
 }
 
 pub(crate) fn copy_window_ax_for_id(
@@ -229,8 +217,7 @@ pub(crate) fn copy_window_ax_for_id(
     let windows = windows.as_type_ref() as CFArrayRef;
 
     for candidate in cf_array_iter(windows) {
-        let Some(candidate) = (unsafe { CfOwned::from_create_rule(CFRetain(candidate)) })
-        else {
+        let Some(candidate) = (unsafe { CfOwned::from_create_rule(CFRetain(candidate)) }) else {
             continue;
         };
         if ax_window_id(api, &candidate).ok() == Some(window_id) {
@@ -283,10 +270,7 @@ pub(crate) fn raise_window_via_ax(
     let window = copy_window_ax_for_id(api, pid, window_id)?;
     let action = cf_string("AXRaise").map_err(MacosNativeOperationError::from)?;
     let status = unsafe {
-        AXUIElementPerformAction(
-            window.as_type_ref() as AXUIElementRef,
-            action.as_type_ref(),
-        )
+        AXUIElementPerformAction(window.as_type_ref() as AXUIElementRef, action.as_type_ref())
     };
 
     (status == 0)

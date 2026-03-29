@@ -1,9 +1,8 @@
 #![allow(dead_code)]
 
 use crate::{
-    ActiveSpaceFocusTargetHint, MacosNativeOperationError, MacosNativeProbeError,
-    NativeBounds, NativeDesktopSnapshot, NativeDirection, NativeSpaceSnapshot,
-    NativeWindowSnapshot,
+    ActiveSpaceFocusTargetHint, MacosNativeOperationError, MacosNativeProbeError, NativeBounds,
+    NativeDesktopSnapshot, NativeDirection, NativeSpaceSnapshot, NativeWindowSnapshot,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -115,8 +114,7 @@ pub(crate) fn stable_app_id_from_pid(pid: u32) -> Option<String> {
 }
 
 fn lsappinfo_bundle_identifier_output(pid: u32) -> Option<String> {
-    let _span =
-        tracing::debug_span!("macos_native.app_id_from_pid.lsappinfo", pid).entered();
+    let _span = tracing::debug_span!("macos_native.app_id_from_pid.lsappinfo", pid).entered();
     let application_specifier = format!("#{pid}");
     let output = std::process::Command::new("lsappinfo")
         .args(["info", "-only", "bundleid", application_specifier.as_str()])
@@ -139,10 +137,7 @@ pub(crate) fn parse_lsappinfo_bundle_identifier(output: &str) -> Option<String> 
     })
 }
 
-pub(crate) fn compare_active_windows(
-    left: &RawWindow,
-    right: &RawWindow,
-) -> std::cmp::Ordering {
+pub(crate) fn compare_active_windows(left: &RawWindow, right: &RawWindow) -> std::cmp::Ordering {
     match (left.visible_index, right.visible_index) {
         (Some(left_index), Some(right_index)) => left_index.cmp(&right_index),
         (Some(_), None) => std::cmp::Ordering::Less,
@@ -317,11 +312,9 @@ pub(crate) fn focused_window_from_active_space_windows(
     focused_window_id: Option<u64>,
 ) -> Result<WindowSnapshot, MacosNativeProbeError> {
     if let Some(target_window_id) = focused_window_id {
-        if let Some(snapshot) =
-            active_space_windows.iter().find_map(|(space_id, windows)| {
-                active_window_snapshot(*space_id, windows, target_window_id)
-            })
-        {
+        if let Some(snapshot) = active_space_windows.iter().find_map(|(space_id, windows)| {
+            active_window_snapshot(*space_id, windows, target_window_id)
+        }) {
             return Ok(snapshot);
         }
     }
@@ -336,19 +329,12 @@ pub(crate) fn focused_window_from_active_space_windows(
         })
         .min_by(|(_, left), (_, right)| compare_active_windows(left, right))
         .and_then(|(space_id, window)| {
-            active_window_snapshot(
-                space_id,
-                active_space_windows.get(&space_id)?,
-                window.id,
-            )
+            active_window_snapshot(space_id, active_space_windows.get(&space_id)?, window.id)
         })
         .ok_or(MacosNativeProbeError::MissingFocusedWindow)
 }
 
-pub(crate) fn space_id_for_window(
-    topology: &RawTopologySnapshot,
-    window_id: u64,
-) -> Option<u64> {
+pub(crate) fn space_id_for_window(topology: &RawTopologySnapshot, window_id: u64) -> Option<u64> {
     topology
         .active_space_windows
         .iter()
@@ -362,9 +348,7 @@ pub(crate) fn space_id_for_window(
             topology
                 .inactive_space_window_ids
                 .iter()
-                .find_map(|(space_id, windows)| {
-                    windows.contains(&window_id).then_some(*space_id)
-                })
+                .find_map(|(space_id, windows)| windows.contains(&window_id).then_some(*space_id))
         })
 }
 
@@ -383,15 +367,14 @@ pub(crate) fn active_space_on_display(
     topology: &RawTopologySnapshot,
     display_index: usize,
 ) -> Option<u64> {
-    topology.active_space_ids.iter().copied().find(|space_id| {
-        display_index_for_space(topology, *space_id) == Some(display_index)
-    })
+    topology
+        .active_space_ids
+        .iter()
+        .copied()
+        .find(|space_id| display_index_for_space(topology, *space_id) == Some(display_index))
 }
 
-pub(crate) fn window_ids_for_space(
-    topology: &RawTopologySnapshot,
-    space_id: u64,
-) -> HashSet<u64> {
+pub(crate) fn window_ids_for_space(topology: &RawTopologySnapshot, space_id: u64) -> HashSet<u64> {
     if topology.active_space_ids.contains(&space_id) {
         return topology
             .active_space_windows
