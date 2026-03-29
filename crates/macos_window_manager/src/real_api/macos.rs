@@ -4,7 +4,30 @@ use std::{
     time::Instant,
 };
 
-use crate::*;
+use crate::{
+    AX_RAISE_RETRY_INTERVAL, AX_RAISE_SETTLE_TIMEOUT, ActiveSpaceFocusTargetHint, MacosNativeApi,
+    MacosNativeOperationError, MacosNativeProbeError, NativeBackendOptions, NativeBounds,
+    NativeDesktopSnapshot, NativeDirection, NativeWindowId, active_space_ax_backed_same_pid_target,
+    ax,
+    desktop_topology_snapshot::{
+        RawSpaceRecord, RawTopologySnapshot, RawWindow, WindowSnapshot, active_window_snapshot,
+        focused_window_from_active_space_windows, native_desktop_snapshot_from_topology,
+        stable_app_id_from_real_window,
+    },
+    focus_window_via_make_key_and_raise, focus_window_via_process_and_raise,
+    foundation::{
+        CFArrayRef, DylibHandle, HISERVICES_FRAMEWORK_PATH, SKYLIGHT_FRAMEWORK_PATH,
+        SlsMainConnectionIdFn, switch_adjacent_space_via_hotkey,
+    },
+    skylight::{
+        self, parse_active_space_ids, parse_display_identifiers, parse_managed_spaces,
+        parse_window_ids,
+    },
+    window_server::{
+        self, assemble_real_active_space_windows, copy_onscreen_window_descriptions_raw,
+        onscreen_window_ids_from_descriptions, query_visible_window_order,
+    },
+};
 
 pub struct RealNativeApi {
     skylight: Option<DylibHandle>,

@@ -118,8 +118,14 @@ fn crate_source(path: &str) -> PathBuf {
 #[test]
 fn source_crate_root_is_a_thin_facade() {
     let lib = std::fs::read_to_string(crate_source("src/lib.rs")).unwrap();
+    let macos_real_api = std::fs::read_to_string(crate_source("src/real_api/macos.rs")).unwrap();
+    let stub_real_api = std::fs::read_to_string(crate_source("src/real_api/stub.rs")).unwrap();
+
     assert!(lib.contains("mod api;"));
     assert!(lib.contains("mod real_api;"));
     assert!(!lib.contains("pub trait MacosNativeApi {"));
     assert!(!lib.contains("pub struct RealNativeApi"));
+    assert!(!lib.contains("pub use api::*;"));
+    assert!(!macos_real_api.contains("use crate::*;"));
+    assert!(!stub_real_api.contains("use crate::*;"));
 }

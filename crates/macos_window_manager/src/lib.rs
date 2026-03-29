@@ -868,12 +868,12 @@ where
 use desktop_topology_snapshot::*;
 #[cfg(target_os = "macos")]
 use foundation::*;
-#[cfg(target_os = "macos")]
-use skylight::*;
-#[cfg(target_os = "macos")]
-use window_server::*;
 
-pub use api::*;
+pub use api::{
+    ActiveSpaceFocusTargetHint, MacosNativeApi, MissionControlHotkey, MissionControlModifiers,
+    NativeBackendOptions, NativeBounds, NativeDesktopSnapshot, NativeDiagnostics, NativeDirection,
+    NativeSpaceId, NativeSpaceSnapshot, NativeWindowId, NativeWindowSnapshot,
+};
 pub use desktop_topology_snapshot::SpaceKind;
 pub use desktop_topology_snapshot::{
     RawSpaceRecord, RawTopologySnapshot, RawWindow, WindowSnapshot,

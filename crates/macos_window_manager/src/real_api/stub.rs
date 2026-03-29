@@ -1,6 +1,10 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-use crate::*;
+use crate::{
+    MacosNativeApi, MacosNativeConnectError, MacosNativeOperationError, MacosNativeProbeError,
+    NativeBackendOptions, NativeBounds, NativeDesktopSnapshot, UNSUPPORTED_PLATFORM_MESSAGE,
+    desktop_topology_snapshot::{RawSpaceRecord, RawWindow},
+};
 
 pub struct RealNativeApi {
     options: NativeBackendOptions,
