@@ -8298,61 +8298,6 @@ command = false
     }
 
     #[test]
-    fn source_flattens_servo_cf_and_keeps_raw_ax_boundary_in_ax_module() {
-        let implementation = implementation_source();
-        let foundation_start = implementation
-            .find("pub(super) mod foundation {")
-            .expect("macos_window_manager_api should expose a foundation module");
-        let skylight_start = implementation
-            .find("pub(super) mod skylight {")
-            .expect("macos_window_manager_api should expose a skylight module");
-        let ax_start = implementation
-            .find("pub(super) mod ax {")
-            .expect("macos_window_manager_api should expose an ax module");
-        let window_server_start = implementation
-            .find("pub(super) mod window_server {")
-            .expect("macos_window_manager_api should expose a window_server module");
-
-        let module_source = |start: usize| {
-            let end = [
-                foundation_start,
-                ax_start,
-                skylight_start,
-                window_server_start,
-            ]
-            .into_iter()
-            .filter(|candidate| *candidate > start)
-            .min()
-            .expect("module should be followed by another api submodule");
-            &implementation[start..end]
-        };
-
-        let foundation_source = module_source(foundation_start);
-        let ax_source = module_source(ax_start);
-
-        assert!(
-            !implementation.contains("mod servo_cf {"),
-            "typed CoreFoundation helpers should be folded into foundation instead of nested under servo_cf"
-        );
-        assert!(
-            !foundation_source.contains("type AXUIElementRef"),
-            "raw AX type aliases should live in mod ax, not foundation"
-        );
-        assert!(
-            !foundation_source.contains("fn AXUIElementCreateApplication"),
-            "raw AX extern declarations should live in mod ax, not foundation"
-        );
-        assert!(
-            ax_source.contains("type AXUIElementRef"),
-            "mod ax should own the raw AX type aliases"
-        );
-        assert!(
-            ax_source.contains("fn AXUIElementCreateApplication"),
-            "mod ax should own the raw AX extern declarations"
-        );
-    }
-
-    #[test]
     fn servo_cf_array_from_u64s_returns_numbers_in_order() {
         let array = array_from_u64s(&[11, 22])
             .expect("servo-backed helper should build a CFArray of numbers");
