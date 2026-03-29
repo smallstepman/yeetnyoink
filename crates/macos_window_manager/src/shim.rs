@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use std::{ffi::c_void, ops::Deref, ptr::NonNull};
+use std::{ffi::c_void, ptr::NonNull};
 
 use crate::{
     error::MacosNativeBridgeError,
@@ -43,12 +43,9 @@ impl SwiftBackendShim {
             return Err(status_error(&mut status));
         }
 
-        snapshot
-            .validate()
-            .map_err(MacosNativeBridgeError::InvalidDesktopSnapshotTransport)?;
-
+        let snapshot = OwnedDesktopSnapshot::new(snapshot);
         unsafe { ffi::status_release(&mut status) };
-        Ok(OwnedDesktopSnapshot { raw: snapshot })
+        snapshot.validate()
     }
 
     pub(crate) fn as_ptr(&self) -> *mut c_void {
@@ -63,16 +60,15 @@ impl Drop for SwiftBackendShim {
 }
 
 impl OwnedDesktopSnapshot {
-    pub(crate) fn raw(&self) -> &MwmDesktopSnapshotAbi {
-        &self.raw
+    fn new(raw: MwmDesktopSnapshotAbi) -> Self {
+        Self { raw }
     }
-}
 
-impl Deref for OwnedDesktopSnapshot {
-    type Target = MwmDesktopSnapshotAbi;
-
-    fn deref(&self) -> &Self::Target {
-        self.raw()
+    fn validate(self) -> Result<Self, MacosNativeBridgeError> {
+        self.raw
+            .validate()
+            .map_err(MacosNativeBridgeError::InvalidDesktopSnapshotTransport)?;
+        Ok(self)
     }
 }
 
@@ -88,4 +84,45 @@ fn status_error(status: &mut MwmStatus) -> MacosNativeBridgeError {
     unsafe { ffi::status_release(status) };
 
     MacosNativeBridgeError::BackendStatus { code, message }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{ffi::c_void, mem::ManuallyDrop, ptr::NonNull};
+
+    use super::SwiftBackendShim;
+    use crate::{
+        error::MacosNativeBridgeError,
+        ffi::{self, TestDesktopSnapshotResponse},
+        transport::{MWM_STATUS_OK, MwmDesktopSnapshotAbi, MwmStatus},
+    };
+
+    #[test]
+    fn desktop_snapshot_releases_transport_when_validation_fails() {
+        ffi::test_support::reset();
+        ffi::test_support::set_desktop_snapshot_response(TestDesktopSnapshotResponse {
+            code: MWM_STATUS_OK,
+            snapshot: MwmDesktopSnapshotAbi {
+                windows_len: 1,
+                ..MwmDesktopSnapshotAbi::empty()
+            },
+            status: MwmStatus::ok(),
+        });
+
+        let shim = ManuallyDrop::new(SwiftBackendShim {
+            raw: NonNull::<c_void>::dangling(),
+        });
+
+        let error = match shim.desktop_snapshot() {
+            Ok(_) => panic!("desktop_snapshot should fail validation"),
+            Err(error) => error,
+        };
+        assert_eq!(
+            error,
+            MacosNativeBridgeError::InvalidDesktopSnapshotTransport(
+                "windows_ptr was null for a non-empty snapshot"
+            )
+        );
+        assert_eq!(ffi::test_support::desktop_snapshot_release_calls(), 1);
+    }
 }

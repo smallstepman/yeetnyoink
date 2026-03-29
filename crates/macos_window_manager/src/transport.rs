@@ -89,7 +89,7 @@ const _: [(); 24] = [(); std::mem::offset_of!(MwmDesktopSnapshotAbi, windows_len
 const _: [(); 32] = [(); std::mem::offset_of!(MwmDesktopSnapshotAbi, focused_window_id)];
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct MwmStatus {
     pub code: i32,
     pub message_ptr: *mut c_char,
@@ -135,7 +135,7 @@ pub struct MwmSpaceAbi {
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct MwmWindowAbi {
     pub id: u64,
     pub pid: u32,
@@ -151,7 +151,7 @@ pub struct MwmWindowAbi {
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct MwmDesktopSnapshotAbi {
     pub spaces_ptr: *mut MwmSpaceAbi,
     pub spaces_len: usize,

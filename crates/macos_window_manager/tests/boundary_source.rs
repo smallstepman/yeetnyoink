@@ -206,3 +206,34 @@ fn source_swift_ffi_contract_is_explicit() {
         "Rust transport should pin the Swift ABI with explicit layout assertions"
     );
 }
+
+fn source_window_around(source: &str, needle: &str, radius: usize) -> String {
+    let start = source
+        .find(needle)
+        .expect("needle should exist in source")
+        .saturating_sub(radius);
+    let end = (start + needle.len() + radius).min(source.len());
+    source[start..end].to_string()
+}
+
+#[test]
+fn source_pointer_owning_transport_types_are_not_copy() {
+    let rust_transport = std::fs::read_to_string(crate_source("src/transport.rs")).unwrap();
+
+    for type_name in ["MwmStatus", "MwmWindowAbi", "MwmDesktopSnapshotAbi"] {
+        let window = source_window_around(&rust_transport, &format!("pub struct {type_name}"), 120);
+        assert!(
+            !window.contains("Copy"),
+            "{type_name} owns FFI pointers and should not derive Copy"
+        );
+    }
+}
+
+#[test]
+fn source_owned_snapshot_does_not_deref_to_raw_transport() {
+    let shim = std::fs::read_to_string(crate_source("src/shim.rs")).unwrap();
+    assert!(
+        !shim.contains("impl Deref for OwnedDesktopSnapshot"),
+        "OwnedDesktopSnapshot should keep the raw transport behind an explicit ownership boundary"
+    );
+}
