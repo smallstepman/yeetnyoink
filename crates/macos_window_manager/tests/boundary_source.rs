@@ -138,3 +138,12 @@ fn source_navigation_helpers_leave_lib_rs() {
     assert!(!lib.contains("fn wait_for_space_presentation("));
     assert!(!lib.contains("fn switch_space_in_snapshot("));
 }
+
+#[test]
+fn source_swift_backend_scaffold_exists() {
+    assert!(crate_source("build.rs").exists());
+    assert!(crate_source("swift/Package.swift").exists());
+
+    let cargo = std::fs::read_to_string(crate_source("Cargo.toml")).unwrap();
+    assert!(cargo.contains("build = \"build.rs\""));
+}
