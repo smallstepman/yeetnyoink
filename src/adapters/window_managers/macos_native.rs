@@ -946,36 +946,31 @@ where
 #[cfg(test)]
 mod tests {
     use super::macos_window_manager_test_support::foundation::{
-        CFArrayRef, CFDictionaryRef, CFTypeRef, K_CG_EVENT_FLAG_MASK_ALTERNATE,
-        K_CG_EVENT_FLAG_MASK_COMMAND, K_CG_EVENT_FLAG_MASK_SHIFT, ProcessSerialNumber,
-        cf_number_from_u64, cf_string, switch_adjacent_space_via_hotkey,
+        CFArrayRef, CFDictionaryRef, CFTypeRef, ProcessSerialNumber, cf_number_from_u64, cf_string,
     };
     use super::macos_window_manager_test_support::tests::{
-        SpaceSnapshot, dictionary_from_type_refs, focused_window_id_via_ax,
-        space_snapshots_from_topology,
+        SpaceSnapshot, dictionary_from_type_refs, space_snapshots_from_topology,
     };
     use super::macos_window_manager_test_support::window_server::{
         cg_window_bounds_key, cg_window_layer_key, cg_window_name_key, cg_window_number_key,
         cg_window_owner_pid_key, filter_window_descriptions_raw, parse_window_descriptions,
     };
     use super::macos_window_manager_test_support::{
-        CfOwned, DESKTOP_SPACE_TYPE, FULLSCREEN_SPACE_TYPE, REQUIRED_PRIVATE_SYMBOLS,
-        NativeSpaceSnapshot, RawSpaceRecord, RawTopologySnapshot, RawWindow,
+        CfOwned, DESKTOP_SPACE_TYPE, FULLSCREEN_SPACE_TYPE, NativeSpaceSnapshot,
+        REQUIRED_PRIVATE_SYMBOLS, RawSpaceRecord, RawTopologySnapshot, RawWindow,
         SPACE_SWITCH_POLL_INTERVAL, SPACE_SWITCH_SETTLE_TIMEOUT, SPACE_SWITCH_STABLE_TARGET_POLLS,
-        WindowSnapshot, array_from_type_refs, array_from_u64s, best_window_id_from_windows,
-        classify_space, dictionary_i32, dictionary_string, enrich_real_window_app_ids_with,
-        ensure_supported_target_space, focus_window_via_make_key_and_raise,
-        focus_window_via_process_and_raise, focused_window_from_topology,
-        native_desktop_snapshot_from_topology, number_from_u64, order_active_space_windows,
-        parse_lsappinfo_bundle_identifier, parse_managed_spaces, parse_raw_space_record,
-        snapshots_for_inactive_space, space_id_for_window, space_transition_window_ids,
-        stable_app_id_from_real_window, string, validate_environment_with_api,
+        WindowSnapshot, array_from_type_refs, best_window_id_from_windows, classify_space,
+        enrich_real_window_app_ids_with, ensure_supported_target_space,
+        focus_window_via_make_key_and_raise, focus_window_via_process_and_raise,
+        focused_window_from_topology, native_desktop_snapshot_from_topology,
+        order_active_space_windows, parse_lsappinfo_bundle_identifier, parse_managed_spaces,
+        parse_raw_space_record, snapshots_for_inactive_space, space_id_for_window,
+        space_transition_window_ids, stable_app_id_from_real_window, validate_environment_with_api,
         window_ids_for_space, window_snapshots_from_topology,
     };
     use super::*;
     use crate::engine::topology::{Rect, select_closest_in_direction_with_strategy};
     use crate::logging;
-    use core_foundation::base::TCFType;
     use std::time::Instant;
     use std::{
         cell::RefCell,
@@ -4394,27 +4389,6 @@ mod tests {
         std::mem::take(&mut *calls.borrow_mut())
     }
 
-    fn mission_control_hotkey(
-        key_code: u16,
-        modifiers: MissionControlModifiers,
-    ) -> MissionControlHotkey {
-        MissionControlHotkey {
-            key_code,
-            mission_control: modifiers,
-        }
-    }
-
-    fn backend_options_with_hotkeys(
-        west: MissionControlHotkey,
-        east: MissionControlHotkey,
-    ) -> NativeBackendOptions {
-        NativeBackendOptions {
-            west_space_hotkey: west,
-            east_space_hotkey: east,
-            diagnostics: None,
-        }
-    }
-
     struct InstalledConfigGuard {
         _env: std::sync::MutexGuard<'static, ()>,
         old: crate::config::Config,
@@ -4605,40 +4579,6 @@ command = false
         assert!(
             !implementation.contains("fn outer_space_transition_window_ids("),
             "production adapter should not define outer_space_transition_window_ids once it only serves test support"
-        );
-    }
-
-    #[test]
-    fn servo_cf_array_from_u64s_returns_numbers_in_order() {
-        let array = array_from_u64s(&[11, 22])
-            .expect("servo-backed helper should build a CFArray of numbers");
-
-        let values = array
-            .iter()
-            .map(|number| number.to_i64().expect("fixture should stay numeric"))
-            .collect::<Vec<_>>();
-
-        assert_eq!(values, vec![11, 22]);
-    }
-
-    #[test]
-    fn servo_cf_dictionary_accessors_read_string_and_i32_values() {
-        let x_key = string("X");
-        let title_key = string("Title");
-        let x_value = number_from_u64(10).expect("servo-backed helper should build CFNumbers");
-        let title_value = string("alpha");
-        let dictionary = cf_test_dictionary(&[
-            (x_key.as_CFTypeRef(), x_value.as_CFTypeRef()),
-            (title_key.as_CFTypeRef(), title_value.as_CFTypeRef()),
-        ]);
-
-        assert_eq!(
-            dictionary_i32(dictionary.as_type_ref() as CFDictionaryRef, &x_key),
-            Some(10)
-        );
-        assert_eq!(
-            dictionary_string(dictionary.as_type_ref() as CFDictionaryRef, &title_key),
-            Some("alpha".to_string())
         );
     }
 
@@ -5454,24 +5394,6 @@ command = false
     }
 
     #[test]
-    fn focused_window_id_via_ax_queries_focused_app_then_window() {
-        let focused_window_id = focused_window_id_via_ax(
-            || Ok(Some("app")),
-            |application| {
-                assert_eq!(*application, "app");
-                Ok(Some("window"))
-            },
-            |element| {
-                assert_eq!(*element, "window");
-                Ok(77)
-            },
-        )
-        .unwrap();
-
-        assert_eq!(focused_window_id, Some(77));
-    }
-
-    #[test]
     fn focus_window_via_process_and_raise_fronts_makes_key_then_raises_target_window() {
         let calls = Rc::new(RefCell::new(Vec::new()));
 
@@ -5518,74 +5440,6 @@ command = false
         assert_eq!(
             take_calls(&calls),
             vec!["front:1:2:77", "make_key:1:2:77", "raise:77:5151"]
-        );
-    }
-
-    #[test]
-    fn switch_adjacent_space_via_hotkey_posts_configured_shortcut_for_east() {
-        let options = backend_options_with_hotkeys(
-            mission_control_hotkey(
-                0x7B,
-                MissionControlModifiers {
-                    control: true,
-                    option: false,
-                    command: false,
-                    shift: false,
-                    function: true,
-                },
-            ),
-            mission_control_hotkey(
-                0x1A,
-                MissionControlModifiers {
-                    control: false,
-                    option: true,
-                    command: true,
-                    shift: true,
-                    function: false,
-                },
-            ),
-        );
-
-        let calls = Rc::new(RefCell::new(Vec::new()));
-
-        switch_adjacent_space_via_hotkey(
-            &options,
-            NativeDirection::East,
-            |key_code, key_down, flags| {
-                calls.borrow_mut().push(format!(
-                    "key:{key_code}:{}:{flags}",
-                    if key_down { "down" } else { "up" }
-                ));
-                Ok(())
-            },
-        )
-        .unwrap();
-
-        let flags = K_CG_EVENT_FLAG_MASK_SHIFT
-            | K_CG_EVENT_FLAG_MASK_ALTERNATE
-            | K_CG_EVENT_FLAG_MASK_COMMAND;
-        assert_eq!(
-            take_calls(&calls),
-            vec![
-                format!("key:{}:down:{flags}", 0x1A),
-                format!("key:{}:up:{flags}", 0x1A),
-            ]
-        );
-    }
-
-    #[test]
-    fn switch_adjacent_space_via_hotkey_rejects_vertical_directions() {
-        let options = backend_options_with_hotkeys(
-            mission_control_hotkey(0x7B, MissionControlModifiers::default()),
-            mission_control_hotkey(0x7C, MissionControlModifiers::default()),
-        );
-        let err =
-            switch_adjacent_space_via_hotkey(&options, NativeDirection::North, |_, _, _| Ok(()))
-                .unwrap_err();
-
-        assert_eq!(
-            err,
-            MacosNativeOperationError::CallFailed("adjacent_space_hotkey_direction")
         );
     }
 

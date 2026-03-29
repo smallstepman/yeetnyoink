@@ -363,3 +363,26 @@ pub(crate) fn swap_window_frames(
     set_window_frame_via_ax(api, source_window_id, source_pid, target_frame)?;
     set_window_frame_via_ax(api, target_window_id, target_pid, source_frame)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn focused_window_id_via_ax_queries_focused_app_then_window() {
+        let focused_window_id = focused_window_id(
+            || Ok(Some("app")),
+            |application| {
+                assert_eq!(*application, "app");
+                Ok(Some("window"))
+            },
+            |element| {
+                assert_eq!(*element, "window");
+                Ok(77)
+            },
+        )
+        .unwrap();
+
+        assert_eq!(focused_window_id, Some(77));
+    }
+}

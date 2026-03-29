@@ -483,6 +483,7 @@ pub(crate) fn cf_dictionary_dictionary(
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
+    use std::{cell::RefCell, rc::Rc};
 
     pub(crate) fn dictionary_from_type_refs(
         entries: &[(CFTypeRef, CFTypeRef)],
@@ -497,5 +498,127 @@ pub(super) mod tests {
             })
             .collect::<Vec<_>>();
         CFDictionary::from_CFType_pairs(&entries)
+    }
+
+    #[test]
+    fn servo_cf_array_from_u64s_returns_numbers_in_order() {
+        let array = array_from_u64s(&[11, 22])
+            .expect("servo-backed helper should build a CFArray of numbers");
+
+        let values = array_iter(array.as_CFTypeRef() as CFArrayRef)
+            .map(|value| number_to_i64(value).expect("each value should decode to i64"))
+            .collect::<Vec<_>>();
+
+        assert_eq!(values, vec![11, 22]);
+    }
+
+    #[test]
+    fn servo_cf_dictionary_accessors_read_string_and_i32_values() {
+        let x_key = string("X");
+        let title_key = string("Title");
+        let x_value = number_from_u64(10).expect("servo-backed helper should build CFNumbers");
+        let title_value = string("alpha");
+        let dictionary = dictionary_from_type_refs(&[
+            (x_key.as_CFTypeRef(), x_value.as_CFTypeRef()),
+            (title_key.as_CFTypeRef(), title_value.as_CFTypeRef()),
+        ]);
+
+        assert_eq!(
+            dictionary_i32(dictionary.as_CFTypeRef() as CFDictionaryRef, &x_key),
+            Some(10)
+        );
+        assert_eq!(
+            dictionary_string(dictionary.as_CFTypeRef() as CFDictionaryRef, &title_key),
+            Some("alpha".to_string())
+        );
+    }
+
+    fn mission_control_hotkey(
+        key_code: u16,
+        modifiers: MissionControlModifiers,
+    ) -> MissionControlHotkey {
+        MissionControlHotkey {
+            key_code,
+            mission_control: modifiers,
+        }
+    }
+
+    fn backend_options_with_hotkeys(
+        west: MissionControlHotkey,
+        east: MissionControlHotkey,
+    ) -> NativeBackendOptions {
+        NativeBackendOptions {
+            west_space_hotkey: west,
+            east_space_hotkey: east,
+            diagnostics: None,
+        }
+    }
+
+    #[test]
+    fn switch_adjacent_space_via_hotkey_posts_configured_shortcut_for_east() {
+        let options = backend_options_with_hotkeys(
+            mission_control_hotkey(
+                0x7B,
+                MissionControlModifiers {
+                    control: true,
+                    option: false,
+                    command: false,
+                    shift: false,
+                    function: true,
+                },
+            ),
+            mission_control_hotkey(
+                0x1A,
+                MissionControlModifiers {
+                    control: false,
+                    option: true,
+                    command: true,
+                    shift: true,
+                    function: false,
+                },
+            ),
+        );
+
+        let calls = Rc::new(RefCell::new(Vec::new()));
+
+        switch_adjacent_space_via_hotkey(
+            &options,
+            NativeDirection::East,
+            |key_code, key_down, flags| {
+                calls.borrow_mut().push(format!(
+                    "key:{key_code}:{}:{flags}",
+                    if key_down { "down" } else { "up" }
+                ));
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        let flags = K_CG_EVENT_FLAG_MASK_SHIFT
+            | K_CG_EVENT_FLAG_MASK_ALTERNATE
+            | K_CG_EVENT_FLAG_MASK_COMMAND;
+        assert_eq!(
+            std::mem::take(&mut *calls.borrow_mut()),
+            vec![
+                format!("key:{}:down:{flags}", 0x1A),
+                format!("key:{}:up:{flags}", 0x1A),
+            ]
+        );
+    }
+
+    #[test]
+    fn switch_adjacent_space_via_hotkey_rejects_vertical_directions() {
+        let options = backend_options_with_hotkeys(
+            mission_control_hotkey(0x7B, MissionControlModifiers::default()),
+            mission_control_hotkey(0x7C, MissionControlModifiers::default()),
+        );
+        let err =
+            switch_adjacent_space_via_hotkey(&options, NativeDirection::North, |_, _, _| Ok(()))
+                .unwrap_err();
+
+        assert_eq!(
+            err,
+            MacosNativeOperationError::CallFailed("adjacent_space_hotkey_direction")
+        );
     }
 }
