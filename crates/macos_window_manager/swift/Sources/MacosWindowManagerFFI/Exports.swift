@@ -48,6 +48,20 @@ private final class BackendHandle {
         )
     }
 
+    func switchSpaceAndRefresh(
+        snapshot: DesktopSnapshot,
+        targetSpaceID: UInt64,
+        adjacentDirection: NativeDirection?
+    ) throws -> MwmDesktopSnapshotAbi {
+        MwmDesktopSnapshotAbi(
+            try backend.switchSpaceAndRefresh(
+                snapshot: snapshot,
+                targetSpaceID: targetSpaceID,
+                adjacentDirection: adjacentDirection
+            )
+        )
+    }
+
     func focusWindow(_ windowID: UInt64) throws {
         try backend.focusWindow(windowID)
     }
@@ -400,6 +414,49 @@ public func mwm_backend_switch_space_in_snapshot(
             targetSpaceID: targetSpaceID,
             adjacentDirection: adjacentDirection
         )
+        writeStatus(outStatus, code: MWM_STATUS_OK)
+        return MWM_STATUS_OK
+    } catch let error as BackendError {
+        return writeErrorStatus(outStatus, error: error)
+    } catch let error as BackendOperationError {
+        return writeOperationErrorStatus(outStatus, error: error)
+    } catch {
+        writeStatus(outStatus, code: MWM_STATUS_UNAVAILABLE, message: String(describing: error).ownedCString())
+        return MWM_STATUS_UNAVAILABLE
+    }
+}
+
+@_cdecl("mwm_backend_switch_space_and_refresh")
+public func mwm_backend_switch_space_and_refresh(
+    _ backend: UnsafeMutableRawPointer?,
+    _ snapshot: UnsafeMutableRawPointer?,
+    _ targetSpaceID: UInt64,
+    _ adjacentDirectionRaw: Int32,
+    _ outSnapshot: UnsafeMutableRawPointer?,
+    _ outStatus: UnsafeMutableRawPointer?
+) -> Int32 {
+    verifyTransportAbiContract()
+
+    guard let backend, let snapshot, let outSnapshot else {
+        writeStatus(outStatus, code: MWM_STATUS_INVALID_ARGUMENT)
+        return MWM_STATUS_INVALID_ARGUMENT
+    }
+
+    let handle = Unmanaged<BackendHandle>.fromOpaque(backend).takeUnretainedValue()
+    let adjacentDirection = adjacentDirectionRaw >= 0 ? NativeDirection(rawValue: adjacentDirectionRaw) : nil
+    if adjacentDirectionRaw >= 0, adjacentDirection == nil {
+        writeStatus(outStatus, code: MWM_STATUS_INVALID_ARGUMENT)
+        return MWM_STATUS_INVALID_ARGUMENT
+    }
+
+    do {
+        outSnapshot
+            .assumingMemoryBound(to: MwmDesktopSnapshotAbi.self)
+            .pointee = try handle.switchSpaceAndRefresh(
+                snapshot: DesktopSnapshot(snapshotABI: snapshot.assumingMemoryBound(to: MwmDesktopSnapshotAbi.self).pointee),
+                targetSpaceID: targetSpaceID,
+                adjacentDirection: adjacentDirection
+            )
         writeStatus(outStatus, code: MWM_STATUS_OK)
         return MWM_STATUS_OK
     } catch let error as BackendError {

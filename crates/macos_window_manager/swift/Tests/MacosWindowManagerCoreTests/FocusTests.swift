@@ -351,6 +351,72 @@ final class FocusTests: XCTestCase {
         )
     }
 
+    func testSwitchSpaceAndRefreshReturnsSettledSnapshotAfterSwitch() throws {
+        let system = SpaceSwitchSequencingSystem(
+            spaceIDs: [1, 9],
+            initialActiveSpaceID: 1,
+            windowsBySpaceID: [1: [11], 9: [77]],
+            windowDescriptionsByID: [
+                11: .init(
+                    id: 11,
+                    pid: 1111,
+                    title: "source",
+                    level: 0,
+                    frame: .init(x: 0, y: 0, width: 100, height: 100)
+                ),
+                77: .init(
+                    id: 77,
+                    pid: 7777,
+                    title: "target",
+                    level: 0,
+                    frame: .init(x: 300, y: 0, width: 100, height: 100)
+                ),
+            ],
+            stableAppIDsByPID: [
+                1111: "com.example.source",
+                7777: "com.example.target",
+            ],
+            exactSwitchActiveLagPolls: 2,
+            exactSwitchOnscreenLagPolls: 2
+        )
+        let backend = Backend(system: system)
+        let snapshot = try backend.topologySnapshot()
+        let managedDisplaySpacesCallsBeforeSwitch = system.managedDisplaySpacesCallCount
+        let onscreenWindowOrderCallsBeforeSwitch = system.onscreenWindowOrderCallCount
+
+        let refreshed = try backend.switchSpaceAndRefresh(
+            snapshot: snapshot,
+            targetSpaceID: 9,
+            adjacentDirection: nil
+        )
+
+        XCTAssertEqual(system.calls, [.switchSpace(9)])
+        XCTAssertEqual(
+            Set(refreshed.spaces.filter(\.active).map(\.id)),
+            Set([9 as UInt64])
+        )
+        XCTAssertEqual(
+            refreshed.windows.first(where: { $0.id == 77 })?.orderIndex,
+            0,
+            "refreshed snapshot should expose the target space window as visible after settling"
+        )
+        XCTAssertNil(
+            refreshed.windows.first(where: { $0.id == 11 })?.orderIndex,
+            "refreshed snapshot should demote the source-space window to an inactive placeholder"
+        )
+        XCTAssertEqual(refreshed.focusedWindowID, 77)
+        XCTAssertGreaterThan(
+            system.managedDisplaySpacesCallCount,
+            managedDisplaySpacesCallsBeforeSwitch,
+            "switchSpaceAndRefresh should poll active space state before returning"
+        )
+        XCTAssertGreaterThan(
+            system.onscreenWindowOrderCallCount,
+            onscreenWindowOrderCallsBeforeSwitch,
+            "switchSpaceAndRefresh should poll onscreen windows before returning"
+        )
+    }
+
     func testFocusWindowInActiveSpaceWithKnownPidRemapsSamePidTarget() throws {
         let system = ActionRecordingSystem(
             managedDisplaySpaces: [

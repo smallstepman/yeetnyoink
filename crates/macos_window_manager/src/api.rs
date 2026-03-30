@@ -227,6 +227,15 @@ pub trait MacosWindowManagerBackend {
     ) -> Result<(), MacosNativeOperationError> {
         navigation::switch_space_in_snapshot(self, snapshot, space_id, adjacent_direction)
     }
+    fn switch_space_and_refresh(
+        &self,
+        snapshot: &NativeDesktopSnapshot,
+        space_id: u64,
+        adjacent_direction: Option<NativeDirection>,
+    ) -> Result<NativeDesktopSnapshot, MacosNativeOperationError> {
+        self.switch_space_in_snapshot(snapshot, space_id, adjacent_direction)?;
+        self.desktop_snapshot().map_err(MacosNativeOperationError::from)
+    }
     fn focus_same_space_target_in_snapshot(
         &self,
         snapshot: &NativeDesktopSnapshot,

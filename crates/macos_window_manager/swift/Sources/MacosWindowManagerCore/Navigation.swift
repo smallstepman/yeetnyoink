@@ -92,6 +92,19 @@ public extension Backend {
             targetWindowIDs: transitionWindowIDs.targetWindowIDs
         )
     }
+
+    func switchSpaceAndRefresh(
+        snapshot: DesktopSnapshot,
+        targetSpaceID: UInt64,
+        adjacentDirection: NativeDirection?
+    ) throws -> DesktopSnapshot {
+        try switchSpaceInSnapshot(
+            snapshot: snapshot,
+            targetSpaceID: targetSpaceID,
+            adjacentDirection: adjacentDirection
+        )
+        return try desktopSnapshot()
+    }
 }
 
 private extension Backend {

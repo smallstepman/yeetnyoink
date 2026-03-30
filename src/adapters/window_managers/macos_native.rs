@@ -885,11 +885,11 @@ where
                 .focus_same_space_target_in_snapshot(&snapshot, native_direction, window_id)
                 .map_err(anyhow::Error::new),
             FocusTarget::CrossSpace { target_space_id } => {
-                self.ctx
+                let switched_snapshot = self
+                    .ctx
                     .api
-                    .switch_space_in_snapshot(&snapshot, target_space_id, Some(native_direction))
+                    .switch_space_and_refresh(&snapshot, target_space_id, Some(native_direction))
                     .map_err(anyhow::Error::new)?;
-                let switched_snapshot = self.ctx.api.desktop_snapshot().map_err(map_probe_error)?;
                 let switched_topology = outer_topology_from_native_snapshot(&switched_snapshot)?;
                 let Some(target) = outer_best_window_in_space(
                     &switched_topology,
@@ -1042,6 +1042,7 @@ mod tests {
     enum NativeCall {
         DesktopSnapshot,
         SwitchSpaceInSnapshot(u64, Option<NativeDirection>),
+        SwitchSpaceAndRefresh(u64, Option<NativeDirection>),
         FocusSameSpaceTargetInSnapshot(NativeDirection, u64),
         FocusWindowById(u64),
         FocusWindowWithPid(u64, u32),
@@ -1230,6 +1231,26 @@ mod tests {
             Ok(())
         }
 
+        fn switch_space_and_refresh(
+            &self,
+            _snapshot: &NativeDesktopSnapshot,
+            space_id: u64,
+            adjacent_direction: Option<NativeDirection>,
+        ) -> Result<NativeDesktopSnapshot, MacosNativeOperationError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(NativeCall::SwitchSpaceAndRefresh(
+                    space_id,
+                    adjacent_direction,
+                ));
+            self.snapshots.lock().unwrap().pop_front().ok_or(
+                MacosNativeOperationError::CallFailed(
+                    "recording cross-space focus refreshed snapshot",
+                ),
+            )
+        }
+
         fn switch_space(&self, _space_id: u64) -> Result<(), MacosNativeOperationError> {
             panic!("outer focus routing should call switch_space_in_snapshot")
         }
@@ -1298,6 +1319,164 @@ mod tests {
 
         fn api_calls(&self) -> Vec<NativeCall> {
             self.calls.lock().unwrap().clone()
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    struct SwitchSpaceAndRefreshOnlyApi {
+        initial_snapshot: NativeDesktopSnapshot,
+        refreshed_snapshot: NativeDesktopSnapshot,
+        calls: Arc<Mutex<Vec<NativeCall>>>,
+        switched: Arc<Mutex<bool>>,
+    }
+
+    impl SwitchSpaceAndRefreshOnlyApi {
+        fn new(initial_snapshot: NativeDesktopSnapshot, refreshed_snapshot: NativeDesktopSnapshot) -> Self {
+            Self {
+                initial_snapshot,
+                refreshed_snapshot,
+                calls: Arc::new(Mutex::new(Vec::new())),
+                switched: Arc::new(Mutex::new(false)),
+            }
+        }
+
+        fn api_calls(&self) -> Vec<NativeCall> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    impl MacosWindowManagerBackend for SwitchSpaceAndRefreshOnlyApi {
+        fn has_symbol(&self, _symbol: &'static str) -> bool {
+            true
+        }
+
+        fn ax_is_trusted(&self) -> bool {
+            true
+        }
+
+        fn minimal_topology_ready(&self) -> bool {
+            true
+        }
+
+        fn validate_environment(&self) -> Result<(), MacosNativeConnectError> {
+            Ok(())
+        }
+
+        fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
+            let switched = *self.switched.lock().unwrap();
+            self.calls.lock().unwrap().push(NativeCall::DesktopSnapshot);
+            if switched {
+                panic!(
+                    "cross-space focus path must not fetch a second standalone desktop_snapshot after switching"
+                );
+            }
+            Ok(self.initial_snapshot.clone())
+        }
+
+        fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
+            panic!("switch-and-refresh api must not query managed_spaces")
+        }
+
+        fn active_space_ids(&self) -> Result<HashSet<u64>, MacosNativeProbeError> {
+            panic!("switch-and-refresh api must not query active_space_ids")
+        }
+
+        fn active_space_windows(
+            &self,
+            _space_id: u64,
+        ) -> Result<Vec<RawWindow>, MacosNativeProbeError> {
+            panic!("switch-and-refresh api must not query active_space_windows")
+        }
+
+        fn inactive_space_window_ids(
+            &self,
+        ) -> Result<HashMap<u64, Vec<u64>>, MacosNativeProbeError> {
+            panic!("switch-and-refresh api must not query inactive_space_window_ids")
+        }
+
+        fn switch_space_in_snapshot(
+            &self,
+            _snapshot: &NativeDesktopSnapshot,
+            space_id: u64,
+            adjacent_direction: Option<NativeDirection>,
+        ) -> Result<(), MacosNativeOperationError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(NativeCall::SwitchSpaceInSnapshot(
+                    space_id,
+                    adjacent_direction,
+                ));
+            *self.switched.lock().unwrap() = true;
+            Ok(())
+        }
+
+        fn switch_space_and_refresh(
+            &self,
+            _snapshot: &NativeDesktopSnapshot,
+            space_id: u64,
+            adjacent_direction: Option<NativeDirection>,
+        ) -> Result<NativeDesktopSnapshot, MacosNativeOperationError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(NativeCall::SwitchSpaceAndRefresh(
+                    space_id,
+                    adjacent_direction,
+                ));
+            *self.switched.lock().unwrap() = true;
+            Ok(self.refreshed_snapshot.clone())
+        }
+
+        fn switch_space(&self, _space_id: u64) -> Result<(), MacosNativeOperationError> {
+            panic!("switch-and-refresh api must not call switch_space directly")
+        }
+
+        fn focus_window(&self, _window_id: u64) -> Result<(), MacosNativeOperationError> {
+            panic!("switch-and-refresh api should focus by known pid in this test")
+        }
+
+        fn focus_window_with_known_pid(
+            &self,
+            window_id: u64,
+            pid: u32,
+        ) -> Result<(), MacosNativeOperationError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(NativeCall::FocusWindowWithPid(window_id, pid));
+            Ok(())
+        }
+
+        fn focus_window_in_active_space_with_known_pid(
+            &self,
+            window_id: u64,
+            pid: u32,
+            _target_hint: Option<ActiveSpaceFocusTargetHint>,
+        ) -> Result<(), MacosNativeOperationError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(NativeCall::FocusWindowWithPid(window_id, pid));
+            Ok(())
+        }
+
+        fn move_window_to_space(
+            &self,
+            _window_id: u64,
+            _space_id: u64,
+        ) -> Result<(), MacosNativeOperationError> {
+            Ok(())
+        }
+
+        fn swap_window_frames(
+            &self,
+            _source_window_id: u64,
+            _source_frame: NativeBounds,
+            _target_window_id: u64,
+            _target_frame: NativeBounds,
+        ) -> Result<(), MacosNativeOperationError> {
+            Ok(())
         }
     }
 
@@ -4127,8 +4306,92 @@ command = false
             recorded.api_calls(),
             vec![
                 NativeCall::DesktopSnapshot,
-                NativeCall::SwitchSpaceInSnapshot(1, Some(NativeDirection::West)),
+                NativeCall::SwitchSpaceAndRefresh(1, Some(NativeDirection::West)),
+            ]
+        );
+    }
+
+    #[test]
+    fn focus_direction_cross_space_uses_switch_space_and_refresh() {
+        let _config = install_macos_native_focus_config("radial_center");
+        let initial_snapshot = NativeDesktopSnapshot {
+            spaces: vec![
+                NativeSpaceSnapshot {
+                    id: 1,
+                    display_index: 0,
+                    active: false,
+                    kind: SpaceKind::Desktop,
+                },
+                NativeSpaceSnapshot {
+                    id: 2,
+                    display_index: 0,
+                    active: true,
+                    kind: SpaceKind::Desktop,
+                },
+            ],
+            active_space_ids: HashSet::from([2]),
+            windows: vec![NativeWindowSnapshot {
+                id: 40,
+                pid: Some(924),
+                app_id: Some("com.apple.controlcenter".to_string()),
+                title: Some("overlay-focused".to_string()),
+                bounds: Some(NativeBounds {
+                    x: 200,
+                    y: 0,
+                    width: 80,
+                    height: 80,
+                }),
+                level: 25,
+                space_id: 2,
+                order_index: Some(0),
+            }],
+            focused_window_id: Some(40),
+        };
+        let refreshed_snapshot = NativeDesktopSnapshot {
+            spaces: vec![
+                NativeSpaceSnapshot {
+                    id: 1,
+                    display_index: 0,
+                    active: true,
+                    kind: SpaceKind::Desktop,
+                },
+                NativeSpaceSnapshot {
+                    id: 2,
+                    display_index: 0,
+                    active: false,
+                    kind: SpaceKind::Desktop,
+                },
+            ],
+            active_space_ids: HashSet::from([1]),
+            windows: vec![NativeWindowSnapshot {
+                id: 200,
+                pid: Some(2200),
+                app_id: Some("com.example.target".to_string()),
+                title: Some("target".to_string()),
+                bounds: Some(NativeBounds {
+                    x: 100,
+                    y: 0,
+                    width: 160,
+                    height: 160,
+                }),
+                level: 0,
+                space_id: 1,
+                order_index: Some(0),
+            }],
+            focused_window_id: None,
+        };
+        let api = SwitchSpaceAndRefreshOnlyApi::new(initial_snapshot, refreshed_snapshot);
+        let recorded = api.clone();
+        let mut adapter = MacosNativeAdapter::connect_with_api(api).unwrap();
+
+        WindowManagerSession::focus_direction(&mut adapter, Direction::West).unwrap();
+
+        assert_eq!(
+            recorded.api_calls(),
+            vec![
                 NativeCall::DesktopSnapshot,
+                NativeCall::SwitchSpaceAndRefresh(1, Some(NativeDirection::West)),
+                NativeCall::FocusWindowWithPid(200, 2200),
             ]
         );
     }
@@ -4230,8 +4493,7 @@ command = false
             recorded.api_calls(),
             vec![
                 NativeCall::DesktopSnapshot,
-                NativeCall::SwitchSpaceInSnapshot(1, Some(NativeDirection::West)),
-                NativeCall::DesktopSnapshot,
+                NativeCall::SwitchSpaceAndRefresh(1, Some(NativeDirection::West)),
                 NativeCall::FocusWindowWithPid(200, 2200),
             ]
         );
@@ -4349,8 +4611,7 @@ command = false
             recorded.api_calls(),
             vec![
                 NativeCall::DesktopSnapshot,
-                NativeCall::SwitchSpaceInSnapshot(1, Some(NativeDirection::West)),
-                NativeCall::DesktopSnapshot,
+                NativeCall::SwitchSpaceAndRefresh(1, Some(NativeDirection::West)),
                 NativeCall::FocusWindowWithPid(24, 1728),
             ]
         );

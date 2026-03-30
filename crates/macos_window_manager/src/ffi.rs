@@ -46,6 +46,7 @@ struct TestState {
     topology_snapshot_response: Option<TestDesktopSnapshotResponse>,
     fast_focus_context_response: Option<TestFastFocusContextResponse>,
     switch_space_in_snapshot_response: Option<TestOperationResponse>,
+    switch_space_and_refresh_response: Option<TestDesktopSnapshotResponse>,
     desktop_snapshot_release_calls: usize,
 }
 
@@ -83,6 +84,13 @@ pub(crate) mod test_support {
             .lock()
             .unwrap()
             .switch_space_in_snapshot_response = Some(response);
+    }
+
+    pub(crate) fn set_switch_space_and_refresh_response(response: TestDesktopSnapshotResponse) {
+        test_state()
+            .lock()
+            .unwrap()
+            .switch_space_and_refresh_response = Some(response);
     }
 
     pub(crate) fn desktop_snapshot_release_calls() -> usize {
@@ -126,6 +134,14 @@ unsafe extern "C" {
         snapshot: *const c_void,
         space_id: u64,
         adjacent_direction: i32,
+        out_status: *mut c_void,
+    ) -> i32;
+    fn mwm_backend_switch_space_and_refresh(
+        backend: *mut c_void,
+        snapshot: *const c_void,
+        space_id: u64,
+        adjacent_direction: i32,
+        out_snapshot: *mut c_void,
         out_status: *mut c_void,
     ) -> i32;
     fn mwm_backend_focus_window(
@@ -341,6 +357,49 @@ pub(crate) unsafe fn backend_switch_space_in_snapshot(
             snapshot.cast(),
             space_id,
             adjacent_direction,
+            out_status.cast(),
+        )
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) unsafe fn backend_switch_space_and_refresh(
+    backend: *mut c_void,
+    snapshot: *const MwmDesktopSnapshotAbi,
+    space_id: u64,
+    adjacent_direction: i32,
+    out_snapshot: *mut MwmDesktopSnapshotAbi,
+    out_status: *mut MwmStatus,
+) -> i32 {
+    #[cfg(test)]
+    if let Some(response) = test_state()
+        .lock()
+        .unwrap()
+        .switch_space_and_refresh_response
+        .take()
+    {
+        if !out_snapshot.is_null() {
+            unsafe {
+                *out_snapshot = response.snapshot;
+            }
+        }
+
+        if !out_status.is_null() {
+            unsafe {
+                *out_status = response.status;
+            }
+        }
+
+        return response.code;
+    }
+
+    unsafe {
+        mwm_backend_switch_space_and_refresh(
+            backend,
+            snapshot.cast(),
+            space_id,
+            adjacent_direction,
+            out_snapshot.cast(),
             out_status.cast(),
         )
     }

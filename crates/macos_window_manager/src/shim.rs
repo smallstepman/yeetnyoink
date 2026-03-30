@@ -188,6 +188,38 @@ impl SwiftBackendShim {
         status_result(&mut status)
     }
 
+    pub(crate) fn switch_space_and_refresh(
+        &self,
+        snapshot: &NativeDesktopSnapshot,
+        space_id: u64,
+        adjacent_direction: Option<NativeDirection>,
+    ) -> Result<NativeDesktopSnapshot, MacosNativeOperationError> {
+        let snapshot = OwnedDesktopSnapshotInput::from_native(snapshot);
+        let mut refreshed = MwmDesktopSnapshotAbi::empty();
+        let mut status = MwmStatus::ok();
+        let code = unsafe {
+            ffi::backend_switch_space_and_refresh(
+                self.raw.as_ptr(),
+                snapshot.as_ref(),
+                space_id,
+                direction_to_ffi(adjacent_direction),
+                &mut refreshed,
+                &mut status,
+            )
+        };
+        status.code = code;
+
+        if code != MWM_STATUS_OK {
+            return Err(operation_error(&mut status));
+        }
+
+        let refreshed = OwnedDesktopSnapshot::new(refreshed)
+            .validate()
+            .map_err(|_| MacosNativeOperationError::CallFailed("swift macOS backend transport"))?;
+        unsafe { ffi::status_release(&mut status) };
+        refreshed.into_native_snapshot().map_err(MacosNativeOperationError::from)
+    }
+
     pub(crate) fn focus_window(&self, window_id: u64) -> Result<(), MacosNativeOperationError> {
         let mut status = MwmStatus::ok();
         let code = unsafe { ffi::backend_focus_window(self.raw.as_ptr(), window_id, &mut status) };
@@ -633,6 +665,36 @@ pub(crate) fn test_switch_space_error_from_ffi() -> MacosNativeOperationError {
 #[test]
 fn switch_space_in_snapshot_maps_swift_operation_error() {
     let err = test_switch_space_error_from_ffi();
+    assert!(matches!(
+        err,
+        crate::MacosNativeOperationError::MissingWindow(_)
+    ));
+}
+
+#[cfg(test)]
+#[test]
+fn switch_space_and_refresh_maps_swift_operation_error() {
+    use std::mem::ManuallyDrop;
+
+    let _guard = ffi_test_guard();
+    ffi::test_support::reset();
+    ffi::test_support::set_switch_space_and_refresh_response(ffi::TestDesktopSnapshotResponse {
+        code: MWM_STATUS_OPERATION_MISSING_WINDOW,
+        snapshot: MwmDesktopSnapshotAbi::empty(),
+        status: MwmStatus {
+            code: MWM_STATUS_OPERATION_MISSING_WINDOW,
+            message_ptr: CString::new("77").unwrap().into_raw(),
+        },
+    });
+
+    let shim = ManuallyDrop::new(SwiftBackendShim {
+        raw: NonNull::<c_void>::dangling(),
+    });
+    let snapshot = test_snapshot_from_ffi();
+    let err = shim
+        .switch_space_and_refresh(&snapshot, 102, Some(NativeDirection::West))
+        .unwrap_err();
+
     assert!(matches!(
         err,
         crate::MacosNativeOperationError::MissingWindow(_)

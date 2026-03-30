@@ -315,6 +315,19 @@ impl MacosWindowManagerBackend for SwiftMacosBackend {
         )
     }
 
+    fn switch_space_and_refresh(
+        &self,
+        snapshot: &NativeDesktopSnapshot,
+        space_id: u64,
+        adjacent_direction: Option<NativeDirection>,
+    ) -> Result<NativeDesktopSnapshot, MacosNativeOperationError> {
+        self.swift_backend_for_action()?.switch_space_and_refresh(
+            snapshot,
+            space_id,
+            adjacent_direction,
+        )
+    }
+
     fn focus_same_space_target_in_snapshot(
         &self,
         snapshot: &NativeDesktopSnapshot,
