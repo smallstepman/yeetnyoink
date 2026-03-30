@@ -1,24 +1,42 @@
 #![allow(dead_code)]
 
-use std::{ffi::c_void, ptr::NonNull};
+use std::{
+    ffi::{c_void, CString},
+    ptr::NonNull,
+};
 
 use crate::{
-    error::{MacosNativeBridgeError, MacosNativeConnectError, MacosNativeProbeError},
+    error::{
+        MacosNativeBridgeError, MacosNativeConnectError, MacosNativeOperationError,
+        MacosNativeProbeError,
+    },
     ffi,
     transport::{
-        MwmDesktopSnapshotAbi, MwmStatus, MWM_STATUS_CONNECT_MISSING_ACCESSIBILITY_PERMISSION,
-        MWM_STATUS_CONNECT_MISSING_REQUIRED_SYMBOL,
-        MWM_STATUS_CONNECT_MISSING_TOPOLOGY_PRECONDITION, MWM_STATUS_OK,
-        MWM_STATUS_PROBE_MISSING_TOPOLOGY,
+        MwmDesktopSnapshotAbi, MwmRectAbi, MwmSpaceAbi, MwmStatus, MwmWindowAbi,
+        MWM_STATUS_CONNECT_MISSING_ACCESSIBILITY_PERMISSION, MWM_STATUS_CONNECT_MISSING_REQUIRED_SYMBOL,
+        MWM_STATUS_CONNECT_MISSING_TOPOLOGY_PRECONDITION, MWM_STATUS_OK, MWM_STATUS_PROBE_MISSING_TOPOLOGY,
     },
-    NativeDesktopSnapshot,
+    NativeBounds, NativeDesktopSnapshot, NativeDirection, SpaceKind,
 };
+
+const MWM_STATUS_OPERATION_MISSING_SPACE: i32 = 30;
+const MWM_STATUS_OPERATION_MISSING_WINDOW: i32 = 31;
+const MWM_STATUS_OPERATION_MISSING_WINDOW_FRAME: i32 = 32;
+const MWM_STATUS_OPERATION_MISSING_WINDOW_PID: i32 = 33;
+const MWM_STATUS_OPERATION_UNSUPPORTED_STAGE_MANAGER_SPACE: i32 = 34;
+const MWM_STATUS_OPERATION_NO_DIRECTIONAL_FOCUS_TARGET: i32 = 35;
+const MWM_STATUS_OPERATION_NO_DIRECTIONAL_MOVE_TARGET: i32 = 36;
+const MWM_STATUS_OPERATION_CALL_FAILED: i32 = 37;
 
 pub(crate) struct SwiftBackendShim {
     raw: NonNull<c_void>,
 }
 
 pub(crate) struct OwnedDesktopSnapshot {
+    raw: MwmDesktopSnapshotAbi,
+}
+
+struct OwnedDesktopSnapshotInput {
     raw: MwmDesktopSnapshotAbi,
 }
 
@@ -93,6 +111,163 @@ impl SwiftBackendShim {
             .into_native_snapshot()
     }
 
+    pub(crate) fn switch_space(&self, space_id: u64) -> Result<(), MacosNativeOperationError> {
+        let mut status = MwmStatus::ok();
+        let code = unsafe { ffi::backend_switch_space(self.raw.as_ptr(), space_id, &mut status) };
+        status.code = code;
+        status_result(&mut status)
+    }
+
+    pub(crate) fn switch_adjacent_space(
+        &self,
+        direction: NativeDirection,
+        space_id: u64,
+    ) -> Result<(), MacosNativeOperationError> {
+        let mut status = MwmStatus::ok();
+        let code = unsafe {
+            ffi::backend_switch_adjacent_space(
+                self.raw.as_ptr(),
+                direction_to_ffi(Some(direction)),
+                space_id,
+                &mut status,
+            )
+        };
+        status.code = code;
+        status_result(&mut status)
+    }
+
+    pub(crate) fn switch_space_in_snapshot(
+        &self,
+        snapshot: &NativeDesktopSnapshot,
+        space_id: u64,
+        adjacent_direction: Option<NativeDirection>,
+    ) -> Result<(), MacosNativeOperationError> {
+        let snapshot = OwnedDesktopSnapshotInput::from_native(snapshot);
+        let mut status = MwmStatus::ok();
+        let code = unsafe {
+            ffi::backend_switch_space_in_snapshot(
+                self.raw.as_ptr(),
+                snapshot.as_ref(),
+                space_id,
+                direction_to_ffi(adjacent_direction),
+                &mut status,
+            )
+        };
+        status.code = code;
+        status_result(&mut status)
+    }
+
+    pub(crate) fn focus_window(&self, window_id: u64) -> Result<(), MacosNativeOperationError> {
+        let mut status = MwmStatus::ok();
+        let code = unsafe { ffi::backend_focus_window(self.raw.as_ptr(), window_id, &mut status) };
+        status.code = code;
+        status_result(&mut status)
+    }
+
+    pub(crate) fn focus_window_with_known_pid(
+        &self,
+        window_id: u64,
+        pid: u32,
+    ) -> Result<(), MacosNativeOperationError> {
+        let mut status = MwmStatus::ok();
+        let code = unsafe {
+            ffi::backend_focus_window_with_known_pid(self.raw.as_ptr(), window_id, pid, &mut status)
+        };
+        status.code = code;
+        status_result(&mut status)
+    }
+
+    pub(crate) fn focus_window_in_active_space_with_known_pid(
+        &self,
+        window_id: u64,
+        pid: u32,
+        target_hint: Option<(u64, NativeBounds)>,
+    ) -> Result<(), MacosNativeOperationError> {
+        let mut status = MwmStatus::ok();
+        let (has_target_hint, target_hint_space_id, target_hint_x, target_hint_y, target_hint_width, target_hint_height) =
+            target_hint.map_or((0, 0, 0, 0, 0, 0), |(space_id, bounds)| {
+                (1, space_id, bounds.x, bounds.y, bounds.width, bounds.height)
+            });
+        let code = unsafe {
+            ffi::backend_focus_window_in_active_space_with_known_pid(
+                self.raw.as_ptr(),
+                window_id,
+                pid,
+                has_target_hint,
+                target_hint_space_id,
+                target_hint_x,
+                target_hint_y,
+                target_hint_width,
+                target_hint_height,
+                &mut status,
+            )
+        };
+        status.code = code;
+        status_result(&mut status)
+    }
+
+    pub(crate) fn focus_same_space_target_in_snapshot(
+        &self,
+        snapshot: &NativeDesktopSnapshot,
+        direction: NativeDirection,
+        target_window_id: u64,
+    ) -> Result<(), MacosNativeOperationError> {
+        let snapshot = OwnedDesktopSnapshotInput::from_native(snapshot);
+        let mut status = MwmStatus::ok();
+        let code = unsafe {
+            ffi::backend_focus_same_space_target_in_snapshot(
+                self.raw.as_ptr(),
+                snapshot.as_ref(),
+                direction_to_ffi(Some(direction)),
+                target_window_id,
+                &mut status,
+            )
+        };
+        status.code = code;
+        status_result(&mut status)
+    }
+
+    pub(crate) fn move_window_to_space(
+        &self,
+        window_id: u64,
+        space_id: u64,
+    ) -> Result<(), MacosNativeOperationError> {
+        let mut status = MwmStatus::ok();
+        let code = unsafe {
+            ffi::backend_move_window_to_space(self.raw.as_ptr(), window_id, space_id, &mut status)
+        };
+        status.code = code;
+        status_result(&mut status)
+    }
+
+    pub(crate) fn swap_window_frames(
+        &self,
+        source_window_id: u64,
+        source_frame: NativeBounds,
+        target_window_id: u64,
+        target_frame: NativeBounds,
+    ) -> Result<(), MacosNativeOperationError> {
+        let mut status = MwmStatus::ok();
+        let code = unsafe {
+            ffi::backend_swap_window_frames(
+                self.raw.as_ptr(),
+                source_window_id,
+                source_frame.x,
+                source_frame.y,
+                source_frame.width,
+                source_frame.height,
+                target_window_id,
+                target_frame.x,
+                target_frame.y,
+                target_frame.width,
+                target_frame.height,
+                &mut status,
+            )
+        };
+        status.code = code;
+        status_result(&mut status)
+    }
+
     pub(crate) fn as_ptr(&self) -> *mut c_void {
         self.raw.as_ptr()
     }
@@ -125,6 +300,108 @@ impl OwnedDesktopSnapshot {
 impl Drop for OwnedDesktopSnapshot {
     fn drop(&mut self) {
         unsafe { ffi::desktop_snapshot_release(&mut self.raw) };
+    }
+}
+
+impl OwnedDesktopSnapshotInput {
+    fn from_native(snapshot: &NativeDesktopSnapshot) -> Self {
+        let spaces = snapshot
+            .spaces
+            .iter()
+            .map(|space| MwmSpaceAbi {
+                id: space.id,
+                display_index: space.display_index,
+                active: u8::from(space.active),
+                kind: space_kind_to_ffi(space.kind),
+            })
+            .collect::<Vec<_>>();
+        let windows = snapshot
+            .windows
+            .iter()
+            .map(|window| MwmWindowAbi {
+                id: window.id,
+                pid: window.pid.unwrap_or_default(),
+                has_pid: u8::from(window.pid.is_some()),
+                app_id_ptr: window
+                    .app_id
+                    .as_ref()
+                    .map(|value| CString::new(value.as_str()).unwrap().into_raw())
+                    .unwrap_or(std::ptr::null_mut()),
+                title_ptr: window
+                    .title
+                    .as_ref()
+                    .map(|value| CString::new(value.as_str()).unwrap().into_raw())
+                    .unwrap_or(std::ptr::null_mut()),
+                frame: window.bounds.map_or_else(MwmRectAbi::default, |bounds| MwmRectAbi {
+                    x: bounds.x,
+                    y: bounds.y,
+                    width: bounds.width,
+                    height: bounds.height,
+                }),
+                has_frame: u8::from(window.bounds.is_some()),
+                level: window.level,
+                space_id: window.space_id,
+                order_index: window.order_index.unwrap_or_default(),
+                has_order_index: u8::from(window.order_index.is_some()),
+            })
+            .collect::<Vec<_>>();
+
+        let spaces_len = spaces.len();
+        let windows_len = windows.len();
+        let spaces_ptr = if spaces.is_empty() {
+            std::ptr::null_mut()
+        } else {
+            Box::into_raw(spaces.into_boxed_slice()) as *mut MwmSpaceAbi
+        };
+        let windows_ptr = if windows.is_empty() {
+            std::ptr::null_mut()
+        } else {
+            Box::into_raw(windows.into_boxed_slice()) as *mut MwmWindowAbi
+        };
+
+        Self {
+            raw: MwmDesktopSnapshotAbi {
+                spaces_ptr,
+                spaces_len,
+                windows_ptr,
+                windows_len,
+                focused_window_id: snapshot.focused_window_id.unwrap_or_default(),
+            },
+        }
+    }
+
+    fn as_ref(&self) -> *const MwmDesktopSnapshotAbi {
+        &self.raw
+    }
+}
+
+impl Drop for OwnedDesktopSnapshotInput {
+    fn drop(&mut self) {
+        unsafe {
+            if !self.raw.windows_ptr.is_null() {
+                let windows = Vec::from_raw_parts(
+                    self.raw.windows_ptr,
+                    self.raw.windows_len,
+                    self.raw.windows_len,
+                );
+                for window in windows {
+                    if !window.app_id_ptr.is_null() {
+                        drop(CString::from_raw(window.app_id_ptr));
+                    }
+                    if !window.title_ptr.is_null() {
+                        drop(CString::from_raw(window.title_ptr));
+                    }
+                }
+            }
+            if !self.raw.spaces_ptr.is_null() {
+                drop(Vec::from_raw_parts(
+                    self.raw.spaces_ptr,
+                    self.raw.spaces_len,
+                    self.raw.spaces_len,
+                ));
+            }
+        }
+        self.raw = MwmDesktopSnapshotAbi::empty();
     }
 }
 
@@ -193,12 +470,89 @@ fn static_message(message: Option<String>) -> &'static str {
     }
 }
 
+fn status_result(status: &mut MwmStatus) -> Result<(), MacosNativeOperationError> {
+    if status.code == MWM_STATUS_OK {
+        unsafe { ffi::status_release(status) };
+        return Ok(());
+    }
+
+    Err(operation_error(status))
+}
+
+fn operation_error(status: &mut MwmStatus) -> MacosNativeOperationError {
+    let code = status.code;
+    let message = unsafe { status.message() };
+    unsafe { ffi::status_release(status) };
+
+    match code {
+        MWM_STATUS_OPERATION_MISSING_SPACE
+        | MWM_STATUS_OPERATION_MISSING_WINDOW
+        | MWM_STATUS_OPERATION_MISSING_WINDOW_FRAME
+        | MWM_STATUS_OPERATION_MISSING_WINDOW_PID
+        | MWM_STATUS_OPERATION_UNSUPPORTED_STAGE_MANAGER_SPACE
+        | MWM_STATUS_OPERATION_NO_DIRECTIONAL_FOCUS_TARGET
+        | MWM_STATUS_OPERATION_NO_DIRECTIONAL_MOVE_TARGET
+        | MWM_STATUS_OPERATION_CALL_FAILED => {
+            MacosNativeOperationError::from_swift_status(code, message.as_deref())
+        }
+        _ => MacosNativeOperationError::CallFailed("swift macOS backend"),
+    }
+}
+
+fn direction_to_ffi(direction: Option<NativeDirection>) -> i32 {
+    match direction {
+        Some(NativeDirection::West) => 0,
+        Some(NativeDirection::East) => 1,
+        Some(NativeDirection::North) => 2,
+        Some(NativeDirection::South) => 3,
+        None => -1,
+    }
+}
+
+fn space_kind_to_ffi(kind: SpaceKind) -> i32 {
+    match kind {
+        SpaceKind::Desktop => 0,
+        SpaceKind::Fullscreen => 1,
+        SpaceKind::SplitView => 2,
+        SpaceKind::System => 3,
+        SpaceKind::StageManagerOpaque => 4,
+    }
+}
+
 #[cfg(test)]
 pub(crate) fn test_snapshot_from_ffi() -> crate::NativeDesktopSnapshot {
     let mut abi = sample_snapshot_abi();
     let snapshot = unsafe { abi.to_native_snapshot() };
     release_test_snapshot(&mut abi);
     snapshot
+}
+
+#[cfg(test)]
+pub(crate) fn test_switch_space_error_from_ffi() -> MacosNativeOperationError {
+    use std::mem::ManuallyDrop;
+
+    ffi::test_support::reset();
+    ffi::test_support::set_switch_space_in_snapshot_response(ffi::TestOperationResponse {
+        code: MWM_STATUS_OPERATION_MISSING_WINDOW,
+        status: MwmStatus {
+            code: MWM_STATUS_OPERATION_MISSING_WINDOW,
+            message_ptr: CString::new("77").unwrap().into_raw(),
+        },
+    });
+
+    let shim = ManuallyDrop::new(SwiftBackendShim {
+        raw: NonNull::<c_void>::dangling(),
+    });
+    let snapshot = test_snapshot_from_ffi();
+    shim.switch_space_in_snapshot(&snapshot, 102, Some(NativeDirection::West))
+        .unwrap_err()
+}
+
+#[cfg(test)]
+#[test]
+fn switch_space_in_snapshot_maps_swift_operation_error() {
+    let err = test_switch_space_error_from_ffi();
+    assert!(matches!(err, crate::MacosNativeOperationError::MissingWindow(_)));
 }
 
 #[cfg(test)]

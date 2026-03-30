@@ -719,5 +719,12 @@ fn snapshot_wrapper_converts_ffi_snapshot() {
 }
 
 #[cfg(test)]
+#[test]
+fn switch_space_in_snapshot_maps_swift_operation_error() {
+    let err = shim::test_switch_space_error_from_ffi();
+    assert!(matches!(err, MacosNativeOperationError::MissingWindow(_)));
+}
+
+#[cfg(test)]
 #[allow(dead_code)]
 mod tests;

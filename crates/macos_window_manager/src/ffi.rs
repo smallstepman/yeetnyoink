@@ -19,10 +19,21 @@ pub(crate) struct TestDesktopSnapshotResponse {
 unsafe impl Send for TestDesktopSnapshotResponse {}
 
 #[cfg(test)]
+#[derive(Debug, Clone)]
+pub(crate) struct TestOperationResponse {
+    pub code: i32,
+    pub status: MwmStatus,
+}
+
+#[cfg(test)]
+unsafe impl Send for TestOperationResponse {}
+
+#[cfg(test)]
 #[derive(Default)]
 struct TestState {
     desktop_snapshot_response: Option<TestDesktopSnapshotResponse>,
     topology_snapshot_response: Option<TestDesktopSnapshotResponse>,
+    switch_space_in_snapshot_response: Option<TestOperationResponse>,
     desktop_snapshot_release_calls: usize,
 }
 
@@ -34,7 +45,7 @@ fn test_state() -> &'static Mutex<TestState> {
 
 #[cfg(test)]
 pub(crate) mod test_support {
-    use super::{test_state, TestDesktopSnapshotResponse};
+    use super::{test_state, TestDesktopSnapshotResponse, TestOperationResponse};
 
     pub(crate) fn reset() {
         *test_state().lock().unwrap() = Default::default();
@@ -46,6 +57,10 @@ pub(crate) mod test_support {
 
     pub(crate) fn set_topology_snapshot_response(response: TestDesktopSnapshotResponse) {
         test_state().lock().unwrap().topology_snapshot_response = Some(response);
+    }
+
+    pub(crate) fn set_switch_space_in_snapshot_response(response: TestOperationResponse) {
+        test_state().lock().unwrap().switch_space_in_snapshot_response = Some(response);
     }
 
     pub(crate) fn desktop_snapshot_release_calls() -> usize {
@@ -66,6 +81,74 @@ unsafe extern "C" {
     fn mwm_backend_topology_snapshot(
         backend: *mut c_void,
         out_snapshot: *mut c_void,
+        out_status: *mut c_void,
+    ) -> i32;
+    fn mwm_backend_switch_space(
+        backend: *mut c_void,
+        space_id: u64,
+        out_status: *mut c_void,
+    ) -> i32;
+    fn mwm_backend_switch_adjacent_space(
+        backend: *mut c_void,
+        direction: i32,
+        space_id: u64,
+        out_status: *mut c_void,
+    ) -> i32;
+    fn mwm_backend_switch_space_in_snapshot(
+        backend: *mut c_void,
+        snapshot: *const c_void,
+        space_id: u64,
+        adjacent_direction: i32,
+        out_status: *mut c_void,
+    ) -> i32;
+    fn mwm_backend_focus_window(
+        backend: *mut c_void,
+        window_id: u64,
+        out_status: *mut c_void,
+    ) -> i32;
+    fn mwm_backend_focus_window_with_known_pid(
+        backend: *mut c_void,
+        window_id: u64,
+        pid: u32,
+        out_status: *mut c_void,
+    ) -> i32;
+    fn mwm_backend_focus_window_in_active_space_with_known_pid(
+        backend: *mut c_void,
+        window_id: u64,
+        pid: u32,
+        has_target_hint: u8,
+        target_hint_space_id: u64,
+        target_hint_x: i32,
+        target_hint_y: i32,
+        target_hint_width: i32,
+        target_hint_height: i32,
+        out_status: *mut c_void,
+    ) -> i32;
+    fn mwm_backend_focus_same_space_target_in_snapshot(
+        backend: *mut c_void,
+        snapshot: *const c_void,
+        direction: i32,
+        target_window_id: u64,
+        out_status: *mut c_void,
+    ) -> i32;
+    fn mwm_backend_move_window_to_space(
+        backend: *mut c_void,
+        window_id: u64,
+        space_id: u64,
+        out_status: *mut c_void,
+    ) -> i32;
+    fn mwm_backend_swap_window_frames(
+        backend: *mut c_void,
+        source_window_id: u64,
+        source_x: i32,
+        source_y: i32,
+        source_width: i32,
+        source_height: i32,
+        target_window_id: u64,
+        target_x: i32,
+        target_y: i32,
+        target_width: i32,
+        target_height: i32,
         out_status: *mut c_void,
     ) -> i32;
     fn mwm_status_release(status: *mut c_void);
@@ -269,6 +352,315 @@ pub(crate) unsafe fn backend_topology_snapshot(
         }
     }
 
+    crate::transport::MWM_STATUS_UNAVAILABLE
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) unsafe fn backend_switch_space(
+    backend: *mut c_void,
+    space_id: u64,
+    out_status: *mut MwmStatus,
+) -> i32 {
+    unsafe { mwm_backend_switch_space(backend, space_id, out_status.cast()) }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) unsafe fn backend_switch_space(
+    _backend: *mut c_void,
+    _space_id: u64,
+    out_status: *mut MwmStatus,
+) -> i32 {
+    if !out_status.is_null() {
+        unsafe { *out_status = MwmStatus::unavailable() };
+    }
+    crate::transport::MWM_STATUS_UNAVAILABLE
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) unsafe fn backend_switch_adjacent_space(
+    backend: *mut c_void,
+    direction: i32,
+    space_id: u64,
+    out_status: *mut MwmStatus,
+) -> i32 {
+    unsafe { mwm_backend_switch_adjacent_space(backend, direction, space_id, out_status.cast()) }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) unsafe fn backend_switch_adjacent_space(
+    _backend: *mut c_void,
+    _direction: i32,
+    _space_id: u64,
+    out_status: *mut MwmStatus,
+) -> i32 {
+    if !out_status.is_null() {
+        unsafe { *out_status = MwmStatus::unavailable() };
+    }
+    crate::transport::MWM_STATUS_UNAVAILABLE
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) unsafe fn backend_switch_space_in_snapshot(
+    backend: *mut c_void,
+    snapshot: *const MwmDesktopSnapshotAbi,
+    space_id: u64,
+    adjacent_direction: i32,
+    out_status: *mut MwmStatus,
+) -> i32 {
+    #[cfg(test)]
+    if let Some(response) = test_state()
+        .lock()
+        .unwrap()
+        .switch_space_in_snapshot_response
+        .take()
+    {
+        if !out_status.is_null() {
+            unsafe { *out_status = response.status };
+        }
+        return response.code;
+    }
+
+    unsafe {
+        mwm_backend_switch_space_in_snapshot(
+            backend,
+            snapshot.cast(),
+            space_id,
+            adjacent_direction,
+            out_status.cast(),
+        )
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) unsafe fn backend_switch_space_in_snapshot(
+    _backend: *mut c_void,
+    _snapshot: *const MwmDesktopSnapshotAbi,
+    _space_id: u64,
+    _adjacent_direction: i32,
+    out_status: *mut MwmStatus,
+) -> i32 {
+    #[cfg(test)]
+    if let Some(response) = test_state()
+        .lock()
+        .unwrap()
+        .switch_space_in_snapshot_response
+        .take()
+    {
+        if !out_status.is_null() {
+            unsafe { *out_status = response.status };
+        }
+        return response.code;
+    }
+
+    if !out_status.is_null() {
+        unsafe { *out_status = MwmStatus::unavailable() };
+    }
+    crate::transport::MWM_STATUS_UNAVAILABLE
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) unsafe fn backend_focus_window(
+    backend: *mut c_void,
+    window_id: u64,
+    out_status: *mut MwmStatus,
+) -> i32 {
+    unsafe { mwm_backend_focus_window(backend, window_id, out_status.cast()) }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) unsafe fn backend_focus_window(
+    _backend: *mut c_void,
+    _window_id: u64,
+    out_status: *mut MwmStatus,
+) -> i32 {
+    if !out_status.is_null() {
+        unsafe { *out_status = MwmStatus::unavailable() };
+    }
+    crate::transport::MWM_STATUS_UNAVAILABLE
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) unsafe fn backend_focus_window_with_known_pid(
+    backend: *mut c_void,
+    window_id: u64,
+    pid: u32,
+    out_status: *mut MwmStatus,
+) -> i32 {
+    unsafe { mwm_backend_focus_window_with_known_pid(backend, window_id, pid, out_status.cast()) }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) unsafe fn backend_focus_window_with_known_pid(
+    _backend: *mut c_void,
+    _window_id: u64,
+    _pid: u32,
+    out_status: *mut MwmStatus,
+) -> i32 {
+    if !out_status.is_null() {
+        unsafe { *out_status = MwmStatus::unavailable() };
+    }
+    crate::transport::MWM_STATUS_UNAVAILABLE
+}
+
+#[cfg(target_os = "macos")]
+#[allow(clippy::too_many_arguments)]
+pub(crate) unsafe fn backend_focus_window_in_active_space_with_known_pid(
+    backend: *mut c_void,
+    window_id: u64,
+    pid: u32,
+    has_target_hint: u8,
+    target_hint_space_id: u64,
+    target_hint_x: i32,
+    target_hint_y: i32,
+    target_hint_width: i32,
+    target_hint_height: i32,
+    out_status: *mut MwmStatus,
+) -> i32 {
+    unsafe {
+        mwm_backend_focus_window_in_active_space_with_known_pid(
+            backend,
+            window_id,
+            pid,
+            has_target_hint,
+            target_hint_space_id,
+            target_hint_x,
+            target_hint_y,
+            target_hint_width,
+            target_hint_height,
+            out_status.cast(),
+        )
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+#[allow(clippy::too_many_arguments)]
+pub(crate) unsafe fn backend_focus_window_in_active_space_with_known_pid(
+    _backend: *mut c_void,
+    _window_id: u64,
+    _pid: u32,
+    _has_target_hint: u8,
+    _target_hint_space_id: u64,
+    _target_hint_x: i32,
+    _target_hint_y: i32,
+    _target_hint_width: i32,
+    _target_hint_height: i32,
+    out_status: *mut MwmStatus,
+) -> i32 {
+    if !out_status.is_null() {
+        unsafe { *out_status = MwmStatus::unavailable() };
+    }
+    crate::transport::MWM_STATUS_UNAVAILABLE
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) unsafe fn backend_focus_same_space_target_in_snapshot(
+    backend: *mut c_void,
+    snapshot: *const MwmDesktopSnapshotAbi,
+    direction: i32,
+    target_window_id: u64,
+    out_status: *mut MwmStatus,
+) -> i32 {
+    unsafe {
+        mwm_backend_focus_same_space_target_in_snapshot(
+            backend,
+            snapshot.cast(),
+            direction,
+            target_window_id,
+            out_status.cast(),
+        )
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) unsafe fn backend_focus_same_space_target_in_snapshot(
+    _backend: *mut c_void,
+    _snapshot: *const MwmDesktopSnapshotAbi,
+    _direction: i32,
+    _target_window_id: u64,
+    out_status: *mut MwmStatus,
+) -> i32 {
+    if !out_status.is_null() {
+        unsafe { *out_status = MwmStatus::unavailable() };
+    }
+    crate::transport::MWM_STATUS_UNAVAILABLE
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) unsafe fn backend_move_window_to_space(
+    backend: *mut c_void,
+    window_id: u64,
+    space_id: u64,
+    out_status: *mut MwmStatus,
+) -> i32 {
+    unsafe { mwm_backend_move_window_to_space(backend, window_id, space_id, out_status.cast()) }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) unsafe fn backend_move_window_to_space(
+    _backend: *mut c_void,
+    _window_id: u64,
+    _space_id: u64,
+    out_status: *mut MwmStatus,
+) -> i32 {
+    if !out_status.is_null() {
+        unsafe { *out_status = MwmStatus::unavailable() };
+    }
+    crate::transport::MWM_STATUS_UNAVAILABLE
+}
+
+#[cfg(target_os = "macos")]
+#[allow(clippy::too_many_arguments)]
+pub(crate) unsafe fn backend_swap_window_frames(
+    backend: *mut c_void,
+    source_window_id: u64,
+    source_x: i32,
+    source_y: i32,
+    source_width: i32,
+    source_height: i32,
+    target_window_id: u64,
+    target_x: i32,
+    target_y: i32,
+    target_width: i32,
+    target_height: i32,
+    out_status: *mut MwmStatus,
+) -> i32 {
+    unsafe {
+        mwm_backend_swap_window_frames(
+            backend,
+            source_window_id,
+            source_x,
+            source_y,
+            source_width,
+            source_height,
+            target_window_id,
+            target_x,
+            target_y,
+            target_width,
+            target_height,
+            out_status.cast(),
+        )
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+#[allow(clippy::too_many_arguments)]
+pub(crate) unsafe fn backend_swap_window_frames(
+    _backend: *mut c_void,
+    _source_window_id: u64,
+    _source_x: i32,
+    _source_y: i32,
+    _source_width: i32,
+    _source_height: i32,
+    _target_window_id: u64,
+    _target_x: i32,
+    _target_y: i32,
+    _target_width: i32,
+    _target_height: i32,
+    out_status: *mut MwmStatus,
+) -> i32 {
+    if !out_status.is_null() {
+        unsafe { *out_status = MwmStatus::unavailable() };
+    }
     crate::transport::MWM_STATUS_UNAVAILABLE
 }
 
