@@ -317,3 +317,44 @@ fn raw_window_from_snapshot(window: crate::NativeWindowSnapshot) -> RawWindow {
         frame: window.bounds,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::SwiftMacosBackend;
+    use crate::{
+        MacosNativeBridgeError, MacosNativeFastFocusError, MacosWindowManagerBackend,
+        MissionControlHotkey, MissionControlModifiers, NativeBackendOptions,
+    };
+
+    fn test_backend_with_bridge_error(error: MacosNativeBridgeError) -> SwiftMacosBackend {
+        SwiftMacosBackend {
+            swift_backend: Err(error),
+            options: NativeBackendOptions {
+                west_space_hotkey: MissionControlHotkey {
+                    key_code: 123,
+                    mission_control: MissionControlModifiers::default(),
+                },
+                east_space_hotkey: MissionControlHotkey {
+                    key_code: 124,
+                    mission_control: MissionControlModifiers::default(),
+                },
+                diagnostics: None,
+            },
+        }
+    }
+
+    #[test]
+    fn prepare_fast_focus_context_uses_swift_override_instead_of_trait_default() {
+        let backend = test_backend_with_bridge_error(MacosNativeBridgeError::NullBackendHandle);
+
+        let error = <SwiftMacosBackend as MacosWindowManagerBackend>::prepare_fast_focus_context(
+            &backend,
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error,
+            MacosNativeFastFocusError::Bridge(MacosNativeBridgeError::NullBackendHandle)
+        );
+    }
+}

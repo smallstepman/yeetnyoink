@@ -16,8 +16,8 @@ use crate::{
         MWM_STATUS_CONNECT_MISSING_ACCESSIBILITY_PERMISSION,
         MWM_STATUS_CONNECT_MISSING_REQUIRED_SYMBOL,
         MWM_STATUS_CONNECT_MISSING_TOPOLOGY_PRECONDITION, MWM_STATUS_OK,
-        MWM_STATUS_PROBE_MISSING_TOPOLOGY, MWM_STATUS_UNAVAILABLE, MwmDesktopSnapshotAbi,
-        MwmFastFocusContextAbi, MwmRectAbi, MwmSpaceAbi, MwmStatus, MwmWindowAbi,
+        MWM_STATUS_PROBE_MISSING_TOPOLOGY, MwmDesktopSnapshotAbi, MwmFastFocusContextAbi,
+        MwmRectAbi, MwmSpaceAbi, MwmStatus, MwmWindowAbi,
     },
 };
 
@@ -342,10 +342,7 @@ impl OwnedFastFocusContext {
     fn validate(self) -> Result<Self, MacosNativeBridgeError> {
         self.raw
             .validate()
-            .map_err(|message| MacosNativeBridgeError::BackendStatus {
-                code: MWM_STATUS_UNAVAILABLE,
-                message: Some(message.to_string()),
-            })?;
+            .map_err(MacosNativeBridgeError::InvalidFastFocusContextTransport)?;
         Ok(self)
     }
 
@@ -506,6 +503,9 @@ fn bridge_probe_error(error: MacosNativeBridgeError) -> MacosNativeProbeError {
             _ => MacosNativeProbeError::MissingTopology("swift macOS backend"),
         },
         MacosNativeBridgeError::InvalidDesktopSnapshotTransport(_) => {
+            MacosNativeProbeError::MissingTopology("swift macOS backend transport")
+        }
+        MacosNativeBridgeError::InvalidFastFocusContextTransport(_) => {
             MacosNativeProbeError::MissingTopology("swift macOS backend transport")
         }
         MacosNativeBridgeError::NullBackendHandle => {
@@ -788,7 +788,7 @@ mod tests {
         };
         assert_eq!(
             error,
-            MacosNativeBridgeError::InvalidDesktopSnapshotTransport(
+            MacosNativeBridgeError::InvalidFastFocusContextTransport(
                 "windows_ptr was null for a non-empty snapshot"
             )
         );
@@ -848,6 +848,40 @@ mod tests {
         );
         assert_eq!(context.desktop_snapshot.focused_window_id, Some(9003));
         assert_eq!(context.desktop_snapshot.windows.len(), 3);
+        assert_eq!(ffi::test_support::desktop_snapshot_release_calls(), 1);
+    }
+
+    #[test]
+    fn fast_focus_context_releases_transport_when_validation_fails() {
+        let _guard = super::ffi_test_guard();
+        ffi::test_support::reset();
+        ffi::test_support::set_fast_focus_context_response(ffi::TestFastFocusContextResponse {
+            code: MWM_STATUS_OK,
+            context: super::MwmFastFocusContextAbi {
+                snapshot: MwmDesktopSnapshotAbi {
+                    windows_len: 1,
+                    ..MwmDesktopSnapshotAbi::empty()
+                },
+                environment: 0,
+            },
+            status: MwmStatus::ok(),
+        });
+
+        let shim = ManuallyDrop::new(SwiftBackendShim {
+            raw: NonNull::<c_void>::dangling(),
+        });
+
+        let error = match shim.prepare_fast_focus_context() {
+            Ok(_) => panic!("prepare_fast_focus_context should fail validation"),
+            Err(error) => error,
+        };
+
+        assert_eq!(
+            error,
+            MacosNativeBridgeError::InvalidFastFocusContextTransport(
+                "windows_ptr was null for a non-empty snapshot"
+            )
+        );
         assert_eq!(ffi::test_support::desktop_snapshot_release_calls(), 1);
     }
 }

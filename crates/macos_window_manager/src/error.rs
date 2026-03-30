@@ -59,6 +59,8 @@ pub enum MacosNativeBridgeError {
     NullBackendHandle,
     #[error("swift macOS backend returned invalid desktop snapshot transport: {0}")]
     InvalidDesktopSnapshotTransport(&'static str),
+    #[error("swift macOS backend returned invalid fast-focus context transport: {0}")]
+    InvalidFastFocusContextTransport(&'static str),
 }
 
 impl MacosNativeOperationError {
