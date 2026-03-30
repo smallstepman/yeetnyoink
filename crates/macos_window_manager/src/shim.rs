@@ -788,7 +788,7 @@ mod tests {
         };
         assert_eq!(
             error,
-            MacosNativeBridgeError::InvalidFastFocusContextTransport(
+            MacosNativeBridgeError::InvalidDesktopSnapshotTransport(
                 "windows_ptr was null for a non-empty snapshot"
             )
         );
