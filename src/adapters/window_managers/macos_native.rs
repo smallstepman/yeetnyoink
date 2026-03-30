@@ -12,10 +12,10 @@ use crate::logging;
 use anyhow::{bail, Context};
 
 use macos_window_manager::{
-    ActiveSpaceFocusTargetHint, MacosWindowManagerBackend, MacosNativeConnectError, MacosNativeOperationError,
-    MacosNativeProbeError, MissionControlHotkey, MissionControlModifiers, NativeBackendOptions,
-    NativeBounds, NativeDesktopSnapshot, NativeDiagnostics, NativeDirection, NativeWindowSnapshot,
-    SwiftMacosBackend, SpaceKind,
+    ActiveSpaceFocusTargetHint, MacosNativeConnectError, MacosNativeOperationError,
+    MacosNativeProbeError, MacosWindowManagerBackend, MissionControlHotkey,
+    MissionControlModifiers, NativeBackendOptions, NativeBounds, NativeDesktopSnapshot,
+    NativeDiagnostics, NativeDirection, NativeWindowSnapshot, SpaceKind, SwiftMacosBackend,
 };
 
 pub(crate) struct MacosNativeAdapter<A = SwiftMacosBackend> {
@@ -276,7 +276,8 @@ fn focused_app_record_with_api<A: MacosWindowManagerBackend + ?Sized>(
 ) -> anyhow::Result<Option<FocusedAppRecord>> {
     let context = {
         let _span = tracing::debug_span!("macos_native.fast_focus.prepare_context").entered();
-        api.prepare_fast_focus_context().map_err(anyhow::Error::new)?
+        api.prepare_fast_focus_context()
+            .map_err(anyhow::Error::new)?
     };
     focused_app_record_from_native(&context.desktop_snapshot)
 }
@@ -1070,18 +1071,6 @@ mod tests {
     }
 
     impl MacosWindowManagerBackend for RecordingFocusApi {
-        fn has_symbol(&self, _symbol: &'static str) -> bool {
-            true
-        }
-
-        fn ax_is_trusted(&self) -> bool {
-            true
-        }
-
-        fn minimal_topology_ready(&self) -> bool {
-            true
-        }
-
         fn validate_environment(&self) -> Result<(), MacosNativeConnectError> {
             Ok(())
         }
@@ -1171,18 +1160,6 @@ mod tests {
     }
 
     impl MacosWindowManagerBackend for RecordingCrossSpaceFocusApi {
-        fn has_symbol(&self, _symbol: &'static str) -> bool {
-            true
-        }
-
-        fn ax_is_trusted(&self) -> bool {
-            true
-        }
-
-        fn minimal_topology_ready(&self) -> bool {
-            true
-        }
-
         fn validate_environment(&self) -> Result<(), MacosNativeConnectError> {
             Ok(())
         }
@@ -1244,11 +1221,13 @@ mod tests {
                     space_id,
                     adjacent_direction,
                 ));
-            self.snapshots.lock().unwrap().pop_front().ok_or(
-                MacosNativeOperationError::CallFailed(
+            self.snapshots
+                .lock()
+                .unwrap()
+                .pop_front()
+                .ok_or(MacosNativeOperationError::CallFailed(
                     "recording cross-space focus refreshed snapshot",
-                ),
-            )
+                ))
         }
 
         fn switch_space(&self, _space_id: u64) -> Result<(), MacosNativeOperationError> {
@@ -1331,7 +1310,10 @@ mod tests {
     }
 
     impl SwitchSpaceAndRefreshOnlyApi {
-        fn new(initial_snapshot: NativeDesktopSnapshot, refreshed_snapshot: NativeDesktopSnapshot) -> Self {
+        fn new(
+            initial_snapshot: NativeDesktopSnapshot,
+            refreshed_snapshot: NativeDesktopSnapshot,
+        ) -> Self {
             Self {
                 initial_snapshot,
                 refreshed_snapshot,
@@ -1346,18 +1328,6 @@ mod tests {
     }
 
     impl MacosWindowManagerBackend for SwitchSpaceAndRefreshOnlyApi {
-        fn has_symbol(&self, _symbol: &'static str) -> bool {
-            true
-        }
-
-        fn ax_is_trusted(&self) -> bool {
-            true
-        }
-
-        fn minimal_topology_ready(&self) -> bool {
-            true
-        }
-
         fn validate_environment(&self) -> Result<(), MacosNativeConnectError> {
             Ok(())
         }
@@ -1481,18 +1451,6 @@ mod tests {
     }
 
     impl MacosWindowManagerBackend for RecordingSameSpaceDelegationApi {
-        fn has_symbol(&self, _symbol: &'static str) -> bool {
-            true
-        }
-
-        fn ax_is_trusted(&self) -> bool {
-            true
-        }
-
-        fn minimal_topology_ready(&self) -> bool {
-            true
-        }
-
         fn validate_environment(&self) -> Result<(), MacosNativeConnectError> {
             Ok(())
         }
@@ -1594,18 +1552,6 @@ mod tests {
     }
 
     impl MacosWindowManagerBackend for SplitViewKnownPidFallbackApi {
-        fn has_symbol(&self, _symbol: &'static str) -> bool {
-            true
-        }
-
-        fn ax_is_trusted(&self) -> bool {
-            true
-        }
-
-        fn minimal_topology_ready(&self) -> bool {
-            true
-        }
-
         fn validate_environment(&self) -> Result<(), MacosNativeConnectError> {
             Ok(())
         }
@@ -1707,18 +1653,6 @@ mod tests {
     }
 
     impl MacosWindowManagerBackend for SplitViewSameAppPeerFallbackApi {
-        fn has_symbol(&self, _symbol: &'static str) -> bool {
-            true
-        }
-
-        fn ax_is_trusted(&self) -> bool {
-            true
-        }
-
-        fn minimal_topology_ready(&self) -> bool {
-            true
-        }
-
         fn validate_environment(&self) -> Result<(), MacosNativeConnectError> {
             Ok(())
         }
@@ -1854,18 +1788,6 @@ mod tests {
     }
 
     impl MacosWindowManagerBackend for SplitViewRefreshedTargetFallbackApi {
-        fn has_symbol(&self, _symbol: &'static str) -> bool {
-            true
-        }
-
-        fn ax_is_trusted(&self) -> bool {
-            true
-        }
-
-        fn minimal_topology_ready(&self) -> bool {
-            true
-        }
-
         fn validate_environment(&self) -> Result<(), MacosNativeConnectError> {
             Ok(())
         }
@@ -1986,18 +1908,6 @@ mod tests {
     }
 
     impl MacosWindowManagerBackend for RecordingMoveApi {
-        fn has_symbol(&self, _symbol: &'static str) -> bool {
-            true
-        }
-
-        fn ax_is_trusted(&self) -> bool {
-            true
-        }
-
-        fn minimal_topology_ready(&self) -> bool {
-            true
-        }
-
         fn validate_environment(&self) -> Result<(), MacosNativeConnectError> {
             Ok(())
         }
@@ -2080,18 +1990,6 @@ mod tests {
     struct FocusedIdTopologyApi;
 
     impl MacosWindowManagerBackend for FocusedIdTopologyApi {
-        fn has_symbol(&self, _symbol: &'static str) -> bool {
-            true
-        }
-
-        fn ax_is_trusted(&self) -> bool {
-            true
-        }
-
-        fn minimal_topology_ready(&self) -> bool {
-            true
-        }
-
         fn validate_environment(&self) -> Result<(), MacosNativeConnectError> {
             Ok(())
         }
@@ -2157,18 +2055,6 @@ mod tests {
     struct FocusedWindowFastPathApi;
 
     impl MacosWindowManagerBackend for FocusedWindowFastPathApi {
-        fn has_symbol(&self, _symbol: &'static str) -> bool {
-            true
-        }
-
-        fn ax_is_trusted(&self) -> bool {
-            true
-        }
-
-        fn minimal_topology_ready(&self) -> bool {
-            true
-        }
-
         fn validate_environment(&self) -> Result<(), MacosNativeConnectError> {
             Ok(())
         }
@@ -2275,18 +2161,6 @@ mod tests {
     struct ValidationBypassApi;
 
     impl MacosWindowManagerBackend for ValidationBypassApi {
-        fn has_symbol(&self, _symbol: &'static str) -> bool {
-            panic!("validation bypass api must not use legacy has_symbol validation")
-        }
-
-        fn ax_is_trusted(&self) -> bool {
-            panic!("validation bypass api must not use legacy ax_is_trusted validation")
-        }
-
-        fn minimal_topology_ready(&self) -> bool {
-            panic!("validation bypass api must not use legacy minimal_topology_ready validation")
-        }
-
         fn validate_environment(&self) -> Result<(), MacosNativeConnectError> {
             Ok(())
         }
@@ -2372,18 +2246,6 @@ mod tests {
     }
 
     impl MacosWindowManagerBackend for SnapshotOnlyApi {
-        fn has_symbol(&self, _symbol: &'static str) -> bool {
-            true
-        }
-
-        fn ax_is_trusted(&self) -> bool {
-            true
-        }
-
-        fn minimal_topology_ready(&self) -> bool {
-            true
-        }
-
         fn validate_environment(&self) -> Result<(), MacosNativeConnectError> {
             Ok(())
         }
@@ -2460,18 +2322,6 @@ mod tests {
     }
 
     impl MacosWindowManagerBackend for CoarseFastFocusOnlyApi {
-        fn has_symbol(&self, _symbol: &'static str) -> bool {
-            true
-        }
-
-        fn ax_is_trusted(&self) -> bool {
-            panic!("focused_app_record_with_api must use prepare_fast_focus_context")
-        }
-
-        fn minimal_topology_ready(&self) -> bool {
-            panic!("focused_app_record_with_api must use prepare_fast_focus_context")
-        }
-
         fn validate_environment(&self) -> Result<(), MacosNativeConnectError> {
             Ok(())
         }
@@ -4973,5 +4823,4 @@ command = false
             Some(20)
         );
     }
-
 }

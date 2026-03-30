@@ -4,20 +4,16 @@ use std::{
 };
 
 use crate::desktop_topology_snapshot::{
+    self, active_space_focus_target_hint_from_topology, active_window_pid_from_topology,
+    ensure_supported_target_space, focused_window_from_active_space_windows,
+    native_desktop_snapshot_from_topology, space_id_for_window, space_transition_window_ids,
     RawSpaceRecord, RawTopologySnapshot, RawWindow, WindowSnapshot,
 };
-use crate::environment;
 use crate::error::{
     MacosNativeConnectError, MacosNativeFastFocusError, MacosNativeOperationError,
     MacosNativeProbeError,
 };
 use crate::navigation;
-use crate::{
-    active_space_ax_backed_same_pid_target, active_space_focus_target_hint_from_topology,
-    active_window_pid_from_topology, desktop_topology_snapshot, ensure_supported_target_space,
-    focus_same_space_target_in_snapshot, focused_window_from_active_space_windows,
-    space_id_for_window, space_transition_window_ids,
-};
 
 pub type NativeSpaceId = u64;
 pub type NativeWindowId = u64;
@@ -130,13 +126,8 @@ pub trait NativeDiagnostics: Send + Sync {
 }
 
 pub trait MacosWindowManagerBackend {
-    fn has_symbol(&self, symbol: &'static str) -> bool;
-    fn ax_is_trusted(&self) -> bool;
-    fn minimal_topology_ready(&self) -> bool;
     fn debug(&self, _message: &str) {}
-    fn validate_environment(&self) -> Result<(), MacosNativeConnectError> {
-        environment::validate_environment_with_api(self)
-    }
+    fn validate_environment(&self) -> Result<(), MacosNativeConnectError>;
     fn prepare_fast_focus_context(
         &self,
     ) -> Result<NativeFastFocusContext, MacosNativeFastFocusError> {
@@ -199,15 +190,15 @@ pub trait MacosWindowManagerBackend {
             Err(MacosNativeOperationError::MissingWindow(missing_window_id))
                 if missing_window_id == window_id =>
             {
-                if let Some(remapped_target_id) = active_space_ax_backed_same_pid_target(
-                    self,
-                    &desktop_topology_snapshot::native_desktop_snapshot_from_topology(
-                        &self.topology_snapshot()?,
-                    ),
-                    window_id,
-                    pid,
-                    target_hint,
-                )? {
+                if let Some(remapped_target_id) =
+                    navigation::active_space_ax_backed_same_pid_target(
+                        self,
+                        &native_desktop_snapshot_from_topology(&self.topology_snapshot()?),
+                        window_id,
+                        pid,
+                        target_hint,
+                    )?
+                {
                     self.debug(&format!(
                         "macos_native: active-space focus remapped stale same-pid target {} to {}",
                         window_id, remapped_target_id
@@ -234,7 +225,8 @@ pub trait MacosWindowManagerBackend {
         adjacent_direction: Option<NativeDirection>,
     ) -> Result<NativeDesktopSnapshot, MacosNativeOperationError> {
         self.switch_space_in_snapshot(snapshot, space_id, adjacent_direction)?;
-        self.desktop_snapshot().map_err(MacosNativeOperationError::from)
+        self.desktop_snapshot()
+            .map_err(MacosNativeOperationError::from)
     }
     fn focus_same_space_target_in_snapshot(
         &self,
@@ -242,7 +234,7 @@ pub trait MacosWindowManagerBackend {
         direction: NativeDirection,
         target_window_id: u64,
     ) -> Result<(), MacosNativeOperationError> {
-        focus_same_space_target_in_snapshot(self, snapshot, direction, target_window_id)
+        navigation::focus_same_space_target_in_snapshot(self, snapshot, direction, target_window_id)
     }
     fn focus_window_by_id(&self, window_id: u64) -> Result<(), MacosNativeOperationError> {
         let topology = self.topology_snapshot()?;

@@ -113,6 +113,54 @@ fn source_backend_crate_stays_facade_focused() {
     }
 }
 
+#[test]
+fn source_backend_surface_is_coarse_and_macos_only() {
+    let api = std::fs::read_to_string(crate_source("src/api.rs")).unwrap();
+    let backend = std::fs::read_to_string(crate_source("src/backend.rs")).unwrap();
+    let environment = std::fs::read_to_string(crate_source("src/environment.rs")).unwrap();
+    let lib = std::fs::read_to_string(crate_source("src/lib.rs")).unwrap();
+
+    for forbidden in [
+        "fn has_symbol(&self, symbol: &'static str) -> bool;",
+        "fn ax_is_trusted(&self) -> bool;",
+        "fn minimal_topology_ready(&self) -> bool;",
+    ] {
+        assert!(
+            !api.contains(forbidden),
+            "shared backend trait should not expose legacy probe-style method {forbidden}"
+        );
+    }
+
+    for forbidden in [
+        "fn has_symbol(&self",
+        "fn ax_is_trusted(&self)",
+        "fn minimal_topology_ready(&self)",
+    ] {
+        assert!(
+            !backend.contains(forbidden),
+            "Swift backend should not implement legacy probe-style helper {forbidden}"
+        );
+    }
+
+    for forbidden in [
+        "REQUIRED_PRIVATE_SYMBOLS",
+        "AXIsProcessTrusted",
+        "\"main SkyLight connection\"",
+        "api.ax_is_trusted()",
+        "api.minimal_topology_ready()",
+    ] {
+        assert!(
+            !environment.contains(forbidden),
+            "environment boundary should not retain deleted Rust fallback probe artifact {forbidden}"
+        );
+    }
+
+    assert!(
+        !lib.contains("use crate::{\n    active_space_ax_backed_same_pid_target"),
+        "lib.rs should not read like a behavior engine importing legacy helper orchestration"
+    );
+}
+
 fn crate_source(path: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join(path)
 }
@@ -441,6 +489,15 @@ fn source_swift_backend_overrides_semantic_helpers_to_use_swift_backend() {
             "fn switch_space_in_snapshot(",
             &[
                 ".switch_space_in_snapshot(",
+                "snapshot",
+                "space_id",
+                "adjacent_direction",
+            ][..],
+        ),
+        (
+            "fn switch_space_and_refresh(",
+            &[
+                ".switch_space_and_refresh(",
                 "snapshot",
                 "space_id",
                 "adjacent_direction",
