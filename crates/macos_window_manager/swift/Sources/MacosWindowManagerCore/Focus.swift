@@ -66,5 +66,3 @@ public extension BackendActionSystem {
         throw BackendOperationError.callFailed("swap_window_frames")
     }
 }
-
-extension LiveSystem: BackendActionSystem {}

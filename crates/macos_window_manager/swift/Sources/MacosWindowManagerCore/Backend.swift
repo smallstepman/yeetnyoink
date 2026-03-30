@@ -34,6 +34,10 @@ public struct Backend {
 final class LiveSystem: BackendSystem {
     private let symbols = PrivateSymbolResolver()
 
+    func resolveSymbol<T>(_ symbol: String, as type: T.Type = T.self) -> T? {
+        symbols.resolve(symbol, as: type)
+    }
+
     func hasSymbol(_ symbol: String) -> Bool {
         symbols.hasSymbol(symbol)
     }

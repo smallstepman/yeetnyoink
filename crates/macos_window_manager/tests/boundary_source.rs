@@ -342,3 +342,75 @@ fn source_real_api_overrides_semantic_helpers_to_use_swift_backend() {
         }
     }
 }
+
+#[test]
+fn source_live_system_action_primitives_are_concrete() {
+    let focus = std::fs::read_to_string(crate_source(
+        "swift/Sources/MacosWindowManagerCore/Focus.swift",
+    ))
+    .unwrap();
+    assert!(
+        !focus.contains("extension LiveSystem: BackendActionSystem {}"),
+        "LiveSystem should not rely on an empty BackendActionSystem conformance"
+    );
+
+    let live_system_actions = std::fs::read_to_string(crate_source(
+        "swift/Sources/MacosWindowManagerCore/LiveSystemActions.swift",
+    ))
+    .unwrap();
+    let live_system_actions = live_system_actions
+        .split("extension LiveSystem: BackendActionSystem")
+        .nth(1)
+        .expect("LiveSystem BackendActionSystem conformance should exist");
+
+    for (signature, marker) in [
+        (
+            "func switchSpace(_ spaceID: UInt64) throws",
+            "SLSManagedDisplaySetCurrentSpace",
+        ),
+        (
+            "func switchAdjacentSpace(_ direction: NativeDirection, targetSpaceID: UInt64) throws",
+            "adjacentSpaceHotkey(direction)",
+        ),
+        (
+            "func focusWindow(_ windowID: UInt64) throws",
+            "windowDescription(id: windowID)",
+        ),
+        (
+            "func focusWindowWithKnownPID(_ windowID: UInt64, pid: UInt32) throws",
+            "focusWindow(windowID, pid: pid, frontsProcess: true)",
+        ),
+        (
+            "func axWindowIDs(for pid: UInt32) throws -> [UInt64]",
+            "axWindows(for: pid)",
+        ),
+        (
+            "func moveWindowToSpace(_ windowID: UInt64, spaceID: UInt64) throws",
+            "SLSMoveWindowsToManagedSpace",
+        ),
+        (
+            "func swapWindowFrames(",
+            "setWindowFrame(windowID: sourceWindowID, pid: sourcePID, frame: targetFrame)",
+        ),
+    ] {
+        assert!(
+            live_system_actions.contains(signature),
+            "LiveSystem BackendActionSystem conformance should implement {signature}"
+        );
+        assert!(
+            live_system_actions.contains(marker),
+            "{signature} should contain production-only marker {marker}"
+        );
+    }
+
+    for forbidden in [
+        "_ = direction\n        try switchSpace(targetSpaceID)",
+        "try focusWindow(windowID)",
+        "[]\n    }",
+    ] {
+        assert!(
+            !live_system_actions.contains(forbidden),
+            "LiveSystem action implementations should not fall back to protocol-default body {forbidden:?}"
+        );
+    }
+}
