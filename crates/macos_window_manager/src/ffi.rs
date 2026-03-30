@@ -2,7 +2,7 @@
 
 use std::ffi::c_void;
 
-use crate::transport::{MwmDesktopSnapshotAbi, MwmStatus};
+use crate::transport::{MwmDesktopSnapshotAbi, MwmFastFocusContextAbi, MwmStatus};
 
 #[cfg(test)]
 use std::sync::{Mutex, OnceLock};
@@ -20,6 +20,17 @@ unsafe impl Send for TestDesktopSnapshotResponse {}
 
 #[cfg(test)]
 #[derive(Debug, Clone)]
+pub(crate) struct TestFastFocusContextResponse {
+    pub code: i32,
+    pub context: MwmFastFocusContextAbi,
+    pub status: MwmStatus,
+}
+
+#[cfg(test)]
+unsafe impl Send for TestFastFocusContextResponse {}
+
+#[cfg(test)]
+#[derive(Debug, Clone)]
 pub(crate) struct TestOperationResponse {
     pub code: i32,
     pub status: MwmStatus,
@@ -33,6 +44,7 @@ unsafe impl Send for TestOperationResponse {}
 struct TestState {
     desktop_snapshot_response: Option<TestDesktopSnapshotResponse>,
     topology_snapshot_response: Option<TestDesktopSnapshotResponse>,
+    fast_focus_context_response: Option<TestFastFocusContextResponse>,
     switch_space_in_snapshot_response: Option<TestOperationResponse>,
     desktop_snapshot_release_calls: usize,
 }
@@ -45,7 +57,10 @@ fn test_state() -> &'static Mutex<TestState> {
 
 #[cfg(test)]
 pub(crate) mod test_support {
-    use super::{test_state, TestDesktopSnapshotResponse, TestOperationResponse};
+    use super::{
+        TestDesktopSnapshotResponse, TestFastFocusContextResponse, TestOperationResponse,
+        test_state,
+    };
 
     pub(crate) fn reset() {
         *test_state().lock().unwrap() = Default::default();
@@ -57,6 +72,10 @@ pub(crate) mod test_support {
 
     pub(crate) fn set_topology_snapshot_response(response: TestDesktopSnapshotResponse) {
         test_state().lock().unwrap().topology_snapshot_response = Some(response);
+    }
+
+    pub(crate) fn set_fast_focus_context_response(response: TestFastFocusContextResponse) {
+        test_state().lock().unwrap().fast_focus_context_response = Some(response);
     }
 
     pub(crate) fn set_switch_space_in_snapshot_response(response: TestOperationResponse) {
@@ -84,6 +103,11 @@ unsafe extern "C" {
     fn mwm_backend_topology_snapshot(
         backend: *mut c_void,
         out_snapshot: *mut c_void,
+        out_status: *mut c_void,
+    ) -> i32;
+    fn mwm_backend_prepare_fast_focus_context(
+        backend: *mut c_void,
+        out_context: *mut c_void,
         out_status: *mut c_void,
     ) -> i32;
     fn mwm_backend_switch_space(
@@ -236,6 +260,39 @@ pub(crate) unsafe fn backend_topology_snapshot(
     }
 
     unsafe { mwm_backend_topology_snapshot(backend, out_snapshot.cast(), out_status.cast()) }
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) unsafe fn backend_prepare_fast_focus_context(
+    backend: *mut c_void,
+    out_context: *mut MwmFastFocusContextAbi,
+    out_status: *mut MwmStatus,
+) -> i32 {
+    #[cfg(test)]
+    if let Some(response) = test_state()
+        .lock()
+        .unwrap()
+        .fast_focus_context_response
+        .take()
+    {
+        if !out_context.is_null() {
+            unsafe {
+                *out_context = response.context;
+            }
+        }
+
+        if !out_status.is_null() {
+            unsafe {
+                *out_status = response.status;
+            }
+        }
+
+        return response.code;
+    }
+
+    unsafe {
+        mwm_backend_prepare_fast_focus_context(backend, out_context.cast(), out_status.cast())
+    }
 }
 
 #[cfg(target_os = "macos")]

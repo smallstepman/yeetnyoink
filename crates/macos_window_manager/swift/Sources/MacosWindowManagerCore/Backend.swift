@@ -3,6 +3,20 @@ import ApplicationServices
 import CoreGraphics
 import Foundation
 
+public enum FastFocusEnvironment: Int32, Equatable {
+    case validated = 0
+}
+
+public struct FastFocusContext: Equatable {
+    public let environment: FastFocusEnvironment
+    public let desktopSnapshot: DesktopSnapshot
+
+    public init(environment: FastFocusEnvironment, desktopSnapshot: DesktopSnapshot) {
+        self.environment = environment
+        self.desktopSnapshot = desktopSnapshot
+    }
+}
+
 public struct Backend {
     let system: any BackendSystem
 
@@ -28,6 +42,14 @@ public struct Backend {
 
     public func topologySnapshot() throws -> DesktopSnapshot {
         try DesktopSnapshotBuilder.buildTopology(system: system)
+    }
+
+    public func prepareFastFocusContext() throws -> FastFocusContext {
+        try validateEnvironment()
+        return FastFocusContext(
+            environment: .validated,
+            desktopSnapshot: try desktopSnapshot()
+        )
     }
 }
 

@@ -19,6 +19,16 @@ pub enum MacosNativeProbeError {
     MissingFocusedWindow,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum MacosNativeFastFocusError {
+    #[error(transparent)]
+    Connect(#[from] MacosNativeConnectError),
+    #[error(transparent)]
+    Probe(#[from] MacosNativeProbeError),
+    #[error(transparent)]
+    Bridge(#[from] MacosNativeBridgeError),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum MacosNativeOperationError {
     #[error(transparent)]

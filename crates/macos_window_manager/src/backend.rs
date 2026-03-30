@@ -1,14 +1,15 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::{
+    ActiveSpaceFocusTargetHint, MacosNativeConnectError, MacosNativeFastFocusError,
+    MacosNativeOperationError, MacosNativeProbeError, MacosWindowManagerBackend,
+    NativeBackendOptions, NativeBounds, NativeDesktopSnapshot, NativeDirection,
+    NativeFastFocusContext, NativeWindowId,
     desktop_topology_snapshot::{
-        RawSpaceRecord, RawTopologySnapshot, RawWindow, SpaceKind, DESKTOP_SPACE_TYPE,
-        FULLSCREEN_SPACE_TYPE,
+        DESKTOP_SPACE_TYPE, FULLSCREEN_SPACE_TYPE, RawSpaceRecord, RawTopologySnapshot, RawWindow,
+        SpaceKind,
     },
     shim::SwiftBackendShim,
-    ActiveSpaceFocusTargetHint, MacosWindowManagerBackend, MacosNativeConnectError,
-    MacosNativeOperationError, MacosNativeProbeError, NativeBackendOptions, NativeBounds,
-    NativeDesktopSnapshot, NativeDirection, NativeWindowId,
 };
 
 pub struct SwiftMacosBackend {
@@ -80,8 +81,19 @@ impl SwiftMacosBackend {
     fn connect_state(&self) -> Result<(), MacosNativeConnectError> {
         self.swift_backend
             .as_ref()
-            .map_err(|_| MacosNativeConnectError::MissingTopologyPrecondition("swift macOS backend"))?
+            .map_err(|_| {
+                MacosNativeConnectError::MissingTopologyPrecondition("swift macOS backend")
+            })?
             .validate_environment()
+    }
+
+    pub(crate) fn prepare_fast_focus_context(
+        &self,
+    ) -> Result<NativeFastFocusContext, crate::MacosNativeBridgeError> {
+        self.swift_backend
+            .as_ref()
+            .map_err(Clone::clone)?
+            .prepare_fast_focus_context()
     }
 }
 
@@ -110,6 +122,12 @@ impl MacosWindowManagerBackend for SwiftMacosBackend {
 
     fn validate_environment(&self) -> Result<(), crate::MacosNativeConnectError> {
         self.connect_state()
+    }
+
+    fn prepare_fast_focus_context(
+        &self,
+    ) -> Result<NativeFastFocusContext, MacosNativeFastFocusError> {
+        SwiftMacosBackend::prepare_fast_focus_context(self).map_err(Into::into)
     }
 
     fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {

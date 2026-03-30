@@ -24,6 +24,10 @@ private final class BackendHandle {
         MwmDesktopSnapshotAbi(try backend.topologySnapshot())
     }
 
+    func prepareFastFocusContext() throws -> MwmFastFocusContextAbi {
+        MwmFastFocusContextAbi(try backend.prepareFastFocusContext())
+    }
+
     func switchSpace(_ spaceID: UInt64) throws {
         try backend.switchSpace(spaceID)
     }
@@ -273,6 +277,34 @@ public func mwm_backend_topology_snapshot(
         outSnapshot
             .assumingMemoryBound(to: MwmDesktopSnapshotAbi.self)
             .pointee = try handle.topologySnapshot()
+        writeStatus(outStatus, code: MWM_STATUS_OK)
+        return MWM_STATUS_OK
+    } catch let error as BackendError {
+        return writeErrorStatus(outStatus, error: error)
+    } catch {
+        writeStatus(outStatus, code: MWM_STATUS_UNAVAILABLE, message: String(describing: error).ownedCString())
+        return MWM_STATUS_UNAVAILABLE
+    }
+}
+
+@_cdecl("mwm_backend_prepare_fast_focus_context")
+public func mwm_backend_prepare_fast_focus_context(
+    _ backend: UnsafeMutableRawPointer?,
+    _ outContext: UnsafeMutableRawPointer?,
+    _ outStatus: UnsafeMutableRawPointer?
+) -> Int32 {
+    verifyTransportAbiContract()
+
+    guard let backend, let outContext else {
+        writeStatus(outStatus, code: MWM_STATUS_INVALID_ARGUMENT)
+        return MWM_STATUS_INVALID_ARGUMENT
+    }
+
+    let handle = Unmanaged<BackendHandle>.fromOpaque(backend).takeUnretainedValue()
+    do {
+        outContext
+            .assumingMemoryBound(to: MwmFastFocusContextAbi.self)
+            .pointee = try handle.prepareFastFocusContext()
         writeStatus(outStatus, code: MWM_STATUS_OK)
         return MWM_STATUS_OK
     } catch let error as BackendError {

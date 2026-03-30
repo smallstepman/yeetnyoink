@@ -15,8 +15,8 @@ pub(crate) use api::MacosWindowManagerBackend as MacosNativeApi;
 pub use api::{
     ActiveSpaceFocusTargetHint, MacosWindowManagerBackend, MissionControlHotkey,
     MissionControlModifiers, NativeBackendOptions, NativeBounds, NativeDesktopSnapshot,
-    NativeDiagnostics, NativeDirection, NativeSpaceId, NativeSpaceSnapshot, NativeWindowId,
-    NativeWindowSnapshot,
+    NativeDiagnostics, NativeDirection, NativeFastFocusContext, NativeFastFocusEnvironment,
+    NativeSpaceId, NativeSpaceSnapshot, NativeWindowId, NativeWindowSnapshot,
 };
 #[cfg(target_os = "macos")]
 pub use backend::SwiftMacosBackend;
@@ -25,8 +25,8 @@ pub use desktop_topology_snapshot::{
     RawSpaceRecord, RawTopologySnapshot, RawWindow, WindowSnapshot,
 };
 pub use error::{
-    MacosNativeBridgeError, MacosNativeConnectError, MacosNativeOperationError,
-    MacosNativeProbeError,
+    MacosNativeBridgeError, MacosNativeConnectError, MacosNativeFastFocusError,
+    MacosNativeOperationError, MacosNativeProbeError,
 };
 
 #[cfg(target_os = "macos")]

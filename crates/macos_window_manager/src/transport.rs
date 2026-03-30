@@ -1,10 +1,10 @@
 #![allow(dead_code)]
 
-use std::ffi::{c_char, CStr};
+use std::ffi::{CStr, c_char};
 
 use crate::{
-    desktop_topology_snapshot::SpaceKind, NativeBounds, NativeDesktopSnapshot, NativeSpaceSnapshot,
-    NativeWindowSnapshot,
+    NativeBounds, NativeDesktopSnapshot, NativeFastFocusContext, NativeFastFocusEnvironment,
+    NativeSpaceSnapshot, NativeWindowSnapshot, desktop_topology_snapshot::SpaceKind,
 };
 
 pub(crate) const MWM_STATUS_OK: i32 = 0;
@@ -96,6 +96,14 @@ const _: [(); 16] = [(); std::mem::offset_of!(MwmDesktopSnapshotAbi, windows_ptr
 const _: [(); 24] = [(); std::mem::offset_of!(MwmDesktopSnapshotAbi, windows_len)];
 #[cfg(target_pointer_width = "64")]
 const _: [(); 32] = [(); std::mem::offset_of!(MwmDesktopSnapshotAbi, focused_window_id)];
+#[cfg(target_pointer_width = "64")]
+const _: [(); 48] = [(); std::mem::size_of::<MwmFastFocusContextAbi>()];
+#[cfg(target_pointer_width = "64")]
+const _: [(); 8] = [(); std::mem::align_of::<MwmFastFocusContextAbi>()];
+#[cfg(target_pointer_width = "64")]
+const _: [(); 0] = [(); std::mem::offset_of!(MwmFastFocusContextAbi, snapshot)];
+#[cfg(target_pointer_width = "64")]
+const _: [(); 40] = [(); std::mem::offset_of!(MwmFastFocusContextAbi, environment)];
 
 #[repr(C)]
 #[derive(Debug, Clone, Default)]
@@ -169,6 +177,13 @@ pub struct MwmDesktopSnapshotAbi {
     pub focused_window_id: u64,
 }
 
+#[repr(C)]
+#[derive(Debug, Clone, Default)]
+pub struct MwmFastFocusContextAbi {
+    pub snapshot: MwmDesktopSnapshotAbi,
+    pub environment: i32,
+}
+
 impl MwmDesktopSnapshotAbi {
     pub(crate) fn empty() -> Self {
         Self::default()
@@ -184,6 +199,28 @@ impl MwmDesktopSnapshotAbi {
         }
 
         Ok(())
+    }
+}
+
+impl MwmFastFocusContextAbi {
+    pub(crate) fn empty() -> Self {
+        Self::default()
+    }
+
+    pub(crate) fn validate(&self) -> Result<(), &'static str> {
+        self.snapshot.validate()?;
+        if self.environment != 0 {
+            return Err("environment was not a recognized fast-focus state");
+        }
+
+        Ok(())
+    }
+
+    pub(crate) unsafe fn to_native_context(&self) -> NativeFastFocusContext {
+        NativeFastFocusContext {
+            environment: NativeFastFocusEnvironment::Validated,
+            desktop_snapshot: unsafe { self.snapshot.to_native_snapshot() },
+        }
     }
 }
 
@@ -311,6 +348,14 @@ mod tests {
         assert_eq!(
             std::mem::offset_of!(MwmDesktopSnapshotAbi, focused_window_id),
             32
+        );
+
+        assert_eq!(std::mem::size_of::<MwmFastFocusContextAbi>(), 48);
+        assert_eq!(std::mem::align_of::<MwmFastFocusContextAbi>(), 8);
+        assert_eq!(std::mem::offset_of!(MwmFastFocusContextAbi, snapshot), 0);
+        assert_eq!(
+            std::mem::offset_of!(MwmFastFocusContextAbi, environment),
+            40
         );
     }
 }

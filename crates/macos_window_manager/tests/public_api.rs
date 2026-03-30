@@ -6,10 +6,12 @@ use std::{
 };
 
 use macos_window_manager::{
-    ActiveSpaceFocusTargetHint, MacosWindowManagerBackend, MacosNativeConnectError, MacosNativeOperationError,
-    MacosNativeProbeError, MissionControlHotkey, MissionControlModifiers, NativeBackendOptions,
-    NativeBounds, NativeDesktopSnapshot, NativeDiagnostics, NativeDirection, NativeWindowSnapshot,
-    RawSpaceRecord, RawTopologySnapshot, RawWindow, SwiftMacosBackend, SpaceKind, WindowSnapshot,
+    ActiveSpaceFocusTargetHint, MacosNativeConnectError, MacosNativeFastFocusError,
+    MacosNativeOperationError, MacosNativeProbeError, MacosWindowManagerBackend,
+    MissionControlHotkey, MissionControlModifiers, NativeBackendOptions, NativeBounds,
+    NativeDesktopSnapshot, NativeDiagnostics, NativeDirection, NativeFastFocusContext,
+    NativeWindowSnapshot, RawSpaceRecord, RawTopologySnapshot, RawWindow, SpaceKind,
+    SwiftMacosBackend, WindowSnapshot,
 };
 
 struct SmokeDiagnostics;
@@ -19,6 +21,12 @@ impl NativeDiagnostics for SmokeDiagnostics {
 }
 
 fn takes_backend(_api: &dyn MacosWindowManagerBackend) {}
+
+fn prepares_fast_focus_context(
+    backend: &dyn MacosWindowManagerBackend,
+) -> Result<NativeFastFocusContext, MacosNativeFastFocusError> {
+    backend.prepare_fast_focus_context()
+}
 
 fn crate_source(path: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join(path)
@@ -50,6 +58,9 @@ fn public_api_smoke_test() {
         diagnostics: Some(Arc::clone(&diagnostics)),
     });
     takes_backend(&api);
+    let _prepare_fast_focus: fn(
+        &dyn MacosWindowManagerBackend,
+    ) -> Result<NativeFastFocusContext, MacosNativeFastFocusError> = prepares_fast_focus_context;
 
     let hint = ActiveSpaceFocusTargetHint {
         space_id: 7,

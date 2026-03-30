@@ -1,22 +1,24 @@
 #![allow(dead_code)]
 
 use std::{
-    ffi::{c_void, CString},
+    ffi::{CString, c_void},
     ptr::NonNull,
 };
 
 use crate::{
+    NativeBounds, NativeDesktopSnapshot, NativeDirection, NativeFastFocusContext, SpaceKind,
     error::{
         MacosNativeBridgeError, MacosNativeConnectError, MacosNativeOperationError,
         MacosNativeProbeError,
     },
     ffi,
     transport::{
-        MwmDesktopSnapshotAbi, MwmRectAbi, MwmSpaceAbi, MwmStatus, MwmWindowAbi,
-        MWM_STATUS_CONNECT_MISSING_ACCESSIBILITY_PERMISSION, MWM_STATUS_CONNECT_MISSING_REQUIRED_SYMBOL,
-        MWM_STATUS_CONNECT_MISSING_TOPOLOGY_PRECONDITION, MWM_STATUS_OK, MWM_STATUS_PROBE_MISSING_TOPOLOGY,
+        MWM_STATUS_CONNECT_MISSING_ACCESSIBILITY_PERMISSION,
+        MWM_STATUS_CONNECT_MISSING_REQUIRED_SYMBOL,
+        MWM_STATUS_CONNECT_MISSING_TOPOLOGY_PRECONDITION, MWM_STATUS_OK,
+        MWM_STATUS_PROBE_MISSING_TOPOLOGY, MWM_STATUS_UNAVAILABLE, MwmDesktopSnapshotAbi,
+        MwmFastFocusContextAbi, MwmRectAbi, MwmSpaceAbi, MwmStatus, MwmWindowAbi,
     },
-    NativeBounds, NativeDesktopSnapshot, NativeDirection, SpaceKind,
 };
 
 const MWM_STATUS_OPERATION_MISSING_SPACE: i32 = 30;
@@ -40,6 +42,10 @@ unsafe impl Send for SwiftBackendShim {}
 
 pub(crate) struct OwnedDesktopSnapshot {
     raw: MwmDesktopSnapshotAbi,
+}
+
+struct OwnedFastFocusContext {
+    raw: MwmFastFocusContextAbi,
 }
 
 struct OwnedDesktopSnapshotInput {
@@ -68,6 +74,25 @@ impl SwiftBackendShim {
 
     pub(crate) fn topology_snapshot(&self) -> Result<OwnedDesktopSnapshot, MacosNativeBridgeError> {
         self.snapshot_via(ffi::backend_topology_snapshot)
+    }
+
+    pub(crate) fn prepare_fast_focus_context(
+        &self,
+    ) -> Result<NativeFastFocusContext, MacosNativeBridgeError> {
+        let mut context = MwmFastFocusContextAbi::empty();
+        let mut status = MwmStatus::ok();
+        let code = unsafe {
+            ffi::backend_prepare_fast_focus_context(self.raw.as_ptr(), &mut context, &mut status)
+        };
+        status.code = code;
+
+        if code != MWM_STATUS_OK {
+            return Err(status_error(&mut status));
+        }
+
+        let context = OwnedFastFocusContext::new(context);
+        unsafe { ffi::status_release(&mut status) };
+        context.validate()?.into_native_context()
     }
 
     fn snapshot_via(
@@ -190,10 +215,16 @@ impl SwiftBackendShim {
         target_hint: Option<(u64, NativeBounds)>,
     ) -> Result<(), MacosNativeOperationError> {
         let mut status = MwmStatus::ok();
-        let (has_target_hint, target_hint_space_id, target_hint_x, target_hint_y, target_hint_width, target_hint_height) =
-            target_hint.map_or((0, 0, 0, 0, 0, 0), |(space_id, bounds)| {
-                (1, space_id, bounds.x, bounds.y, bounds.width, bounds.height)
-            });
+        let (
+            has_target_hint,
+            target_hint_space_id,
+            target_hint_x,
+            target_hint_y,
+            target_hint_width,
+            target_hint_height,
+        ) = target_hint.map_or((0, 0, 0, 0, 0, 0), |(space_id, bounds)| {
+            (1, space_id, bounds.x, bounds.y, bounds.width, bounds.height)
+        });
         let code = unsafe {
             ffi::backend_focus_window_in_active_space_with_known_pid(
                 self.raw.as_ptr(),
@@ -303,9 +334,35 @@ impl OwnedDesktopSnapshot {
     }
 }
 
+impl OwnedFastFocusContext {
+    fn new(raw: MwmFastFocusContextAbi) -> Self {
+        Self { raw }
+    }
+
+    fn validate(self) -> Result<Self, MacosNativeBridgeError> {
+        self.raw
+            .validate()
+            .map_err(|message| MacosNativeBridgeError::BackendStatus {
+                code: MWM_STATUS_UNAVAILABLE,
+                message: Some(message.to_string()),
+            })?;
+        Ok(self)
+    }
+
+    fn into_native_context(self) -> Result<NativeFastFocusContext, MacosNativeBridgeError> {
+        Ok(unsafe { self.raw.to_native_context() })
+    }
+}
+
 impl Drop for OwnedDesktopSnapshot {
     fn drop(&mut self) {
         unsafe { ffi::desktop_snapshot_release(&mut self.raw) };
+    }
+}
+
+impl Drop for OwnedFastFocusContext {
+    fn drop(&mut self) {
+        unsafe { ffi::desktop_snapshot_release(&mut self.raw.snapshot) };
     }
 }
 
@@ -338,12 +395,14 @@ impl OwnedDesktopSnapshotInput {
                     .as_ref()
                     .map(|value| CString::new(value.as_str()).unwrap().into_raw())
                     .unwrap_or(std::ptr::null_mut()),
-                frame: window.bounds.map_or_else(MwmRectAbi::default, |bounds| MwmRectAbi {
-                    x: bounds.x,
-                    y: bounds.y,
-                    width: bounds.width,
-                    height: bounds.height,
-                }),
+                frame: window
+                    .bounds
+                    .map_or_else(MwmRectAbi::default, |bounds| MwmRectAbi {
+                        x: bounds.x,
+                        y: bounds.y,
+                        width: bounds.width,
+                        height: bounds.height,
+                    }),
                 has_frame: u8::from(window.bounds.is_some()),
                 level: window.level,
                 space_id: window.space_id,
@@ -567,7 +626,10 @@ pub(crate) fn test_switch_space_error_from_ffi() -> MacosNativeOperationError {
 #[test]
 fn switch_space_in_snapshot_maps_swift_operation_error() {
     let err = test_switch_space_error_from_ffi();
-    assert!(matches!(err, crate::MacosNativeOperationError::MissingWindow(_)));
+    assert!(matches!(
+        err,
+        crate::MacosNativeOperationError::MissingWindow(_)
+    ));
 }
 
 #[cfg(test)]
@@ -654,6 +716,14 @@ fn sample_snapshot_abi() -> MwmDesktopSnapshotAbi {
 }
 
 #[cfg(test)]
+fn sample_fast_focus_context_abi() -> MwmFastFocusContextAbi {
+    MwmFastFocusContextAbi {
+        snapshot: sample_snapshot_abi(),
+        environment: 0,
+    }
+}
+
+#[cfg(test)]
 fn release_test_snapshot(snapshot: &mut MwmDesktopSnapshotAbi) {
     use std::ffi::CString;
 
@@ -688,11 +758,11 @@ fn release_test_snapshot(snapshot: &mut MwmDesktopSnapshotAbi) {
 mod tests {
     use std::{ffi::c_void, mem::ManuallyDrop, ptr::NonNull};
 
-    use super::{test_snapshot_from_ffi, SwiftBackendShim};
+    use super::{SwiftBackendShim, test_snapshot_from_ffi};
     use crate::{
         error::MacosNativeBridgeError,
         ffi::{self, TestDesktopSnapshotResponse},
-        transport::{MwmDesktopSnapshotAbi, MwmStatus, MWM_STATUS_OK},
+        transport::{MWM_STATUS_OK, MwmDesktopSnapshotAbi, MwmStatus},
     };
 
     #[test]
@@ -753,6 +823,31 @@ mod tests {
         assert_eq!(snapshot.spaces.len(), 2);
         assert_eq!(snapshot.windows.len(), 3);
         assert_eq!(snapshot.focused_window_id, Some(9003));
+        assert_eq!(ffi::test_support::desktop_snapshot_release_calls(), 1);
+    }
+
+    #[test]
+    fn fast_focus_context_maps_transport() {
+        let _guard = super::ffi_test_guard();
+        ffi::test_support::reset();
+        ffi::test_support::set_fast_focus_context_response(ffi::TestFastFocusContextResponse {
+            code: MWM_STATUS_OK,
+            context: super::sample_fast_focus_context_abi(),
+            status: MwmStatus::ok(),
+        });
+
+        let shim = ManuallyDrop::new(SwiftBackendShim {
+            raw: NonNull::<c_void>::dangling(),
+        });
+
+        let context = shim.prepare_fast_focus_context().unwrap();
+
+        assert_eq!(
+            context.environment,
+            crate::NativeFastFocusEnvironment::Validated
+        );
+        assert_eq!(context.desktop_snapshot.focused_window_id, Some(9003));
+        assert_eq!(context.desktop_snapshot.windows.len(), 3);
         assert_eq!(ffi::test_support::desktop_snapshot_release_calls(), 1);
     }
 }

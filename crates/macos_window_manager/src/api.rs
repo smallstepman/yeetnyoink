@@ -7,7 +7,10 @@ use crate::desktop_topology_snapshot::{
     RawSpaceRecord, RawTopologySnapshot, RawWindow, WindowSnapshot,
 };
 use crate::environment;
-use crate::error::{MacosNativeConnectError, MacosNativeOperationError, MacosNativeProbeError};
+use crate::error::{
+    MacosNativeConnectError, MacosNativeFastFocusError, MacosNativeOperationError,
+    MacosNativeProbeError,
+};
 use crate::navigation;
 use crate::{
     active_space_ax_backed_same_pid_target, active_space_focus_target_hint_from_topology,
@@ -25,6 +28,19 @@ pub struct NativeDesktopSnapshot {
     pub active_space_ids: HashSet<NativeSpaceId>,
     pub windows: Vec<NativeWindowSnapshot>,
     pub focused_window_id: Option<NativeWindowId>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeFastFocusEnvironment {
+    Validated,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeFastFocusContext {
+    pub environment: NativeFastFocusEnvironment,
+    pub desktop_snapshot: NativeDesktopSnapshot,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -120,6 +136,15 @@ pub trait MacosWindowManagerBackend {
     fn debug(&self, _message: &str) {}
     fn validate_environment(&self) -> Result<(), MacosNativeConnectError> {
         environment::validate_environment_with_api(self)
+    }
+    fn prepare_fast_focus_context(
+        &self,
+    ) -> Result<NativeFastFocusContext, MacosNativeFastFocusError> {
+        self.validate_environment()?;
+        Ok(NativeFastFocusContext {
+            environment: NativeFastFocusEnvironment::Validated,
+            desktop_snapshot: self.desktop_snapshot()?,
+        })
     }
     #[allow(dead_code)]
     fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError>;
@@ -300,6 +325,5 @@ pub trait MacosWindowManagerBackend {
         Ok(topology)
     }
 }
-
 
 pub(crate) use self::MacosWindowManagerBackend as MacosNativeApi;

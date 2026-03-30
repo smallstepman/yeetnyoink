@@ -174,7 +174,9 @@ fn source_backend_crate_is_macos_only() {
 fn source_build_script_does_not_silently_return_for_non_macos_targets() {
     let build = std::fs::read_to_string(crate_source("build.rs")).unwrap();
     assert!(
-        !build.contains("if env::var(\"CARGO_CFG_TARGET_OS\").as_deref() != Ok(\"macos\") {\n        return;"),
+        !build.contains(
+            "if env::var(\"CARGO_CFG_TARGET_OS\").as_deref() != Ok(\"macos\") {\n        return;"
+        ),
         "build.rs should fail clearly for non-macOS targets instead of returning early"
     );
 }
@@ -191,7 +193,10 @@ fn build_script_fails_clearly_for_non_macos_targets() {
         .arg(&build_script_bin)
         .status()
         .expect("rustc should compile build.rs for boundary test");
-    assert!(rustc_status.success(), "build.rs should compile as a standalone program for testing");
+    assert!(
+        rustc_status.success(),
+        "build.rs should compile as a standalone program for testing"
+    );
 
     let output = Command::new(&build_script_bin)
         .env("CARGO_MANIFEST_DIR", env!("CARGO_MANIFEST_DIR"))
@@ -276,6 +281,7 @@ fn source_swift_ffi_contract_is_explicit() {
     assert!(exports.contains("@_cdecl(\"mwm_backend_new\")"));
     assert!(exports.contains("@_cdecl(\"mwm_backend_free\")"));
     assert!(exports.contains("@_cdecl(\"mwm_backend_desktop_snapshot\")"));
+    assert!(exports.contains("@_cdecl(\"mwm_backend_prepare_fast_focus_context\")"));
     assert!(exports.contains("@_cdecl(\"mwm_status_release\")"));
     assert!(exports.contains("@_cdecl(\"mwm_desktop_snapshot_release\")"));
 
@@ -291,6 +297,30 @@ fn source_swift_ffi_contract_is_explicit() {
     );
 }
 
+#[test]
+fn source_swift_fast_focus_context_export_exists() {
+    let exports = std::fs::read_to_string(crate_source(
+        "swift/Sources/MacosWindowManagerFFI/Exports.swift",
+    ))
+    .unwrap();
+    assert!(
+        exports.contains("@_cdecl(\"mwm_backend_prepare_fast_focus_context\")"),
+        "Swift FFI should expose a coarse fast-focus context export"
+    );
+
+    let api = std::fs::read_to_string(crate_source("src/api.rs")).unwrap();
+    assert!(
+        api.contains("fn prepare_fast_focus_context("),
+        "the shared backend trait should expose the coarse fast-focus context method"
+    );
+
+    let backend = std::fs::read_to_string(crate_source("src/backend.rs")).unwrap();
+    assert!(
+        !backend.contains("pub fn prepare_fast_focus_context("),
+        "SwiftMacosBackend should keep the bridge-typed fast-focus helper crate-private"
+    );
+}
+
 fn source_window_around(source: &str, needle: &str, radius: usize) -> String {
     let needle_start = source.find(needle).expect("needle should exist in source");
     let start = needle_start.saturating_sub(radius);
@@ -302,7 +332,12 @@ fn source_window_around(source: &str, needle: &str, radius: usize) -> String {
 fn source_pointer_owning_transport_types_are_not_copy() {
     let rust_transport = std::fs::read_to_string(crate_source("src/transport.rs")).unwrap();
 
-    for type_name in ["MwmStatus", "MwmWindowAbi", "MwmDesktopSnapshotAbi"] {
+    for type_name in [
+        "MwmStatus",
+        "MwmWindowAbi",
+        "MwmDesktopSnapshotAbi",
+        "MwmFastFocusContextAbi",
+    ] {
         let window = source_window_around(&rust_transport, &format!("pub struct {type_name}"), 120);
         assert!(
             !window.contains("Copy"),

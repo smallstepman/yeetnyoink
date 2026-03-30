@@ -55,6 +55,11 @@ func verifyTransportAbiContract() {
     precondition(MemoryLayout<MwmDesktopSnapshotAbi>.offset(of: \.windows_ptr) == 16)
     precondition(MemoryLayout<MwmDesktopSnapshotAbi>.offset(of: \.windows_len) == 24)
     precondition(MemoryLayout<MwmDesktopSnapshotAbi>.offset(of: \.focused_window_id) == 32)
+
+    precondition(MemoryLayout<MwmFastFocusContextAbi>.stride == 48)
+    precondition(MemoryLayout<MwmFastFocusContextAbi>.alignment == 8)
+    precondition(MemoryLayout<MwmFastFocusContextAbi>.offset(of: \.snapshot) == 0)
+    precondition(MemoryLayout<MwmFastFocusContextAbi>.offset(of: \.environment) == 40)
 }
 
 /// FFI status transport shared with Rust.
@@ -180,6 +185,21 @@ public struct MwmDesktopSnapshotAbi {
     }
 }
 
+/// FFI fast-focus context transport shared with Rust.
+///
+/// `snapshot` owns the embedded desktop snapshot payload and Rust releases that
+/// embedded transport with `mwm_desktop_snapshot_release` after copying values
+/// into Rust-owned structures.
+public struct MwmFastFocusContextAbi {
+    public var snapshot: MwmDesktopSnapshotAbi
+    public var environment: Int32
+
+    public init(snapshot: MwmDesktopSnapshotAbi = MwmDesktopSnapshotAbi(), environment: Int32 = 0) {
+        self.snapshot = snapshot
+        self.environment = environment
+    }
+}
+
 extension MwmStatus {
     mutating func releaseOwnedPayloads() {
         message_ptr?.deallocate()
@@ -287,6 +307,15 @@ extension MwmDesktopSnapshotAbi {
             windows_ptr: windowsPointer,
             windows_len: snapshot.windows.count,
             focused_window_id: snapshot.focusedWindowID ?? 0
+        )
+    }
+}
+
+extension MwmFastFocusContextAbi {
+    init(_ context: FastFocusContext) {
+        self.init(
+            snapshot: MwmDesktopSnapshotAbi(context.desktopSnapshot),
+            environment: context.environment.rawValue
         )
     }
 }
