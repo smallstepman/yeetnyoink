@@ -521,7 +521,7 @@ fn bridge_probe_error(error: MacosNativeBridgeError) -> MacosNativeProbeError {
     }
 }
 
-fn static_message(message: Option<String>) -> &'static str {
+pub(crate) fn static_message(message: Option<String>) -> &'static str {
     match message.as_deref() {
         Some("SLSMainConnectionID") => "SLSMainConnectionID",
         Some("SLSCopyManagedDisplaySpaces") => "SLSCopyManagedDisplaySpaces",

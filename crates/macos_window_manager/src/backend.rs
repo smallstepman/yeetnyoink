@@ -11,6 +11,7 @@ use crate::{
     },
     shim::SwiftBackendShim,
     transport::{
+        MWM_STATUS_CONNECT_MISSING_REQUIRED_SYMBOL,
         MWM_STATUS_CONNECT_MISSING_ACCESSIBILITY_PERMISSION,
         MWM_STATUS_CONNECT_MISSING_TOPOLOGY_PRECONDITION, MWM_STATUS_PROBE_MISSING_TOPOLOGY,
     },
@@ -104,6 +105,11 @@ impl SwiftMacosBackend {
 fn fast_focus_error_from_bridge(error: crate::MacosNativeBridgeError) -> MacosNativeFastFocusError {
     match error {
         crate::MacosNativeBridgeError::BackendStatus { code, message } => match code {
+            MWM_STATUS_CONNECT_MISSING_REQUIRED_SYMBOL => {
+                MacosNativeFastFocusError::Connect(MacosNativeConnectError::MissingRequiredSymbol(
+                    crate::shim::static_message(message),
+                ))
+            }
             MWM_STATUS_CONNECT_MISSING_ACCESSIBILITY_PERMISSION => {
                 MacosNativeFastFocusError::Connect(
                     MacosNativeConnectError::MissingAccessibilityPermission,
@@ -111,12 +117,14 @@ fn fast_focus_error_from_bridge(error: crate::MacosNativeBridgeError) -> MacosNa
             }
             MWM_STATUS_CONNECT_MISSING_TOPOLOGY_PRECONDITION => {
                 MacosNativeFastFocusError::Connect(
-                    MacosNativeConnectError::MissingTopologyPrecondition("swift macOS backend"),
+                    MacosNativeConnectError::MissingTopologyPrecondition(
+                        crate::shim::static_message(message),
+                    ),
                 )
             }
             MWM_STATUS_PROBE_MISSING_TOPOLOGY => {
                 MacosNativeFastFocusError::Probe(MacosNativeProbeError::MissingTopology(
-                    "swift macOS backend",
+                    crate::shim::static_message(message),
                 ))
             }
             _ => MacosNativeFastFocusError::Bridge(crate::MacosNativeBridgeError::BackendStatus {
@@ -351,7 +359,7 @@ fn raw_window_from_snapshot(window: crate::NativeWindowSnapshot) -> RawWindow {
 
 #[cfg(test)]
 mod tests {
-    use std::mem::ManuallyDrop;
+    use std::{ffi::CString, mem::ManuallyDrop};
 
     use super::SwiftMacosBackend;
     use crate::{
@@ -359,6 +367,7 @@ mod tests {
         MissionControlHotkey, MissionControlModifiers, NativeBackendOptions,
         shim::{self, SwiftBackendShim},
         transport::{
+            MWM_STATUS_CONNECT_MISSING_REQUIRED_SYMBOL,
             MWM_STATUS_CONNECT_MISSING_ACCESSIBILITY_PERMISSION,
             MWM_STATUS_PROBE_MISSING_TOPOLOGY, MwmFastFocusContextAbi, MwmStatus,
         },
@@ -436,6 +445,29 @@ mod tests {
             connect_error,
             MacosNativeFastFocusError::Connect(
                 crate::MacosNativeConnectError::MissingAccessibilityPermission
+            )
+        );
+
+        crate::ffi::test_support::reset();
+        crate::ffi::test_support::set_fast_focus_context_response(
+            crate::ffi::TestFastFocusContextResponse {
+                code: MWM_STATUS_CONNECT_MISSING_REQUIRED_SYMBOL,
+                context: MwmFastFocusContextAbi::empty(),
+                status: MwmStatus {
+                    code: MWM_STATUS_CONNECT_MISSING_REQUIRED_SYMBOL,
+                    message_ptr: CString::new("SLSMainConnectionID").unwrap().into_raw(),
+                },
+            },
+        );
+        let backend =
+            ManuallyDrop::new(test_backend_with_shim(SwiftBackendShim::dangling_for_test()));
+        let required_symbol_error =
+            <SwiftMacosBackend as MacosWindowManagerBackend>::prepare_fast_focus_context(&backend)
+                .unwrap_err();
+        assert_eq!(
+            required_symbol_error,
+            MacosNativeFastFocusError::Connect(
+                crate::MacosNativeConnectError::MissingRequiredSymbol("SLSMainConnectionID")
             )
         );
 
