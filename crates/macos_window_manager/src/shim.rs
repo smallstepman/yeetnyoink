@@ -308,6 +308,13 @@ impl SwiftBackendShim {
     pub(crate) fn as_ptr(&self) -> *mut c_void {
         self.raw.as_ptr()
     }
+
+    #[cfg(test)]
+    pub(crate) fn dangling_for_test() -> Self {
+        Self {
+            raw: NonNull::<c_void>::dangling(),
+        }
+    }
 }
 
 impl Drop for SwiftBackendShim {
@@ -593,7 +600,7 @@ pub(crate) fn test_snapshot_from_ffi() -> crate::NativeDesktopSnapshot {
 }
 
 #[cfg(test)]
-fn ffi_test_guard() -> std::sync::MutexGuard<'static, ()> {
+pub(crate) fn ffi_test_guard() -> std::sync::MutexGuard<'static, ()> {
     use std::sync::{Mutex, OnceLock};
 
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
