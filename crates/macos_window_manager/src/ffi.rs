@@ -22,6 +22,7 @@ unsafe impl Send for TestDesktopSnapshotResponse {}
 #[derive(Default)]
 struct TestState {
     desktop_snapshot_response: Option<TestDesktopSnapshotResponse>,
+    topology_snapshot_response: Option<TestDesktopSnapshotResponse>,
     desktop_snapshot_release_calls: usize,
 }
 
@@ -33,7 +34,7 @@ fn test_state() -> &'static Mutex<TestState> {
 
 #[cfg(test)]
 pub(crate) mod test_support {
-    use super::{TestDesktopSnapshotResponse, test_state};
+    use super::{test_state, TestDesktopSnapshotResponse};
 
     pub(crate) fn reset() {
         *test_state().lock().unwrap() = Default::default();
@@ -41,6 +42,10 @@ pub(crate) mod test_support {
 
     pub(crate) fn set_desktop_snapshot_response(response: TestDesktopSnapshotResponse) {
         test_state().lock().unwrap().desktop_snapshot_response = Some(response);
+    }
+
+    pub(crate) fn set_topology_snapshot_response(response: TestDesktopSnapshotResponse) {
+        test_state().lock().unwrap().topology_snapshot_response = Some(response);
     }
 
     pub(crate) fn desktop_snapshot_release_calls() -> usize {
@@ -54,6 +59,11 @@ unsafe extern "C" {
     fn mwm_backend_validate_environment(backend: *mut c_void, out_status: *mut c_void) -> i32;
     fn mwm_backend_free(backend: *mut c_void);
     fn mwm_backend_desktop_snapshot(
+        backend: *mut c_void,
+        out_snapshot: *mut c_void,
+        out_status: *mut c_void,
+    ) -> i32;
+    fn mwm_backend_topology_snapshot(
         backend: *mut c_void,
         out_snapshot: *mut c_void,
         out_status: *mut c_void,
@@ -156,6 +166,80 @@ pub(crate) unsafe fn backend_desktop_snapshot(
         .lock()
         .unwrap()
         .desktop_snapshot_response
+        .take()
+    {
+        if !out_snapshot.is_null() {
+            unsafe {
+                *out_snapshot = response.snapshot;
+            }
+        }
+
+        if !out_status.is_null() {
+            unsafe {
+                *out_status = response.status;
+            }
+        }
+
+        return response.code;
+    }
+
+    if !out_snapshot.is_null() {
+        unsafe {
+            *out_snapshot = MwmDesktopSnapshotAbi::empty();
+        }
+    }
+
+    if !out_status.is_null() {
+        unsafe {
+            *out_status = MwmStatus::unavailable();
+        }
+    }
+
+    crate::transport::MWM_STATUS_UNAVAILABLE
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) unsafe fn backend_topology_snapshot(
+    backend: *mut c_void,
+    out_snapshot: *mut MwmDesktopSnapshotAbi,
+    out_status: *mut MwmStatus,
+) -> i32 {
+    #[cfg(test)]
+    if let Some(response) = test_state()
+        .lock()
+        .unwrap()
+        .topology_snapshot_response
+        .take()
+    {
+        if !out_snapshot.is_null() {
+            unsafe {
+                *out_snapshot = response.snapshot;
+            }
+        }
+
+        if !out_status.is_null() {
+            unsafe {
+                *out_status = response.status;
+            }
+        }
+
+        return response.code;
+    }
+
+    unsafe { mwm_backend_topology_snapshot(backend, out_snapshot.cast(), out_status.cast()) }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) unsafe fn backend_topology_snapshot(
+    _backend: *mut c_void,
+    out_snapshot: *mut MwmDesktopSnapshotAbi,
+    out_status: *mut MwmStatus,
+) -> i32 {
+    #[cfg(test)]
+    if let Some(response) = test_state()
+        .lock()
+        .unwrap()
+        .topology_snapshot_response
         .take()
     {
         if !out_snapshot.is_null() {

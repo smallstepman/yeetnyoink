@@ -203,6 +203,17 @@ private struct RawSpaceRecord {
 
 enum DesktopSnapshotBuilder {
     static func build(system: any BackendSystem) throws -> DesktopSnapshot {
+        try build(system: system, allowsMissingFocus: false)
+    }
+
+    static func buildTopology(system: any BackendSystem) throws -> DesktopSnapshot {
+        try build(system: system, allowsMissingFocus: true)
+    }
+
+    private static func build(
+        system: any BackendSystem,
+        allowsMissingFocus: Bool
+    ) throws -> DesktopSnapshot {
         let payload = try system.managedDisplaySpaces()
         let rawSpaces = try parseManagedSpaces(payload)
         let activeSpaceIDs = try parseActiveSpaceIDs(payload)
@@ -264,10 +275,14 @@ enum DesktopSnapshotBuilder {
         }
 
         let focusedWindowID: UInt64?
-        do {
+        if allowsMissingFocus {
+            do {
+                focusedWindowID = try system.focusedWindowID()
+            } catch {
+                focusedWindowID = nil
+            }
+        } else {
             focusedWindowID = try system.focusedWindowID()
-        } catch {
-            focusedWindowID = nil
         }
 
         return DesktopSnapshot(

@@ -453,6 +453,103 @@ impl MacosNativeApi for FakeNativeApi {
 }
 
 #[derive(Debug, Clone)]
+struct TopologyOnlyActiveSpaceFallbackApi {
+    topology: RawTopologySnapshot,
+    calls: Rc<RefCell<Vec<String>>>,
+    ax_backed_window_ids: Vec<u64>,
+}
+
+impl MacosNativeApi for TopologyOnlyActiveSpaceFallbackApi {
+    fn has_symbol(&self, _symbol: &'static str) -> bool {
+        true
+    }
+
+    fn ax_is_trusted(&self) -> bool {
+        true
+    }
+
+    fn minimal_topology_ready(&self) -> bool {
+        true
+    }
+
+    fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
+        Err(MacosNativeProbeError::MissingTopology("strict focused window probe"))
+    }
+
+    fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
+        Ok(self.topology.spaces.clone())
+    }
+
+    fn active_space_ids(&self) -> Result<HashSet<u64>, MacosNativeProbeError> {
+        Ok(self.topology.active_space_ids.clone())
+    }
+
+    fn active_space_windows(&self, space_id: u64) -> Result<Vec<RawWindow>, MacosNativeProbeError> {
+        Ok(self
+            .topology
+            .active_space_windows
+            .get(&space_id)
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    fn inactive_space_window_ids(&self) -> Result<HashMap<u64, Vec<u64>>, MacosNativeProbeError> {
+        Ok(self.topology.inactive_space_window_ids.clone())
+    }
+
+    fn focused_window_id(&self) -> Result<Option<u64>, MacosNativeProbeError> {
+        Ok(self.topology.focused_window_id)
+    }
+
+    fn switch_space(&self, space_id: u64) -> Result<(), MacosNativeOperationError> {
+        self.calls.borrow_mut().push(format!("switch_space:{space_id}"));
+        Ok(())
+    }
+
+    fn focus_window(&self, window_id: u64) -> Result<(), MacosNativeOperationError> {
+        self.calls.borrow_mut().push(format!("focus_window:{window_id}"));
+        Ok(())
+    }
+
+    fn focus_window_with_known_pid(
+        &self,
+        window_id: u64,
+        pid: u32,
+    ) -> Result<(), MacosNativeOperationError> {
+        self.calls
+            .borrow_mut()
+            .push(format!("focus_window_with_known_pid:{window_id}:{pid}"));
+        if self.ax_backed_window_ids.contains(&window_id) {
+            Ok(())
+        } else {
+            Err(MacosNativeOperationError::MissingWindow(window_id))
+        }
+    }
+
+    fn ax_window_ids_for_pid(&self, _pid: u32) -> Result<Vec<u64>, MacosNativeOperationError> {
+        Ok(self.ax_backed_window_ids.clone())
+    }
+
+    fn move_window_to_space(
+        &self,
+        _window_id: u64,
+        _space_id: u64,
+    ) -> Result<(), MacosNativeOperationError> {
+        Ok(())
+    }
+
+    fn swap_window_frames(
+        &self,
+        _source_window_id: u64,
+        _source_frame: NativeBounds,
+        _target_window_id: u64,
+        _target_frame: NativeBounds,
+    ) -> Result<(), MacosNativeOperationError> {
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
 struct PostSwitchSelectionDriftApi {
     initial_topology: RawTopologySnapshot,
     switched_topology: RawTopologySnapshot,
@@ -2473,6 +2570,71 @@ fn backend_focus_direction_remaps_post_switch_same_pid_splitview_target_before_a
         take_calls(&calls),
         vec![
             "switch_space:2",
+            "focus_window_with_known_pid:1019:4613",
+            "focus_window_with_known_pid:410:4613",
+        ]
+    );
+}
+
+#[test]
+fn active_space_same_pid_fallback_uses_topology_snapshot_when_strict_snapshot_fails() {
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let api = TopologyOnlyActiveSpaceFallbackApi {
+        topology: RawTopologySnapshot {
+            spaces: vec![raw_split_space(2, &[11, 12])],
+            active_space_ids: HashSet::from([2]),
+            active_space_windows: HashMap::from([(
+                2,
+                vec![
+                    raw_window(985)
+                        .with_visible_index(0)
+                        .with_pid(4613)
+                        .with_app_id("com.github.wez.wezterm")
+                        .with_title("actual-left")
+                        .with_frame(NativeBounds {
+                            x: 12,
+                            y: 0,
+                            width: 108,
+                            height: 120,
+                        }),
+                    raw_window(410)
+                        .with_visible_index(1)
+                        .with_pid(4613)
+                        .with_app_id("com.github.wez.wezterm")
+                        .with_title("actual-right")
+                        .with_frame(NativeBounds {
+                            x: 228,
+                            y: 0,
+                            width: 112,
+                            height: 120,
+                        }),
+                ],
+            )]),
+            inactive_space_window_ids: HashMap::new(),
+            focused_window_id: Some(985),
+        },
+        calls: calls.clone(),
+        ax_backed_window_ids: vec![985, 410],
+    };
+
+    api.focus_window_in_active_space_with_known_pid(
+        1019,
+        4613,
+        Some(ActiveSpaceFocusTargetHint {
+            space_id: 2,
+            bounds: NativeBounds {
+                x: 220,
+                y: 0,
+                width: 121,
+                height: 120,
+            },
+        }),
+    )
+    .unwrap();
+
+    assert_eq!(
+        take_calls(&calls),
+        vec![
             "focus_window_with_known_pid:1019:4613",
             "focus_window_with_known_pid:410:4613",
         ]

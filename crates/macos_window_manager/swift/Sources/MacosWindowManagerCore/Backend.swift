@@ -25,6 +25,10 @@ public struct Backend {
     public func desktopSnapshot() throws -> DesktopSnapshot {
         try DesktopSnapshotBuilder.build(system: system)
     }
+
+    public func topologySnapshot() throws -> DesktopSnapshot {
+        try DesktopSnapshotBuilder.buildTopology(system: system)
+    }
 }
 
 final class LiveSystem: BackendSystem {

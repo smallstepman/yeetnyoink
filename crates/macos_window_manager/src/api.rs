@@ -176,7 +176,9 @@ pub trait MacosNativeApi {
             {
                 if let Some(remapped_target_id) = active_space_ax_backed_same_pid_target(
                     self,
-                    &self.desktop_snapshot()?,
+                    &desktop_topology_snapshot::native_desktop_snapshot_from_topology(
+                        &self.topology_snapshot()?,
+                    ),
                     window_id,
                     pid,
                     target_hint,

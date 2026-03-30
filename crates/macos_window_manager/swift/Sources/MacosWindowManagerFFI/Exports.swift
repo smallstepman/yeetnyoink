@@ -10,6 +10,10 @@ private final class BackendHandle {
     func desktopSnapshot() throws -> MwmDesktopSnapshotAbi {
         MwmDesktopSnapshotAbi(try backend.desktopSnapshot())
     }
+
+    func topologySnapshot() throws -> MwmDesktopSnapshotAbi {
+        MwmDesktopSnapshotAbi(try backend.topologySnapshot())
+    }
 }
 
 @inline(__always)
@@ -127,6 +131,34 @@ public func mwm_backend_desktop_snapshot(
         outSnapshot
             .assumingMemoryBound(to: MwmDesktopSnapshotAbi.self)
             .pointee = try handle.desktopSnapshot()
+        writeStatus(outStatus, code: MWM_STATUS_OK)
+        return MWM_STATUS_OK
+    } catch let error as BackendError {
+        return writeErrorStatus(outStatus, error: error)
+    } catch {
+        writeStatus(outStatus, code: MWM_STATUS_UNAVAILABLE, message: String(describing: error).ownedCString())
+        return MWM_STATUS_UNAVAILABLE
+    }
+}
+
+@_cdecl("mwm_backend_topology_snapshot")
+public func mwm_backend_topology_snapshot(
+    _ backend: UnsafeMutableRawPointer?,
+    _ outSnapshot: UnsafeMutableRawPointer?,
+    _ outStatus: UnsafeMutableRawPointer?
+) -> Int32 {
+    verifyTransportAbiContract()
+
+    guard let backend, let outSnapshot else {
+        writeStatus(outStatus, code: MWM_STATUS_INVALID_ARGUMENT)
+        return MWM_STATUS_INVALID_ARGUMENT
+    }
+
+    let handle = Unmanaged<BackendHandle>.fromOpaque(backend).takeUnretainedValue()
+    do {
+        outSnapshot
+            .assumingMemoryBound(to: MwmDesktopSnapshotAbi.self)
+            .pointee = try handle.topologySnapshot()
         writeStatus(outStatus, code: MWM_STATUS_OK)
         return MWM_STATUS_OK
     } catch let error as BackendError {

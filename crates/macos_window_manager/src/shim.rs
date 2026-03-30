@@ -3,15 +3,15 @@
 use std::{ffi::c_void, ptr::NonNull};
 
 use crate::{
-    NativeDesktopSnapshot,
     error::{MacosNativeBridgeError, MacosNativeConnectError, MacosNativeProbeError},
     ffi,
     transport::{
-        MWM_STATUS_CONNECT_MISSING_ACCESSIBILITY_PERMISSION,
+        MwmDesktopSnapshotAbi, MwmStatus, MWM_STATUS_CONNECT_MISSING_ACCESSIBILITY_PERMISSION,
         MWM_STATUS_CONNECT_MISSING_REQUIRED_SYMBOL,
         MWM_STATUS_CONNECT_MISSING_TOPOLOGY_PRECONDITION, MWM_STATUS_OK,
-        MWM_STATUS_PROBE_MISSING_TOPOLOGY, MwmDesktopSnapshotAbi, MwmStatus,
+        MWM_STATUS_PROBE_MISSING_TOPOLOGY,
     },
+    NativeDesktopSnapshot,
 };
 
 pub(crate) struct SwiftBackendShim {
@@ -39,10 +39,20 @@ impl SwiftBackendShim {
     }
 
     pub(crate) fn desktop_snapshot(&self) -> Result<OwnedDesktopSnapshot, MacosNativeBridgeError> {
+        self.snapshot_via(ffi::backend_desktop_snapshot)
+    }
+
+    pub(crate) fn topology_snapshot(&self) -> Result<OwnedDesktopSnapshot, MacosNativeBridgeError> {
+        self.snapshot_via(ffi::backend_topology_snapshot)
+    }
+
+    fn snapshot_via(
+        &self,
+        fetch: unsafe fn(*mut c_void, *mut MwmDesktopSnapshotAbi, *mut MwmStatus) -> i32,
+    ) -> Result<OwnedDesktopSnapshot, MacosNativeBridgeError> {
         let mut snapshot = MwmDesktopSnapshotAbi::empty();
         let mut status = MwmStatus::ok();
-        let code =
-            unsafe { ffi::backend_desktop_snapshot(self.raw.as_ptr(), &mut snapshot, &mut status) };
+        let code = unsafe { fetch(self.raw.as_ptr(), &mut snapshot, &mut status) };
         status.code = code;
 
         if code != MWM_STATUS_OK {
@@ -67,8 +77,18 @@ impl SwiftBackendShim {
         Err(connect_error(&mut status))
     }
 
-    pub(crate) fn desktop_snapshot_native(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
+    pub(crate) fn desktop_snapshot_native(
+        &self,
+    ) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
         self.desktop_snapshot()
+            .map_err(bridge_probe_error)?
+            .into_native_snapshot()
+    }
+
+    pub(crate) fn topology_snapshot_native(
+        &self,
+    ) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
+        self.topology_snapshot()
             .map_err(bridge_probe_error)?
             .into_native_snapshot()
     }
@@ -138,9 +158,9 @@ fn connect_error(status: &mut MwmStatus) -> MacosNativeConnectError {
 fn bridge_probe_error(error: MacosNativeBridgeError) -> MacosNativeProbeError {
     match error {
         MacosNativeBridgeError::BackendStatus { code, message } => match code {
-            MWM_STATUS_PROBE_MISSING_TOPOLOGY => MacosNativeProbeError::MissingTopology(
-                static_message(message),
-            ),
+            MWM_STATUS_PROBE_MISSING_TOPOLOGY => {
+                MacosNativeProbeError::MissingTopology(static_message(message))
+            }
             _ => MacosNativeProbeError::MissingTopology("swift macOS backend"),
         },
         MacosNativeBridgeError::InvalidDesktopSnapshotTransport(_) => {
@@ -299,11 +319,11 @@ fn release_test_snapshot(snapshot: &mut MwmDesktopSnapshotAbi) {
 mod tests {
     use std::{ffi::c_void, mem::ManuallyDrop, ptr::NonNull};
 
-    use super::{SwiftBackendShim, test_snapshot_from_ffi};
+    use super::{test_snapshot_from_ffi, SwiftBackendShim};
     use crate::{
         error::MacosNativeBridgeError,
         ffi::{self, TestDesktopSnapshotResponse},
-        transport::{MWM_STATUS_OK, MwmDesktopSnapshotAbi, MwmStatus},
+        transport::{MwmDesktopSnapshotAbi, MwmStatus, MWM_STATUS_OK},
     };
 
     #[test]
@@ -342,5 +362,26 @@ mod tests {
         assert_eq!(snapshot.spaces.len(), 2);
         assert_eq!(snapshot.windows.len(), 3);
         assert_eq!(snapshot.focused_window_id, Some(9003));
+    }
+
+    #[test]
+    fn topology_snapshot_wrapper_uses_topology_transport() {
+        ffi::test_support::reset();
+        ffi::test_support::set_topology_snapshot_response(TestDesktopSnapshotResponse {
+            code: MWM_STATUS_OK,
+            snapshot: super::sample_snapshot_abi(),
+            status: MwmStatus::ok(),
+        });
+
+        let shim = ManuallyDrop::new(SwiftBackendShim {
+            raw: NonNull::<c_void>::dangling(),
+        });
+
+        let snapshot = shim.topology_snapshot_native().unwrap();
+
+        assert_eq!(snapshot.spaces.len(), 2);
+        assert_eq!(snapshot.windows.len(), 3);
+        assert_eq!(snapshot.focused_window_id, Some(9003));
+        assert_eq!(ffi::test_support::desktop_snapshot_release_calls(), 1);
     }
 }

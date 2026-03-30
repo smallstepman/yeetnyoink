@@ -429,7 +429,8 @@ fn refreshed_split_view_focus_target<A: MacosNativeApi + ?Sized>(
         );
         return Ok(None);
     };
-    let refreshed_snapshot = api.desktop_snapshot()?;
+    let refreshed_snapshot =
+        desktop_topology_snapshot::native_desktop_snapshot_from_topology(&api.topology_snapshot()?);
     let Some(refreshed_target_id) = split_view_same_space_focus_target_from_source(
         &refreshed_snapshot,
         original_focused.id,

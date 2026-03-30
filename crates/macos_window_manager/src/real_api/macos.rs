@@ -1,25 +1,26 @@
 use std::{
     collections::{HashMap, HashSet},
-    ffi::{CString, c_void},
+    ffi::{c_void, CString},
 };
 
 use crate::{
-    ActiveSpaceFocusTargetHint, MacosNativeApi, MacosNativeOperationError, MacosNativeProbeError,
-    NativeBackendOptions, NativeBounds, NativeDesktopSnapshot, NativeDirection, NativeWindowId,
     active_space_ax_backed_same_pid_target, ax, confirm_focus_after_missing_ax_target,
     desktop_topology_snapshot::{
-        DESKTOP_SPACE_TYPE, FULLSCREEN_SPACE_TYPE, RawSpaceRecord, RawWindow, SpaceKind,
+        self, RawSpaceRecord, RawTopologySnapshot, RawWindow, SpaceKind, DESKTOP_SPACE_TYPE,
+        FULLSCREEN_SPACE_TYPE,
     },
     focus_window_via_make_key_and_raise, focus_window_via_process_and_raise,
     foundation::{
-        CFArrayRef, DylibHandle, HISERVICES_FRAMEWORK_PATH, SKYLIGHT_FRAMEWORK_PATH,
-        SlsMainConnectionIdFn, switch_adjacent_space_via_hotkey,
+        switch_adjacent_space_via_hotkey, CFArrayRef, DylibHandle, SlsMainConnectionIdFn,
+        HISERVICES_FRAMEWORK_PATH, SKYLIGHT_FRAMEWORK_PATH,
     },
     shim::SwiftBackendShim,
     skylight,
     window_server::{
         self, copy_onscreen_window_descriptions_raw, onscreen_window_ids_from_descriptions,
     },
+    ActiveSpaceFocusTargetHint, MacosNativeApi, MacosNativeOperationError, MacosNativeProbeError,
+    NativeBackendOptions, NativeBounds, NativeDesktopSnapshot, NativeDirection, NativeWindowId,
 };
 
 pub struct RealNativeApi {
@@ -58,6 +59,47 @@ impl RealNativeApi {
             diagnostics.debug(message.as_ref());
         }
     }
+
+    fn topology_native_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
+        self.swift_backend
+            .as_ref()
+            .map_err(|_| MacosNativeProbeError::MissingTopology("swift macOS backend"))?
+            .topology_snapshot_native()
+    }
+
+    fn topology_snapshot_from_swift(&self) -> Result<RawTopologySnapshot, MacosNativeProbeError> {
+        let snapshot = self.topology_native_snapshot()?;
+        let spaces = snapshot
+            .spaces
+            .iter()
+            .map(space_record_from_snapshot)
+            .collect();
+        let active_space_ids = snapshot.active_space_ids.clone();
+        let mut active_space_windows = HashMap::<u64, Vec<RawWindow>>::new();
+        let mut inactive_space_window_ids = HashMap::<u64, Vec<u64>>::new();
+
+        for window in snapshot.windows {
+            if window.order_index.is_some() {
+                active_space_windows
+                    .entry(window.space_id)
+                    .or_default()
+                    .push(raw_window_from_snapshot(window));
+            } else {
+                inactive_space_window_ids
+                    .entry(window.space_id)
+                    .or_default()
+                    .push(window.id);
+            }
+        }
+
+        Ok(RawTopologySnapshot {
+            spaces,
+            active_space_ids,
+            active_space_windows,
+            inactive_space_window_ids,
+            focused_window_id: snapshot.focused_window_id,
+        })
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -86,7 +128,9 @@ impl MacosNativeApi for RealNativeApi {
     fn validate_environment(&self) -> Result<(), crate::MacosNativeConnectError> {
         self.swift_backend
             .as_ref()
-            .map_err(|_| crate::MacosNativeConnectError::MissingTopologyPrecondition("swift macOS backend"))?
+            .map_err(|_| {
+                crate::MacosNativeConnectError::MissingTopologyPrecondition("swift macOS backend")
+            })?
             .validate_environment()
     }
 
@@ -98,39 +142,26 @@ impl MacosNativeApi for RealNativeApi {
     }
 
     fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
-        Ok(self
-            .desktop_snapshot()?
-            .spaces
-            .iter()
-            .map(space_record_from_snapshot)
-            .collect())
+        Ok(self.topology_snapshot_from_swift()?.spaces)
     }
 
     fn active_space_ids(&self) -> Result<HashSet<u64>, MacosNativeProbeError> {
-        Ok(self.desktop_snapshot()?.active_space_ids)
+        Ok(self.topology_native_snapshot()?.active_space_ids)
     }
 
     fn active_space_windows(&self, space_id: u64) -> Result<Vec<RawWindow>, MacosNativeProbeError> {
-        let snapshot = self.desktop_snapshot()?;
-        Ok(snapshot
-            .windows
-            .into_iter()
-            .filter(|window| window.space_id == space_id)
-            .filter(|window| window.order_index.is_some())
-            .map(raw_window_from_snapshot)
-            .collect())
+        let topology = self.topology_snapshot_from_swift()?;
+        Ok(topology
+            .active_space_windows
+            .get(&space_id)
+            .cloned()
+            .unwrap_or_default())
     }
 
     fn inactive_space_window_ids(&self) -> Result<HashMap<u64, Vec<u64>>, MacosNativeProbeError> {
-        let snapshot = self.desktop_snapshot()?;
-        let mut inactive_space_window_ids = HashMap::<u64, Vec<u64>>::new();
-        for window in snapshot.windows.into_iter().filter(|window| window.order_index.is_none()) {
-            inactive_space_window_ids
-                .entry(window.space_id)
-                .or_default()
-                .push(window.id);
-        }
-        Ok(inactive_space_window_ids)
+        Ok(self
+            .topology_snapshot_from_swift()?
+            .inactive_space_window_ids)
     }
 
     fn onscreen_window_ids(&self) -> Result<HashSet<NativeWindowId>, MacosNativeProbeError> {
@@ -179,8 +210,9 @@ impl MacosNativeApi for RealNativeApi {
             Err(MacosNativeOperationError::MissingWindow(missing_window_id))
                 if missing_window_id == window_id =>
             {
-                if confirm_focus_after_missing_ax_target(window_id, || ax::probe_focused_window_id(self))
-                {
+                if confirm_focus_after_missing_ax_target(window_id, || {
+                    ax::probe_focused_window_id(self)
+                }) {
                     self.debug(&format!(
                         "macos_native: treating missing AX raise target {window_id} as success after focus confirmation"
                     ));
@@ -218,8 +250,9 @@ impl MacosNativeApi for RealNativeApi {
             Err(MacosNativeOperationError::MissingWindow(missing_window_id))
                 if missing_window_id == window_id =>
             {
-                if confirm_focus_after_missing_ax_target(window_id, || ax::probe_focused_window_id(self))
-                {
+                if confirm_focus_after_missing_ax_target(window_id, || {
+                    ax::probe_focused_window_id(self)
+                }) {
                     self.debug(&format!(
                         "macos_native: treating missing active-space AX raise target {window_id} as success after focus confirmation"
                     ));
@@ -227,7 +260,9 @@ impl MacosNativeApi for RealNativeApi {
                 }
                 if let Some(remapped_target_id) = active_space_ax_backed_same_pid_target(
                     self,
-                    &self.desktop_snapshot()?,
+                    &desktop_topology_snapshot::native_desktop_snapshot_from_topology(
+                        &self.topology_snapshot()?,
+                    ),
                     window_id,
                     pid,
                     target_hint,
@@ -274,6 +309,18 @@ impl MacosNativeApi for RealNativeApi {
 
     fn focused_window_id(&self) -> Result<Option<NativeWindowId>, MacosNativeProbeError> {
         ax::probe_focused_window_id(self)
+    }
+
+    fn topology_snapshot(&self) -> Result<RawTopologySnapshot, MacosNativeProbeError> {
+        self.topology_snapshot_from_swift()
+    }
+
+    fn topology_snapshot_without_focus(
+        &self,
+    ) -> Result<RawTopologySnapshot, MacosNativeProbeError> {
+        let mut topology = self.topology_snapshot_from_swift()?;
+        topology.focused_window_id = None;
+        Ok(topology)
     }
 }
 
