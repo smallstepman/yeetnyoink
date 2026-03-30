@@ -1,12 +1,15 @@
 #![cfg(target_os = "macos")]
 
-use std::sync::Arc;
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use macos_window_manager::{
-    ActiveSpaceFocusTargetHint, MacosNativeApi, MacosNativeConnectError, MacosNativeOperationError,
+    ActiveSpaceFocusTargetHint, MacosWindowManagerBackend, MacosNativeConnectError, MacosNativeOperationError,
     MacosNativeProbeError, MissionControlHotkey, MissionControlModifiers, NativeBackendOptions,
     NativeBounds, NativeDesktopSnapshot, NativeDiagnostics, NativeDirection, NativeWindowSnapshot,
-    RawSpaceRecord, RawTopologySnapshot, RawWindow, RealNativeApi, SpaceKind, WindowSnapshot,
+    RawSpaceRecord, RawTopologySnapshot, RawWindow, SwiftMacosBackend, SpaceKind, WindowSnapshot,
 };
 
 struct SmokeDiagnostics;
@@ -15,7 +18,11 @@ impl NativeDiagnostics for SmokeDiagnostics {
     fn debug(&self, _message: &str) {}
 }
 
-fn takes_native_api(_api: &dyn MacosNativeApi) {}
+fn takes_backend(_api: &dyn MacosWindowManagerBackend) {}
+
+fn crate_source(path: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join(path)
+}
 
 #[test]
 fn public_api_smoke_test() {
@@ -37,12 +44,12 @@ fn public_api_smoke_test() {
     let diagnostics: Arc<dyn NativeDiagnostics> = Arc::new(SmokeDiagnostics);
     diagnostics.debug("smoke");
 
-    let api = RealNativeApi::new(NativeBackendOptions {
+    let api = SwiftMacosBackend::new(NativeBackendOptions {
         west_space_hotkey,
         east_space_hotkey,
         diagnostics: Some(Arc::clone(&diagnostics)),
     });
-    takes_native_api(&api);
+    takes_backend(&api);
 
     let hint = ActiveSpaceFocusTargetHint {
         space_id: 7,
@@ -107,4 +114,12 @@ fn public_api_smoke_test() {
             "CGWindowListCopyWindowInfo"
         ))
     ));
+}
+
+#[test]
+fn public_api_exposes_swift_backend_not_real_native_api() {
+    let lib = std::fs::read_to_string(crate_source("src/lib.rs")).unwrap();
+
+    assert!(lib.contains("SwiftMacosBackend"));
+    assert!(!lib.contains("pub struct RealNativeApi"));
 }

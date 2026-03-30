@@ -1,10 +1,10 @@
 #![allow(dead_code)]
 
-use std::ffi::{CStr, c_char};
+use std::ffi::{c_char, CStr};
 
 use crate::{
-    NativeBounds, NativeDesktopSnapshot, NativeSpaceSnapshot, NativeWindowSnapshot,
-    desktop_topology_snapshot::SpaceKind,
+    desktop_topology_snapshot::SpaceKind, NativeBounds, NativeDesktopSnapshot, NativeSpaceSnapshot,
+    NativeWindowSnapshot,
 };
 
 pub(crate) const MWM_STATUS_OK: i32 = 0;

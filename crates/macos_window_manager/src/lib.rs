@@ -1,29 +1,43 @@
 mod api;
-#[cfg(target_os = "macos")]
-mod ax;
 mod desktop_topology_snapshot;
 mod environment;
 mod error;
 mod ffi;
-#[cfg(target_os = "macos")]
-mod foundation;
 mod navigation;
-mod real_api;
+#[cfg(target_os = "macos")]
+mod backend;
+#[cfg(not(target_os = "macos"))]
+mod stub;
 mod shim;
-#[cfg(target_os = "macos")]
-mod skylight;
 mod transport;
+
+use desktop_topology_snapshot::*;
+
+pub use api::{
+    ActiveSpaceFocusTargetHint, MacosWindowManagerBackend, MissionControlHotkey,
+    MissionControlModifiers, NativeBackendOptions, NativeBounds, NativeDesktopSnapshot,
+    NativeDiagnostics, NativeDirection, NativeSpaceId, NativeSpaceSnapshot, NativeWindowId,
+    NativeWindowSnapshot,
+};
+pub(crate) use api::MacosWindowManagerBackend as MacosNativeApi;
+pub use desktop_topology_snapshot::SpaceKind;
+pub use desktop_topology_snapshot::{
+    RawSpaceRecord, RawTopologySnapshot, RawWindow, WindowSnapshot,
+};
+pub use error::{
+    MacosNativeBridgeError, MacosNativeConnectError, MacosNativeOperationError,
+    MacosNativeProbeError,
+};
 #[cfg(target_os = "macos")]
-mod window_server;
+pub use backend::SwiftMacosBackend;
+#[cfg(not(target_os = "macos"))]
+pub use stub::SwiftMacosBackend;
 
 #[cfg(target_os = "macos")]
 use std::{
     collections::{HashMap, HashSet},
-    time::Instant,
 };
 
-#[cfg(not(target_os = "macos"))]
-const REQUIRED_PRIVATE_SYMBOLS: &[&str] = &[];
 #[cfg(not(target_os = "macos"))]
 const SPACE_SWITCH_SETTLE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(300);
 #[cfg(not(target_os = "macos"))]
@@ -429,8 +443,7 @@ fn refreshed_split_view_focus_target<A: MacosNativeApi + ?Sized>(
         );
         return Ok(None);
     };
-    let refreshed_snapshot =
-        desktop_topology_snapshot::native_desktop_snapshot_from_topology(&api.topology_snapshot()?);
+    let refreshed_snapshot = api.desktop_snapshot()?;
     let Some(refreshed_target_id) = split_view_same_space_focus_target_from_source(
         &refreshed_snapshot,
         original_focused.id,
@@ -595,119 +608,6 @@ fn focus_same_space_target_with_known_pid<A: MacosNativeApi + ?Sized>(
     }
 }
 
-#[cfg(target_os = "macos")]
-#[cfg(target_os = "macos")]
-pub(crate) fn focus_window_via_process_and_raise<
-    WindowPid,
-    ProcessSerial,
-    FrontProcessWindow,
-    MakeKeyWindow,
-    RaiseWindow,
->(
-    window_id: u64,
-    mut window_pid: WindowPid,
-    mut process_serial_number: ProcessSerial,
-    mut front_process_window: FrontProcessWindow,
-    mut make_key_window: MakeKeyWindow,
-    mut raise_window: RaiseWindow,
-) -> Result<(), MacosNativeOperationError>
-where
-    WindowPid: FnMut(u64) -> Result<u32, MacosNativeOperationError>,
-    ProcessSerial: FnMut(u32) -> Result<ProcessSerialNumber, MacosNativeOperationError>,
-    FrontProcessWindow: FnMut(&ProcessSerialNumber, u64) -> Result<(), MacosNativeOperationError>,
-    MakeKeyWindow: FnMut(&ProcessSerialNumber, u64) -> Result<(), MacosNativeOperationError>,
-    RaiseWindow: FnMut(u64, u32) -> Result<(), MacosNativeOperationError>,
-{
-    let pid = window_pid(window_id)?;
-    let psn = process_serial_number(pid)?;
-    front_process_window(&psn, window_id)?;
-    make_key_window(&psn, window_id)?;
-    let deadline = Instant::now() + AX_RAISE_SETTLE_TIMEOUT;
-    loop {
-        match raise_window(window_id, pid) {
-            Err(MacosNativeOperationError::MissingWindow(missing_window_id))
-                if missing_window_id == window_id && Instant::now() < deadline =>
-            {
-                std::thread::sleep(AX_RAISE_RETRY_INTERVAL);
-            }
-            result => return result,
-        }
-    }
-}
-
-#[cfg(target_os = "macos")]
-pub(crate) fn focus_window_via_make_key_and_raise<
-    WindowPid,
-    ProcessSerial,
-    MakeKeyWindow,
-    RaiseWindow,
->(
-    window_id: u64,
-    mut window_pid: WindowPid,
-    mut process_serial_number: ProcessSerial,
-    mut make_key_window: MakeKeyWindow,
-    mut raise_window: RaiseWindow,
-) -> Result<(), MacosNativeOperationError>
-where
-    WindowPid: FnMut(u64) -> Result<u32, MacosNativeOperationError>,
-    ProcessSerial: FnMut(u32) -> Result<ProcessSerialNumber, MacosNativeOperationError>,
-    MakeKeyWindow: FnMut(&ProcessSerialNumber, u64) -> Result<(), MacosNativeOperationError>,
-    RaiseWindow: FnMut(u64, u32) -> Result<(), MacosNativeOperationError>,
-{
-    let pid = window_pid(window_id)?;
-    let psn = process_serial_number(pid)?;
-    make_key_window(&psn, window_id)?;
-    let deadline = Instant::now() + AX_RAISE_SETTLE_TIMEOUT;
-    loop {
-        match raise_window(window_id, pid) {
-            Err(MacosNativeOperationError::MissingWindow(missing_window_id))
-                if missing_window_id == window_id && Instant::now() < deadline =>
-            {
-                std::thread::sleep(AX_RAISE_RETRY_INTERVAL);
-            }
-            result => return result,
-        }
-    }
-}
-
-pub(crate) fn confirm_focus_after_missing_ax_target<Probe>(
-    target_window_id: u64,
-    mut focused_window_id: Probe,
-) -> bool
-where
-    Probe: FnMut() -> Result<Option<u64>, MacosNativeProbeError>,
-{
-    let deadline = Instant::now() + AX_RAISE_SETTLE_TIMEOUT;
-    loop {
-        if focused_window_id().ok() == Some(Some(target_window_id)) {
-            return true;
-        }
-        if Instant::now() >= deadline {
-            return false;
-        }
-        std::thread::sleep(AX_RAISE_RETRY_INTERVAL);
-    }
-}
-
-use desktop_topology_snapshot::*;
-#[cfg(target_os = "macos")]
-use foundation::*;
-
-pub use api::{
-    ActiveSpaceFocusTargetHint, MacosNativeApi, MissionControlHotkey, MissionControlModifiers,
-    NativeBackendOptions, NativeBounds, NativeDesktopSnapshot, NativeDiagnostics, NativeDirection,
-    NativeSpaceId, NativeSpaceSnapshot, NativeWindowId, NativeWindowSnapshot,
-};
-pub use desktop_topology_snapshot::SpaceKind;
-pub use desktop_topology_snapshot::{
-    RawSpaceRecord, RawTopologySnapshot, RawWindow, WindowSnapshot,
-};
-pub use error::{
-    MacosNativeBridgeError, MacosNativeConnectError, MacosNativeOperationError,
-    MacosNativeProbeError,
-};
-pub use real_api::RealNativeApi;
-
 #[cfg(test)]
 #[test]
 fn snapshot_wrapper_converts_ffi_snapshot() {
@@ -724,7 +624,3 @@ fn switch_space_in_snapshot_maps_swift_operation_error() {
     let err = shim::test_switch_space_error_from_ffi();
     assert!(matches!(err, MacosNativeOperationError::MissingWindow(_)));
 }
-
-#[cfg(test)]
-#[allow(dead_code)]
-mod tests;

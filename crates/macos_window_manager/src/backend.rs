@@ -1,53 +1,27 @@
-use std::{
-    collections::{HashMap, HashSet},
-    ffi::{c_void, CString},
-};
+use std::collections::{HashMap, HashSet};
 
 use crate::{
-    ax,
     desktop_topology_snapshot::{
         RawSpaceRecord, RawTopologySnapshot, RawWindow, SpaceKind, DESKTOP_SPACE_TYPE,
         FULLSCREEN_SPACE_TYPE,
     },
-    foundation::{
-        CFArrayRef, DylibHandle, SlsMainConnectionIdFn, HISERVICES_FRAMEWORK_PATH,
-        SKYLIGHT_FRAMEWORK_PATH,
-    },
     shim::SwiftBackendShim,
-    window_server::{copy_onscreen_window_descriptions_raw, onscreen_window_ids_from_descriptions},
-    ActiveSpaceFocusTargetHint, MacosNativeApi, MacosNativeOperationError, MacosNativeProbeError,
-    NativeBackendOptions, NativeBounds, NativeDesktopSnapshot, NativeDirection, NativeWindowId,
+    ActiveSpaceFocusTargetHint, MacosWindowManagerBackend, MacosNativeConnectError,
+    MacosNativeOperationError, MacosNativeProbeError, NativeBackendOptions, NativeBounds,
+    NativeDesktopSnapshot, NativeDirection, NativeWindowId,
 };
 
-pub struct RealNativeApi {
-    skylight: Option<DylibHandle>,
-    hiservices: Option<DylibHandle>,
+pub struct SwiftMacosBackend {
     swift_backend: Result<SwiftBackendShim, crate::MacosNativeBridgeError>,
     options: NativeBackendOptions,
 }
 
-#[cfg(target_os = "macos")]
-impl RealNativeApi {
+impl SwiftMacosBackend {
     pub fn new(options: NativeBackendOptions) -> Self {
         Self {
-            skylight: DylibHandle::open(SKYLIGHT_FRAMEWORK_PATH),
-            hiservices: DylibHandle::open(HISERVICES_FRAMEWORK_PATH),
             swift_backend: SwiftBackendShim::new(),
             options,
         }
-    }
-
-    pub(crate) fn resolve_symbol(&self, symbol: &'static str) -> Option<*mut c_void> {
-        let symbol = CString::new(symbol).expect("required symbol names should not contain NULs");
-
-        self.skylight
-            .as_ref()
-            .and_then(|handle| handle.resolve(symbol.as_c_str()))
-            .or_else(|| {
-                self.hiservices
-                    .as_ref()
-                    .and_then(|handle| handle.resolve(symbol.as_c_str()))
-            })
     }
 
     pub(crate) fn debug(&self, message: impl AsRef<str>) {
@@ -102,38 +76,40 @@ impl RealNativeApi {
             .as_ref()
             .map_err(|_| MacosNativeOperationError::CallFailed("swift macOS backend"))
     }
+
+    fn connect_state(&self) -> Result<(), MacosNativeConnectError> {
+        self.swift_backend
+            .as_ref()
+            .map_err(|_| MacosNativeConnectError::MissingTopologyPrecondition("swift macOS backend"))?
+            .validate_environment()
+    }
 }
 
-#[cfg(target_os = "macos")]
-impl MacosNativeApi for RealNativeApi {
-    fn has_symbol(&self, symbol: &'static str) -> bool {
-        self.resolve_symbol(symbol).is_some()
+impl MacosWindowManagerBackend for SwiftMacosBackend {
+    fn has_symbol(&self, _symbol: &'static str) -> bool {
+        self.swift_backend.is_ok()
     }
 
     fn debug(&self, message: &str) {
-        RealNativeApi::debug(self, message);
+        SwiftMacosBackend::debug(self, message);
     }
 
     fn ax_is_trusted(&self) -> bool {
-        ax::is_process_trusted(self)
+        !matches!(
+            self.connect_state(),
+            Err(MacosNativeConnectError::MissingAccessibilityPermission)
+        )
     }
 
     fn minimal_topology_ready(&self) -> bool {
-        let Some(symbol) = self.resolve_symbol("SLSMainConnectionID") else {
-            return false;
-        };
-
-        let main_connection_id: SlsMainConnectionIdFn = unsafe { std::mem::transmute(symbol) };
-        unsafe { main_connection_id() != 0 }
+        !matches!(
+            self.connect_state(),
+            Err(MacosNativeConnectError::MissingTopologyPrecondition(_))
+        )
     }
 
     fn validate_environment(&self) -> Result<(), crate::MacosNativeConnectError> {
-        self.swift_backend
-            .as_ref()
-            .map_err(|_| {
-                crate::MacosNativeConnectError::MissingTopologyPrecondition("swift macOS backend")
-            })?
-            .validate_environment()
+        self.connect_state()
     }
 
     fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
@@ -167,8 +143,13 @@ impl MacosNativeApi for RealNativeApi {
     }
 
     fn onscreen_window_ids(&self) -> Result<HashSet<NativeWindowId>, MacosNativeProbeError> {
-        let descriptions = copy_onscreen_window_descriptions_raw()?;
-        onscreen_window_ids_from_descriptions(descriptions.as_type_ref() as CFArrayRef)
+        Ok(self
+            .topology_native_snapshot()?
+            .windows
+            .into_iter()
+            .filter(|window| window.order_index.is_some())
+            .map(|window| window.id)
+            .collect())
     }
 
     fn switch_space(&self, space_id: u64) -> Result<(), MacosNativeOperationError> {
@@ -198,7 +179,16 @@ impl MacosNativeApi for RealNativeApi {
     }
 
     fn ax_window_ids_for_pid(&self, pid: u32) -> Result<Vec<u64>, MacosNativeOperationError> {
-        ax::ax_window_ids_for_pid(self, pid)
+        self.topology_native_snapshot()
+            .map(|snapshot| {
+                snapshot
+                    .windows
+                    .into_iter()
+                    .filter(|window| window.pid == Some(pid))
+                    .map(|window| window.id)
+                    .collect()
+            })
+            .map_err(MacosNativeOperationError::from)
     }
 
     fn focus_window_in_active_space_with_known_pid(
@@ -240,7 +230,7 @@ impl MacosNativeApi for RealNativeApi {
     }
 
     fn focused_window_id(&self) -> Result<Option<NativeWindowId>, MacosNativeProbeError> {
-        ax::probe_focused_window_id(self)
+        Ok(self.topology_native_snapshot()?.focused_window_id)
     }
 
     fn topology_snapshot(&self) -> Result<RawTopologySnapshot, MacosNativeProbeError> {
@@ -279,7 +269,6 @@ impl MacosNativeApi for RealNativeApi {
     }
 }
 
-#[cfg(target_os = "macos")]
 fn space_record_from_snapshot(space: &crate::NativeSpaceSnapshot) -> RawSpaceRecord {
     let (space_type, has_tile_layout_manager, stage_manager_managed) = match space.kind {
         SpaceKind::Desktop => (DESKTOP_SPACE_TYPE, false, false),
@@ -299,7 +288,6 @@ fn space_record_from_snapshot(space: &crate::NativeSpaceSnapshot) -> RawSpaceRec
     }
 }
 
-#[cfg(target_os = "macos")]
 fn raw_window_from_snapshot(window: crate::NativeWindowSnapshot) -> RawWindow {
     RawWindow {
         id: window.id,

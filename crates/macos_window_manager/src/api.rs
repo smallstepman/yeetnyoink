@@ -113,7 +113,7 @@ pub trait NativeDiagnostics: Send + Sync {
     fn debug(&self, message: &str);
 }
 
-pub trait MacosNativeApi {
+pub trait MacosWindowManagerBackend {
     fn has_symbol(&self, symbol: &'static str) -> bool;
     fn ax_is_trusted(&self) -> bool;
     fn minimal_topology_ready(&self) -> bool;
@@ -300,3 +300,6 @@ pub trait MacosNativeApi {
         Ok(topology)
     }
 }
+
+
+pub(crate) use self::MacosWindowManagerBackend as MacosNativeApi;

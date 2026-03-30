@@ -5,9 +5,11 @@ use crate::desktop_topology_snapshot::SpaceKind;
 use crate::error::MacosNativeOperationError;
 
 #[cfg(target_os = "macos")]
-use crate::foundation::{
-    SPACE_SWITCH_POLL_INTERVAL, SPACE_SWITCH_SETTLE_TIMEOUT, SPACE_SWITCH_STABLE_TARGET_POLLS,
-};
+const SPACE_SWITCH_SETTLE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(300);
+#[cfg(target_os = "macos")]
+const SPACE_SWITCH_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(10);
+#[cfg(target_os = "macos")]
+const SPACE_SWITCH_STABLE_TARGET_POLLS: usize = 3;
 
 #[cfg(not(target_os = "macos"))]
 const SPACE_SWITCH_SETTLE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(300);

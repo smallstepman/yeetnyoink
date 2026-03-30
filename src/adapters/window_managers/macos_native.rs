@@ -12,44 +12,44 @@ use crate::logging;
 use anyhow::{bail, Context};
 
 use macos_window_manager::{
-    ActiveSpaceFocusTargetHint, MacosNativeApi, MacosNativeConnectError, MacosNativeOperationError,
+    ActiveSpaceFocusTargetHint, MacosWindowManagerBackend, MacosNativeConnectError, MacosNativeOperationError,
     MacosNativeProbeError, MissionControlHotkey, MissionControlModifiers, NativeBackendOptions,
     NativeBounds, NativeDesktopSnapshot, NativeDiagnostics, NativeDirection, NativeWindowSnapshot,
-    RealNativeApi, SpaceKind,
+    SwiftMacosBackend, SpaceKind,
 };
 
-pub(crate) struct MacosNativeAdapter<A = RealNativeApi> {
+pub(crate) struct MacosNativeAdapter<A = SwiftMacosBackend> {
     ctx: MacosNativeContext<A>,
 }
 
-trait MacosNativeApiFactory {
-    type Api: MacosNativeApi;
+trait MacosWindowManagerBackendFactory {
+    type Api: MacosWindowManagerBackend;
 
     fn create(&self) -> Self::Api;
 }
 
 #[derive(Clone, Copy)]
-pub(crate) struct RealNativeApiFactory;
+pub(crate) struct SwiftMacosBackendFactory;
 
-impl MacosNativeApiFactory for RealNativeApiFactory {
-    type Api = RealNativeApi;
+impl MacosWindowManagerBackendFactory for SwiftMacosBackendFactory {
+    type Api = SwiftMacosBackend;
 
     fn create(&self) -> Self::Api {
-        RealNativeApi::new(native_backend_options_from_config())
+        SwiftMacosBackend::new(native_backend_options_from_config())
     }
 }
 
-pub(crate) struct MacosNativeSpec<F = RealNativeApiFactory> {
+pub(crate) struct MacosNativeSpec<F = SwiftMacosBackendFactory> {
     api_factory: F,
 }
 
 pub(crate) static MACOS_NATIVE_SPEC: MacosNativeSpec = MacosNativeSpec {
-    api_factory: RealNativeApiFactory,
+    api_factory: SwiftMacosBackendFactory,
 };
 
 impl<F> WindowManagerSpec for MacosNativeSpec<F>
 where
-    F: MacosNativeApiFactory + Sync,
+    F: MacosWindowManagerBackendFactory + Sync,
     F::Api: Send + 'static,
 {
     fn backend(&self) -> WmBackend {
@@ -67,7 +67,7 @@ where
             validate_declared_capabilities::<MacosNativeAdapter<F::Api>>()?;
         }
         let api = {
-            let _span = tracing::debug_span!("macos_native.connect.real_api_new").entered();
+            let _span = tracing::debug_span!("macos_native.connect.swift_backend_new").entered();
             self.api_factory.create()
         };
         ConfiguredWindowManager::try_new(
@@ -82,7 +82,7 @@ where
 
     fn focused_app_record(&self) -> anyhow::Result<Option<FocusedAppRecord>> {
         let api = {
-            let _span = tracing::debug_span!("macos_native.fast_focus.real_api_new").entered();
+            let _span = tracing::debug_span!("macos_native.fast_focus.swift_backend_new").entered();
             self.api_factory.create()
         };
         focused_app_record_with_api(&api)
@@ -91,7 +91,7 @@ where
 
 impl<A> MacosNativeAdapter<A>
 where
-    A: MacosNativeApi,
+    A: MacosWindowManagerBackend,
 {
     pub(crate) fn connect_with_api(api: A) -> Result<Self, MacosNativeConnectError> {
         Ok(Self {
@@ -118,7 +118,7 @@ impl<A> WindowManagerCapabilityDescriptor for MacosNativeAdapter<A> {
 
 impl<A> WindowManagerSession for MacosNativeAdapter<A>
 where
-    A: MacosNativeApi + Send,
+    A: MacosWindowManagerBackend + Send,
 {
     fn adapter_name(&self) -> &'static str {
         Self::NAME
@@ -206,13 +206,13 @@ where
 }
 
 #[derive(Debug)]
-pub(crate) struct MacosNativeContext<A = RealNativeApi> {
+pub(crate) struct MacosNativeContext<A = SwiftMacosBackend> {
     api: A,
 }
 
 impl<A> MacosNativeContext<A>
 where
-    A: MacosNativeApi,
+    A: MacosWindowManagerBackend,
 {
     pub(crate) fn connect_with_api(api: A) -> Result<Self, MacosNativeConnectError> {
         api.validate_environment()?;
@@ -271,12 +271,12 @@ fn map_probe_error(err: MacosNativeProbeError) -> anyhow::Error {
     }
 }
 
-fn focused_app_record_with_api<A: MacosNativeApi + ?Sized>(
+fn focused_app_record_with_api<A: MacosWindowManagerBackend + ?Sized>(
     api: &A,
 ) -> anyhow::Result<Option<FocusedAppRecord>> {
     if {
         let _span = tracing::debug_span!("macos_native.fast_focus.ax_is_trusted").entered();
-        !MacosNativeApi::ax_is_trusted(api)
+        !MacosWindowManagerBackend::ax_is_trusted(api)
     } {
         return Err(anyhow::anyhow!(
             "Accessibility permission is required for macOS native support"
@@ -285,7 +285,7 @@ fn focused_app_record_with_api<A: MacosNativeApi + ?Sized>(
     if {
         let _span =
             tracing::debug_span!("macos_native.fast_focus.minimal_topology_ready").entered();
-        !MacosNativeApi::minimal_topology_ready(api)
+        !MacosWindowManagerBackend::minimal_topology_ready(api)
     } {
         return Err(anyhow::anyhow!(
             "macOS native topology precondition is unavailable: main SkyLight connection"
@@ -886,7 +886,7 @@ fn focused_app_record_from_native(
 
 impl<A> MacosNativeAdapter<A>
 where
-    A: MacosNativeApi,
+    A: MacosWindowManagerBackend,
 {
     fn focus_direction_inner(&self, direction: Direction) -> anyhow::Result<()> {
         let strategy = config::macos_native_floating_focus_strategy()
@@ -1084,7 +1084,7 @@ mod tests {
         }
     }
 
-    impl MacosNativeApi for RecordingFocusApi {
+    impl MacosWindowManagerBackend for RecordingFocusApi {
         fn has_symbol(&self, _symbol: &'static str) -> bool {
             true
         }
@@ -1095,6 +1095,10 @@ mod tests {
 
         fn minimal_topology_ready(&self) -> bool {
             true
+        }
+
+        fn validate_environment(&self) -> Result<(), MacosNativeConnectError> {
+            Ok(())
         }
 
         fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
@@ -1181,7 +1185,7 @@ mod tests {
         }
     }
 
-    impl MacosNativeApi for RecordingCrossSpaceFocusApi {
+    impl MacosWindowManagerBackend for RecordingCrossSpaceFocusApi {
         fn has_symbol(&self, _symbol: &'static str) -> bool {
             true
         }
@@ -1192,6 +1196,10 @@ mod tests {
 
         fn minimal_topology_ready(&self) -> bool {
             true
+        }
+
+        fn validate_environment(&self) -> Result<(), MacosNativeConnectError> {
+            Ok(())
         }
 
         fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
@@ -1309,7 +1317,7 @@ mod tests {
         }
     }
 
-    impl MacosNativeApi for RecordingSameSpaceDelegationApi {
+    impl MacosWindowManagerBackend for RecordingSameSpaceDelegationApi {
         fn has_symbol(&self, _symbol: &'static str) -> bool {
             true
         }
@@ -1320,6 +1328,10 @@ mod tests {
 
         fn minimal_topology_ready(&self) -> bool {
             true
+        }
+
+        fn validate_environment(&self) -> Result<(), MacosNativeConnectError> {
+            Ok(())
         }
 
         fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
@@ -1418,7 +1430,7 @@ mod tests {
         }
     }
 
-    impl MacosNativeApi for SplitViewKnownPidFallbackApi {
+    impl MacosWindowManagerBackend for SplitViewKnownPidFallbackApi {
         fn has_symbol(&self, _symbol: &'static str) -> bool {
             true
         }
@@ -1429,6 +1441,10 @@ mod tests {
 
         fn minimal_topology_ready(&self) -> bool {
             true
+        }
+
+        fn validate_environment(&self) -> Result<(), MacosNativeConnectError> {
+            Ok(())
         }
 
         fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
@@ -1527,7 +1543,7 @@ mod tests {
         }
     }
 
-    impl MacosNativeApi for SplitViewSameAppPeerFallbackApi {
+    impl MacosWindowManagerBackend for SplitViewSameAppPeerFallbackApi {
         fn has_symbol(&self, _symbol: &'static str) -> bool {
             true
         }
@@ -1538,6 +1554,10 @@ mod tests {
 
         fn minimal_topology_ready(&self) -> bool {
             true
+        }
+
+        fn validate_environment(&self) -> Result<(), MacosNativeConnectError> {
+            Ok(())
         }
 
         fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
@@ -1670,7 +1690,7 @@ mod tests {
         }
     }
 
-    impl MacosNativeApi for SplitViewRefreshedTargetFallbackApi {
+    impl MacosWindowManagerBackend for SplitViewRefreshedTargetFallbackApi {
         fn has_symbol(&self, _symbol: &'static str) -> bool {
             true
         }
@@ -1681,6 +1701,10 @@ mod tests {
 
         fn minimal_topology_ready(&self) -> bool {
             true
+        }
+
+        fn validate_environment(&self) -> Result<(), MacosNativeConnectError> {
+            Ok(())
         }
 
         fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
@@ -1798,7 +1822,7 @@ mod tests {
         }
     }
 
-    impl MacosNativeApi for RecordingMoveApi {
+    impl MacosWindowManagerBackend for RecordingMoveApi {
         fn has_symbol(&self, _symbol: &'static str) -> bool {
             true
         }
@@ -1809,6 +1833,10 @@ mod tests {
 
         fn minimal_topology_ready(&self) -> bool {
             true
+        }
+
+        fn validate_environment(&self) -> Result<(), MacosNativeConnectError> {
+            Ok(())
         }
 
         fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
@@ -1888,7 +1916,7 @@ mod tests {
 
     struct FocusedIdTopologyApi;
 
-    impl MacosNativeApi for FocusedIdTopologyApi {
+    impl MacosWindowManagerBackend for FocusedIdTopologyApi {
         fn has_symbol(&self, _symbol: &'static str) -> bool {
             true
         }
@@ -1899,6 +1927,10 @@ mod tests {
 
         fn minimal_topology_ready(&self) -> bool {
             true
+        }
+
+        fn validate_environment(&self) -> Result<(), MacosNativeConnectError> {
+            Ok(())
         }
 
         fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
@@ -1961,7 +1993,7 @@ mod tests {
 
     struct FocusedWindowFastPathApi;
 
-    impl MacosNativeApi for FocusedWindowFastPathApi {
+    impl MacosWindowManagerBackend for FocusedWindowFastPathApi {
         fn has_symbol(&self, _symbol: &'static str) -> bool {
             true
         }
@@ -1972,6 +2004,10 @@ mod tests {
 
         fn minimal_topology_ready(&self) -> bool {
             true
+        }
+
+        fn validate_environment(&self) -> Result<(), MacosNativeConnectError> {
+            Ok(())
         }
 
         fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
@@ -2073,6 +2109,77 @@ mod tests {
         }
     }
 
+    struct ValidationBypassApi;
+
+    impl MacosWindowManagerBackend for ValidationBypassApi {
+        fn has_symbol(&self, _symbol: &'static str) -> bool {
+            panic!("validation bypass api must not use legacy has_symbol validation")
+        }
+
+        fn ax_is_trusted(&self) -> bool {
+            panic!("validation bypass api must not use legacy ax_is_trusted validation")
+        }
+
+        fn minimal_topology_ready(&self) -> bool {
+            panic!("validation bypass api must not use legacy minimal_topology_ready validation")
+        }
+
+        fn validate_environment(&self) -> Result<(), MacosNativeConnectError> {
+            Ok(())
+        }
+
+        fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
+            panic!("validation bypass api must not query desktop_snapshot")
+        }
+
+        fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
+            panic!("validation bypass api must not query managed_spaces")
+        }
+
+        fn active_space_ids(&self) -> Result<HashSet<u64>, MacosNativeProbeError> {
+            panic!("validation bypass api must not query active_space_ids")
+        }
+
+        fn active_space_windows(
+            &self,
+            _space_id: u64,
+        ) -> Result<Vec<RawWindow>, MacosNativeProbeError> {
+            panic!("validation bypass api must not query active_space_windows")
+        }
+
+        fn inactive_space_window_ids(
+            &self,
+        ) -> Result<HashMap<u64, Vec<u64>>, MacosNativeProbeError> {
+            panic!("validation bypass api must not query inactive_space_window_ids")
+        }
+
+        fn switch_space(&self, _space_id: u64) -> Result<(), MacosNativeOperationError> {
+            panic!("validation bypass api must not switch spaces")
+        }
+
+        fn focus_window(&self, _window_id: u64) -> Result<(), MacosNativeOperationError> {
+            panic!("validation bypass api must not focus windows")
+        }
+
+        fn move_window_to_space(
+            &self,
+            _window_id: u64,
+            _space_id: u64,
+        ) -> Result<(), MacosNativeOperationError> {
+            panic!("validation bypass api must not move windows")
+        }
+
+        fn swap_window_frames(
+            &self,
+            _source_window_id: u64,
+            _source_frame: NativeBounds,
+            _target_window_id: u64,
+            _target_frame: NativeBounds,
+        ) -> Result<(), MacosNativeOperationError> {
+            panic!("validation bypass api must not swap frames")
+        }
+    }
+
     struct SnapshotOnlyApi {
         snapshot: NativeDesktopSnapshot,
     }
@@ -2093,7 +2200,7 @@ mod tests {
         }
     }
 
-    impl MacosNativeApiFactory for SnapshotApiFactory {
+    impl MacosWindowManagerBackendFactory for SnapshotApiFactory {
         type Api = SnapshotOnlyApi;
 
         fn create(&self) -> Self::Api {
@@ -2101,7 +2208,7 @@ mod tests {
         }
     }
 
-    impl MacosNativeApi for SnapshotOnlyApi {
+    impl MacosWindowManagerBackend for SnapshotOnlyApi {
         fn has_symbol(&self, _symbol: &'static str) -> bool {
             true
         }
@@ -2112,6 +2219,10 @@ mod tests {
 
         fn minimal_topology_ready(&self) -> bool {
             true
+        }
+
+        fn validate_environment(&self) -> Result<(), MacosNativeConnectError> {
+            Ok(())
         }
 
         fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
@@ -2434,6 +2545,36 @@ command = false
     }
 
     #[test]
+    fn source_adapter_root_imports_use_swift_backend_names() {
+        let implementation = implementation_source();
+        let import_start = implementation
+            .find("use macos_window_manager::{")
+            .expect("adapter should import the shared macos window manager contract");
+        let import_end = implementation[import_start..]
+            .find("};")
+            .map(|idx| import_start + idx)
+            .expect("root macos_window_manager import should close");
+        let import_block = &implementation[import_start..import_end];
+
+        assert!(
+            import_block.contains("MacosWindowManagerBackend"),
+            "production adapter root import should depend on the new MacosWindowManagerBackend contract"
+        );
+        assert!(
+            import_block.contains("SwiftMacosBackend"),
+            "production adapter root import should depend on the new SwiftMacosBackend concrete type"
+        );
+        assert!(
+            !import_block.contains("MacosNativeApi"),
+            "production adapter root import should stop depending on the legacy MacosNativeApi name"
+        );
+        assert!(
+            !import_block.contains("RealNativeApi"),
+            "production adapter root import should stop depending on the legacy RealNativeApi name"
+        );
+    }
+
+    #[test]
     fn source_adapter_does_not_define_outer_space_transition_window_ids() {
         let implementation = implementation_source();
 
@@ -2448,6 +2589,11 @@ command = false
 
         assert_eq!(topology.focused_window_id, Some(11));
     }
+    #[test]
+    fn connect_with_api_uses_validate_environment_override_in_tests() {
+        let _adapter = MacosNativeAdapter::connect_with_api(ValidationBypassApi).unwrap();
+    }
+
     #[test]
     fn focused_window_and_windows_are_derived_from_native_snapshot() {
         let mut adapter =

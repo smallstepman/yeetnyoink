@@ -118,11 +118,17 @@ fn crate_source(path: &str) -> PathBuf {
 #[test]
 fn source_crate_root_is_a_thin_facade() {
     let lib = std::fs::read_to_string(crate_source("src/lib.rs")).unwrap();
-    let macos_real_api = std::fs::read_to_string(crate_source("src/real_api/macos.rs")).unwrap();
-    let stub_real_api = std::fs::read_to_string(crate_source("src/real_api/stub.rs")).unwrap();
+    let macos_real_api = std::fs::read_to_string(crate_source("src/backend.rs")).unwrap();
+    let stub_real_api = std::fs::read_to_string(crate_source("src/stub.rs")).unwrap();
 
     assert!(lib.contains("mod api;"));
-    assert!(lib.contains("mod real_api;"));
+    assert!(lib.contains("mod backend;"));
+    assert!(lib.contains("mod stub;"));
+    assert!(!lib.contains("mod ax;"));
+    assert!(!lib.contains("mod foundation;"));
+    assert!(!lib.contains("mod skylight;"));
+    assert!(!lib.contains("mod window_server;"));
+    assert!(!lib.contains("mod real_api;"));
     assert!(!lib.contains("pub trait MacosNativeApi {"));
     assert!(!lib.contains("pub struct RealNativeApi"));
     assert!(!lib.contains("pub use api::*;"));
@@ -237,8 +243,16 @@ fn source_owned_snapshot_does_not_deref_to_raw_transport() {
 }
 
 #[test]
-fn source_real_api_actions_delegate_production_calls_to_swift_backend() {
-    let macos_real_api = std::fs::read_to_string(crate_source("src/real_api/macos.rs")).unwrap();
+fn source_rust_backend_no_longer_owns_private_macos_bindings() {
+    assert!(!crate_source("src/foundation.rs").exists());
+    assert!(!crate_source("src/ax.rs").exists());
+    assert!(!crate_source("src/skylight.rs").exists());
+    assert!(!crate_source("src/window_server.rs").exists());
+}
+
+#[test]
+fn source_swift_backend_actions_delegate_production_calls_to_swift_backend() {
+    let macos_real_api = std::fs::read_to_string(crate_source("src/backend.rs")).unwrap();
 
     for (method, expected_call_parts, forbidden_rust_impl) in [
         (
@@ -306,8 +320,8 @@ fn source_real_api_actions_delegate_production_calls_to_swift_backend() {
 }
 
 #[test]
-fn source_real_api_overrides_semantic_helpers_to_use_swift_backend() {
-    let macos_real_api = std::fs::read_to_string(crate_source("src/real_api/macos.rs")).unwrap();
+fn source_swift_backend_overrides_semantic_helpers_to_use_swift_backend() {
+    let macos_real_api = std::fs::read_to_string(crate_source("src/backend.rs")).unwrap();
 
     for (method, expected_call_parts) in [
         (

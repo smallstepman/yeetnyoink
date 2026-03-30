@@ -669,16 +669,12 @@ pub(super) mod tests {
 
         let spaces = space_snapshots_from_topology(&topology);
 
-        assert!(
-            spaces
-                .iter()
-                .any(|space| space.kind == SpaceKind::Desktop && space.is_active)
-        );
-        assert!(
-            spaces
-                .iter()
-                .any(|space| space.kind == SpaceKind::SplitView && !space.is_active)
-        );
+        assert!(spaces
+            .iter()
+            .any(|space| space.kind == SpaceKind::Desktop && space.is_active));
+        assert!(spaces
+            .iter()
+            .any(|space| space.kind == SpaceKind::SplitView && !space.is_active));
     }
 
     #[test]

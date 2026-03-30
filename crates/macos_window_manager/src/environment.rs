@@ -2,7 +2,19 @@ use crate::api::MacosNativeApi;
 use crate::error::MacosNativeConnectError;
 
 #[cfg(target_os = "macos")]
-use crate::foundation::REQUIRED_PRIVATE_SYMBOLS;
+const REQUIRED_PRIVATE_SYMBOLS: &[&str] = &[
+    "SLSMainConnectionID",
+    "SLSCopyManagedDisplaySpaces",
+    "SLSManagedDisplayGetCurrentSpace",
+    "SLSManagedDisplaySetCurrentSpace",
+    "SLSCopyManagedDisplayForSpace",
+    "SLSCopyWindowsWithOptionsAndTags",
+    "SLSMoveWindowsToManagedSpace",
+    "AXIsProcessTrusted",
+    "_AXUIElementGetWindow",
+    "_SLPSSetFrontProcessWithOptions",
+    "GetProcessForPID",
+];
 
 #[cfg(not(target_os = "macos"))]
 const REQUIRED_PRIVATE_SYMBOLS: &[&str] = &[];

@@ -32,6 +32,12 @@ pub(crate) struct SwiftBackendShim {
     raw: NonNull<c_void>,
 }
 
+// SAFETY: `SwiftBackendShim` owns a retained opaque Swift backend handle and never dereferences the
+// raw pointer directly from Rust. Moving the wrapper between threads only transfers handle
+// ownership; all backend interactions remain behind FFI calls on `&self`, and Rust never aliases
+// mutable access to the underlying Swift object.
+unsafe impl Send for SwiftBackendShim {}
+
 pub(crate) struct OwnedDesktopSnapshot {
     raw: MwmDesktopSnapshotAbi,
 }
@@ -528,9 +534,18 @@ pub(crate) fn test_snapshot_from_ffi() -> crate::NativeDesktopSnapshot {
 }
 
 #[cfg(test)]
+fn ffi_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    use std::sync::{Mutex, OnceLock};
+
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+}
+
+#[cfg(test)]
 pub(crate) fn test_switch_space_error_from_ffi() -> MacosNativeOperationError {
     use std::mem::ManuallyDrop;
 
+    let _guard = ffi_test_guard();
     ffi::test_support::reset();
     ffi::test_support::set_switch_space_in_snapshot_response(ffi::TestOperationResponse {
         code: MWM_STATUS_OPERATION_MISSING_WINDOW,
@@ -682,6 +697,7 @@ mod tests {
 
     #[test]
     fn desktop_snapshot_releases_transport_when_validation_fails() {
+        let _guard = super::ffi_test_guard();
         ffi::test_support::reset();
         ffi::test_support::set_desktop_snapshot_response(TestDesktopSnapshotResponse {
             code: MWM_STATUS_OK,
@@ -720,6 +736,7 @@ mod tests {
 
     #[test]
     fn topology_snapshot_wrapper_uses_topology_transport() {
+        let _guard = super::ffi_test_guard();
         ffi::test_support::reset();
         ffi::test_support::set_topology_snapshot_response(TestDesktopSnapshotResponse {
             code: MWM_STATUS_OK,

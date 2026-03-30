@@ -1,17 +1,17 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::{
-    MacosNativeApi, MacosNativeConnectError, MacosNativeOperationError, MacosNativeProbeError,
-    NativeBackendOptions, NativeBounds, NativeDesktopSnapshot, UNSUPPORTED_PLATFORM_MESSAGE,
     desktop_topology_snapshot::{RawSpaceRecord, RawWindow},
+    MacosWindowManagerBackend, MacosNativeConnectError, MacosNativeOperationError, MacosNativeProbeError,
+    NativeBackendOptions, NativeBounds, NativeDesktopSnapshot, UNSUPPORTED_PLATFORM_MESSAGE,
 };
 
-pub struct RealNativeApi {
+pub struct SwiftMacosBackend {
     options: NativeBackendOptions,
 }
 
 #[cfg(not(target_os = "macos"))]
-impl RealNativeApi {
+impl SwiftMacosBackend {
     pub fn new(options: NativeBackendOptions) -> Self {
         Self { options }
     }
@@ -24,7 +24,7 @@ impl RealNativeApi {
 }
 
 #[cfg(not(target_os = "macos"))]
-impl MacosNativeApi for RealNativeApi {
+impl MacosWindowManagerBackend for SwiftMacosBackend {
     fn has_symbol(&self, _symbol: &'static str) -> bool {
         false
     }
@@ -38,7 +38,7 @@ impl MacosNativeApi for RealNativeApi {
     }
 
     fn debug(&self, message: &str) {
-        RealNativeApi::debug(self, message);
+        SwiftMacosBackend::debug(self, message);
     }
 
     fn validate_environment(&self) -> Result<(), MacosNativeConnectError> {
