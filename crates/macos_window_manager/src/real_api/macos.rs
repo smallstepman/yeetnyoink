@@ -4,21 +4,17 @@ use std::{
 };
 
 use crate::{
-    active_space_ax_backed_same_pid_target, ax, confirm_focus_after_missing_ax_target,
+    ax,
     desktop_topology_snapshot::{
-        self, RawSpaceRecord, RawTopologySnapshot, RawWindow, SpaceKind, DESKTOP_SPACE_TYPE,
+        RawSpaceRecord, RawTopologySnapshot, RawWindow, SpaceKind, DESKTOP_SPACE_TYPE,
         FULLSCREEN_SPACE_TYPE,
     },
-    focus_window_via_make_key_and_raise, focus_window_via_process_and_raise,
     foundation::{
-        switch_adjacent_space_via_hotkey, CFArrayRef, DylibHandle, SlsMainConnectionIdFn,
-        HISERVICES_FRAMEWORK_PATH, SKYLIGHT_FRAMEWORK_PATH,
+        CFArrayRef, DylibHandle, SlsMainConnectionIdFn, HISERVICES_FRAMEWORK_PATH,
+        SKYLIGHT_FRAMEWORK_PATH,
     },
     shim::SwiftBackendShim,
-    skylight,
-    window_server::{
-        self, copy_onscreen_window_descriptions_raw, onscreen_window_ids_from_descriptions,
-    },
+    window_server::{copy_onscreen_window_descriptions_raw, onscreen_window_ids_from_descriptions},
     ActiveSpaceFocusTargetHint, MacosNativeApi, MacosNativeOperationError, MacosNativeProbeError,
     NativeBackendOptions, NativeBounds, NativeDesktopSnapshot, NativeDirection, NativeWindowId,
 };
@@ -100,6 +96,12 @@ impl RealNativeApi {
             focused_window_id: snapshot.focused_window_id,
         })
     }
+
+    fn swift_backend_for_action(&self) -> Result<&SwiftBackendShim, MacosNativeOperationError> {
+        self.swift_backend
+            .as_ref()
+            .map_err(|_| MacosNativeOperationError::CallFailed("swift macOS backend"))
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -170,24 +172,20 @@ impl MacosNativeApi for RealNativeApi {
     }
 
     fn switch_space(&self, space_id: u64) -> Result<(), MacosNativeOperationError> {
-        skylight::switch_space(self, space_id)
+        self.swift_backend_for_action()?.switch_space(space_id)
     }
 
     fn switch_adjacent_space(
         &self,
         direction: NativeDirection,
-        _space_id: u64,
+        space_id: u64,
     ) -> Result<(), MacosNativeOperationError> {
-        self.debug(&format!(
-            "macos_native: switching adjacent space via mission-control hotkey direction={direction}"
-        ));
-        switch_adjacent_space_via_hotkey(&self.options, direction, |key_code, key_down, flags| {
-            window_server::post_keyboard_event(self, key_code, key_down, flags)
-        })
+        self.swift_backend_for_action()?
+            .switch_adjacent_space(direction, space_id)
     }
 
     fn focus_window(&self, window_id: u64) -> Result<(), MacosNativeOperationError> {
-        window_server::focus_window(self, window_id)
+        self.swift_backend_for_action()?.focus_window(window_id)
     }
 
     fn focus_window_with_known_pid(
@@ -195,37 +193,8 @@ impl MacosNativeApi for RealNativeApi {
         window_id: u64,
         pid: u32,
     ) -> Result<(), MacosNativeOperationError> {
-        match focus_window_via_process_and_raise(
-            window_id,
-            |_| Ok(pid),
-            |resolved_pid| window_server::process_serial_number_for_pid(self, resolved_pid),
-            |psn, target_window_id| {
-                window_server::front_process_window(self, psn, target_window_id)
-            },
-            |psn, target_window_id| window_server::make_key_window(self, psn, target_window_id),
-            |target_window_id, resolved_pid| {
-                ax::raise_window_via_ax(self, target_window_id, resolved_pid)
-            },
-        ) {
-            Err(MacosNativeOperationError::MissingWindow(missing_window_id))
-                if missing_window_id == window_id =>
-            {
-                if confirm_focus_after_missing_ax_target(window_id, || {
-                    ax::probe_focused_window_id(self)
-                }) {
-                    self.debug(&format!(
-                        "macos_native: treating missing AX raise target {window_id} as success after focus confirmation"
-                    ));
-                    return Ok(());
-                }
-                self.debug(&format!(
-                    "macos_native: AX raise still missing target {window_id} after retries; focused_window_id={:?}",
-                    ax::probe_focused_window_id(self).ok().flatten()
-                ));
-                Err(MacosNativeOperationError::MissingWindow(window_id))
-            }
-            other => other,
-        }
+        self.swift_backend_for_action()?
+            .focus_window_with_known_pid(window_id, pid)
     }
 
     fn ax_window_ids_for_pid(&self, pid: u32) -> Result<Vec<u64>, MacosNativeOperationError> {
@@ -238,49 +207,12 @@ impl MacosNativeApi for RealNativeApi {
         pid: u32,
         target_hint: Option<ActiveSpaceFocusTargetHint>,
     ) -> Result<(), MacosNativeOperationError> {
-        match focus_window_via_make_key_and_raise(
-            window_id,
-            |_| Ok(pid),
-            |resolved_pid| window_server::process_serial_number_for_pid(self, resolved_pid),
-            |psn, target_window_id| window_server::make_key_window(self, psn, target_window_id),
-            |target_window_id, resolved_pid| {
-                ax::raise_window_via_ax(self, target_window_id, resolved_pid)
-            },
-        ) {
-            Err(MacosNativeOperationError::MissingWindow(missing_window_id))
-                if missing_window_id == window_id =>
-            {
-                if confirm_focus_after_missing_ax_target(window_id, || {
-                    ax::probe_focused_window_id(self)
-                }) {
-                    self.debug(&format!(
-                        "macos_native: treating missing active-space AX raise target {window_id} as success after focus confirmation"
-                    ));
-                    return Ok(());
-                }
-                if let Some(remapped_target_id) = active_space_ax_backed_same_pid_target(
-                    self,
-                    &desktop_topology_snapshot::native_desktop_snapshot_from_topology(
-                        &self.topology_snapshot()?,
-                    ),
-                    window_id,
-                    pid,
-                    target_hint,
-                )? {
-                    self.debug(&format!(
-                        "macos_native: active-space focus remapped stale same-pid target {} to {}",
-                        window_id, remapped_target_id
-                    ));
-                    return self.focus_window_with_known_pid(remapped_target_id, pid);
-                }
-                self.debug(&format!(
-                    "macos_native: active-space AX raise still missing target {window_id} after retries; focused_window_id={:?}",
-                    ax::probe_focused_window_id(self).ok().flatten()
-                ));
-                Err(MacosNativeOperationError::MissingWindow(window_id))
-            }
-            other => other,
-        }
+        self.swift_backend_for_action()?
+            .focus_window_in_active_space_with_known_pid(
+                window_id,
+                pid,
+                target_hint.map(|hint| (hint.space_id, hint.bounds)),
+            )
     }
 
     fn move_window_to_space(
@@ -288,7 +220,8 @@ impl MacosNativeApi for RealNativeApi {
         window_id: u64,
         space_id: u64,
     ) -> Result<(), MacosNativeOperationError> {
-        skylight::move_window_to_space(self, window_id, space_id)
+        self.swift_backend_for_action()?
+            .move_window_to_space(window_id, space_id)
     }
 
     fn swap_window_frames(
@@ -298,8 +231,7 @@ impl MacosNativeApi for RealNativeApi {
         target_window_id: u64,
         target_frame: NativeBounds,
     ) -> Result<(), MacosNativeOperationError> {
-        ax::swap_window_frames(
-            self,
+        self.swift_backend_for_action()?.swap_window_frames(
             source_window_id,
             source_frame,
             target_window_id,
@@ -321,6 +253,29 @@ impl MacosNativeApi for RealNativeApi {
         let mut topology = self.topology_snapshot_from_swift()?;
         topology.focused_window_id = None;
         Ok(topology)
+    }
+
+    fn switch_space_in_snapshot(
+        &self,
+        snapshot: &NativeDesktopSnapshot,
+        space_id: u64,
+        adjacent_direction: Option<NativeDirection>,
+    ) -> Result<(), MacosNativeOperationError> {
+        self.swift_backend_for_action()?.switch_space_in_snapshot(
+            snapshot,
+            space_id,
+            adjacent_direction,
+        )
+    }
+
+    fn focus_same_space_target_in_snapshot(
+        &self,
+        snapshot: &NativeDesktopSnapshot,
+        direction: NativeDirection,
+        target_window_id: u64,
+    ) -> Result<(), MacosNativeOperationError> {
+        self.swift_backend_for_action()?
+            .focus_same_space_target_in_snapshot(snapshot, direction, target_window_id)
     }
 }
 

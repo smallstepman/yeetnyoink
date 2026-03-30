@@ -208,11 +208,9 @@ fn source_swift_ffi_contract_is_explicit() {
 }
 
 fn source_window_around(source: &str, needle: &str, radius: usize) -> String {
-    let start = source
-        .find(needle)
-        .expect("needle should exist in source")
-        .saturating_sub(radius);
-    let end = (start + needle.len() + radius).min(source.len());
+    let needle_start = source.find(needle).expect("needle should exist in source");
+    let start = needle_start.saturating_sub(radius);
+    let end = (needle_start + needle.len() + radius).min(source.len());
     source[start..end].to_string()
 }
 
@@ -236,4 +234,111 @@ fn source_owned_snapshot_does_not_deref_to_raw_transport() {
         !shim.contains("impl Deref for OwnedDesktopSnapshot"),
         "OwnedDesktopSnapshot should keep the raw transport behind an explicit ownership boundary"
     );
+}
+
+#[test]
+fn source_real_api_actions_delegate_production_calls_to_swift_backend() {
+    let macos_real_api = std::fs::read_to_string(crate_source("src/real_api/macos.rs")).unwrap();
+
+    for (method, expected_call_parts, forbidden_rust_impl) in [
+        (
+            "fn switch_space(&self, space_id: u64)",
+            &[".switch_space(", "space_id"][..],
+            "skylight::switch_space(self, space_id)",
+        ),
+        (
+            "fn switch_adjacent_space(",
+            &[".switch_adjacent_space(", "direction", "space_id"][..],
+            "switch_adjacent_space_via_hotkey",
+        ),
+        (
+            "fn focus_window(&self, window_id: u64)",
+            &[".focus_window(", "window_id"][..],
+            "window_server::focus_window(self, window_id)",
+        ),
+        (
+            "fn focus_window_with_known_pid(",
+            &[".focus_window_with_known_pid(", "window_id", "pid"][..],
+            "focus_window_via_process_and_raise",
+        ),
+        (
+            "fn focus_window_in_active_space_with_known_pid(",
+            &[
+                ".focus_window_in_active_space_with_known_pid(",
+                "window_id",
+                "pid",
+                "target_hint",
+            ][..],
+            "focus_window_via_make_key_and_raise",
+        ),
+        (
+            "fn move_window_to_space(",
+            &[".move_window_to_space(", "window_id", "space_id"][..],
+            "skylight::move_window_to_space(self, window_id, space_id)",
+        ),
+        (
+            "fn swap_window_frames(",
+            &[
+                ".swap_window_frames(",
+                "source_window_id",
+                "target_window_id",
+                "target_frame",
+            ][..],
+            "ax::swap_window_frames(",
+        ),
+    ] {
+        let window = source_window_around(&macos_real_api, method, 700);
+        assert!(
+            window.contains("self.swift_backend_for_action()?"),
+            "{method} should delegate through the Swift production backend"
+        );
+        for expected_part in expected_call_parts {
+            assert!(
+                window.contains(expected_part),
+                "{method} should contain {expected_part}"
+            );
+        }
+        assert!(
+            !window.contains(forbidden_rust_impl),
+            "{method} should not keep the Rust-owned production implementation"
+        );
+    }
+}
+
+#[test]
+fn source_real_api_overrides_semantic_helpers_to_use_swift_backend() {
+    let macos_real_api = std::fs::read_to_string(crate_source("src/real_api/macos.rs")).unwrap();
+
+    for (method, expected_call_parts) in [
+        (
+            "fn switch_space_in_snapshot(",
+            &[
+                ".switch_space_in_snapshot(",
+                "snapshot",
+                "space_id",
+                "adjacent_direction",
+            ][..],
+        ),
+        (
+            "fn focus_same_space_target_in_snapshot(",
+            &[
+                ".focus_same_space_target_in_snapshot(",
+                "snapshot",
+                "direction",
+                "target_window_id",
+            ][..],
+        ),
+    ] {
+        let window = source_window_around(&macos_real_api, method, 500);
+        assert!(
+            window.contains("self.swift_backend_for_action()?"),
+            "{method} should override the trait default and delegate to Swift"
+        );
+        for expected_part in expected_call_parts {
+            assert!(
+                window.contains(expected_part),
+                "{method} should contain {expected_part}"
+            );
+        }
+    }
 }
