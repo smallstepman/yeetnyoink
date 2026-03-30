@@ -9,8 +9,9 @@ fn main() {
     println!("cargo:rerun-if-env-changed=CARGO_CFG_TARGET_OS");
     println!("cargo:rerun-if-env-changed=OUT_DIR");
 
-    if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos") {
-        return;
+    let target_os = env::var("CARGO_CFG_TARGET_OS").expect("CARGO_CFG_TARGET_OS should exist");
+    if target_os != "macos" {
+        panic!("macos_window_manager only supports macOS targets (got {target_os})");
     }
 
     let manifest_dir =

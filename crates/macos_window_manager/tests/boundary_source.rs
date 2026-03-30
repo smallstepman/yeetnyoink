@@ -2,6 +2,8 @@ use std::{
     ffi::OsStr,
     fs,
     path::{Path, PathBuf},
+    process::Command,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 fn boundary_test_source() -> String {
@@ -115,6 +117,16 @@ fn crate_source(path: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join(path)
 }
 
+fn unique_test_dir(prefix: &str) -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time should be after unix epoch")
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("{prefix}-{}-{nanos}", std::process::id()));
+    fs::create_dir_all(&dir).expect("temporary test directory should be creatable");
+    dir
+}
+
 #[test]
 fn source_crate_root_is_a_thin_facade() {
     let lib = std::fs::read_to_string(crate_source("src/lib.rs")).unwrap();
@@ -155,6 +167,50 @@ fn source_backend_crate_is_macos_only() {
     assert!(
         !crate_source("src/stub.rs").exists(),
         "src/stub.rs should be removed once the crate becomes macOS-only"
+    );
+}
+
+#[test]
+fn source_build_script_does_not_silently_return_for_non_macos_targets() {
+    let build = std::fs::read_to_string(crate_source("build.rs")).unwrap();
+    assert!(
+        !build.contains("if env::var(\"CARGO_CFG_TARGET_OS\").as_deref() != Ok(\"macos\") {\n        return;"),
+        "build.rs should fail clearly for non-macOS targets instead of returning early"
+    );
+}
+
+#[test]
+fn build_script_fails_clearly_for_non_macos_targets() {
+    let temp_dir = unique_test_dir("macos-window-manager-build-script");
+    let build_script_bin = temp_dir.join("build-script-test");
+
+    let rustc_status = Command::new("rustc")
+        .arg("--edition=2024")
+        .arg(crate_source("build.rs"))
+        .arg("-o")
+        .arg(&build_script_bin)
+        .status()
+        .expect("rustc should compile build.rs for boundary test");
+    assert!(rustc_status.success(), "build.rs should compile as a standalone program for testing");
+
+    let output = Command::new(&build_script_bin)
+        .env("CARGO_MANIFEST_DIR", env!("CARGO_MANIFEST_DIR"))
+        .env("OUT_DIR", temp_dir.join("out"))
+        .env("PROFILE", "debug")
+        .env("TARGET", "x86_64-unknown-linux-gnu")
+        .env("CARGO_CFG_TARGET_ARCH", "x86_64")
+        .env("CARGO_CFG_TARGET_OS", "linux")
+        .output()
+        .expect("compiled build.rs should run for boundary test");
+
+    assert!(
+        !output.status.success(),
+        "build.rs should reject non-macOS targets instead of succeeding"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("macOS") || stderr.contains("macos"),
+        "non-macOS failure should explain the macOS-only boundary, stderr was: {stderr}"
     );
 }
 
