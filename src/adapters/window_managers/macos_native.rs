@@ -274,28 +274,11 @@ fn map_probe_error(err: MacosNativeProbeError) -> anyhow::Error {
 fn focused_app_record_with_api<A: MacosWindowManagerBackend + ?Sized>(
     api: &A,
 ) -> anyhow::Result<Option<FocusedAppRecord>> {
-    if {
-        let _span = tracing::debug_span!("macos_native.fast_focus.ax_is_trusted").entered();
-        !MacosWindowManagerBackend::ax_is_trusted(api)
-    } {
-        return Err(anyhow::anyhow!(
-            "Accessibility permission is required for macOS native support"
-        ));
-    }
-    if {
-        let _span =
-            tracing::debug_span!("macos_native.fast_focus.minimal_topology_ready").entered();
-        !MacosWindowManagerBackend::minimal_topology_ready(api)
-    } {
-        return Err(anyhow::anyhow!(
-            "macOS native topology precondition is unavailable: main SkyLight connection"
-        ));
-    }
-    let snapshot = {
-        let _span = tracing::debug_span!("macos_native.fast_focus.desktop_snapshot").entered();
-        api.desktop_snapshot().map_err(map_probe_error)?
+    let context = {
+        let _span = tracing::debug_span!("macos_native.fast_focus.prepare_context").entered();
+        api.prepare_fast_focus_context().map_err(anyhow::Error::new)?
     };
-    focused_app_record_from_native(&snapshot)
+    focused_app_record_from_native(&context.desktop_snapshot)
 }
 
 fn process_id_from_native(pid: Option<u32>) -> Option<ProcessId> {
@@ -944,6 +927,7 @@ mod tests {
     use super::*;
     use crate::engine::topology::{select_closest_in_direction_with_strategy, Rect};
     use macos_window_manager::{
+        MacosNativeFastFocusError, NativeFastFocusContext, NativeFastFocusEnvironment,
         NativeSpaceSnapshot, RawSpaceRecord, RawTopologySnapshot, RawWindow, WindowSnapshot,
     };
     use std::{
@@ -2281,6 +2265,96 @@ mod tests {
         }
     }
 
+    struct CoarseFastFocusOnlyApi {
+        context: NativeFastFocusContext,
+    }
+
+    impl CoarseFastFocusOnlyApi {
+        fn new(snapshot: NativeDesktopSnapshot) -> Self {
+            Self {
+                context: NativeFastFocusContext {
+                    environment: NativeFastFocusEnvironment::Validated,
+                    desktop_snapshot: snapshot,
+                },
+            }
+        }
+    }
+
+    impl MacosWindowManagerBackend for CoarseFastFocusOnlyApi {
+        fn has_symbol(&self, _symbol: &'static str) -> bool {
+            true
+        }
+
+        fn ax_is_trusted(&self) -> bool {
+            panic!("focused_app_record_with_api must use prepare_fast_focus_context")
+        }
+
+        fn minimal_topology_ready(&self) -> bool {
+            panic!("focused_app_record_with_api must use prepare_fast_focus_context")
+        }
+
+        fn validate_environment(&self) -> Result<(), MacosNativeConnectError> {
+            Ok(())
+        }
+
+        fn prepare_fast_focus_context(
+            &self,
+        ) -> Result<NativeFastFocusContext, MacosNativeFastFocusError> {
+            Ok(self.context.clone())
+        }
+
+        fn desktop_snapshot(&self) -> Result<NativeDesktopSnapshot, MacosNativeProbeError> {
+            panic!("focused_app_record_with_api must not call desktop_snapshot directly")
+        }
+
+        fn managed_spaces(&self) -> Result<Vec<RawSpaceRecord>, MacosNativeProbeError> {
+            panic!("coarse fast-focus api must not query managed_spaces")
+        }
+
+        fn active_space_ids(&self) -> Result<HashSet<u64>, MacosNativeProbeError> {
+            panic!("coarse fast-focus api must not query active_space_ids")
+        }
+
+        fn active_space_windows(
+            &self,
+            _space_id: u64,
+        ) -> Result<Vec<RawWindow>, MacosNativeProbeError> {
+            panic!("coarse fast-focus api must not query active_space_windows")
+        }
+
+        fn inactive_space_window_ids(
+            &self,
+        ) -> Result<HashMap<u64, Vec<u64>>, MacosNativeProbeError> {
+            panic!("coarse fast-focus api must not query inactive_space_window_ids")
+        }
+
+        fn switch_space(&self, _space_id: u64) -> Result<(), MacosNativeOperationError> {
+            panic!("coarse fast-focus api must not switch spaces")
+        }
+
+        fn focus_window(&self, _window_id: u64) -> Result<(), MacosNativeOperationError> {
+            panic!("coarse fast-focus api must not focus windows")
+        }
+
+        fn move_window_to_space(
+            &self,
+            _window_id: u64,
+            _space_id: u64,
+        ) -> Result<(), MacosNativeOperationError> {
+            panic!("coarse fast-focus api must not move windows")
+        }
+
+        fn swap_window_frames(
+            &self,
+            _source_window_id: u64,
+            _source_frame: NativeBounds,
+            _target_window_id: u64,
+            _target_frame: NativeBounds,
+        ) -> Result<(), MacosNativeOperationError> {
+            panic!("coarse fast-focus api must not swap frames")
+        }
+    }
+
     fn raw_window(id: u64) -> RawWindow {
         RawWindow {
             id,
@@ -2945,6 +3019,41 @@ command = false
         };
 
         let focused = WindowManagerSpec::focused_app_record(&spec).unwrap();
+
+        assert_eq!(
+            focused,
+            Some(FocusedAppRecord {
+                app_id: "focused.app".to_string(),
+                title: "Focused".to_string(),
+                pid: ProcessId::new(4001).unwrap(),
+            })
+        );
+    }
+
+    #[test]
+    fn focused_app_record_uses_coarse_fast_focus_context() {
+        let api = CoarseFastFocusOnlyApi::new(NativeDesktopSnapshot {
+            spaces: vec![NativeSpaceSnapshot {
+                id: 1,
+                display_index: 0,
+                active: true,
+                kind: SpaceKind::Desktop,
+            }],
+            active_space_ids: HashSet::from([1]),
+            windows: vec![NativeWindowSnapshot {
+                id: 101,
+                pid: Some(4001),
+                app_id: Some("focused.app".to_string()),
+                title: Some("Focused".to_string()),
+                bounds: None,
+                level: 0,
+                space_id: 1,
+                order_index: Some(0),
+            }],
+            focused_window_id: Some(101),
+        });
+
+        let focused = focused_app_record_with_api(&api).unwrap();
 
         assert_eq!(
             focused,
