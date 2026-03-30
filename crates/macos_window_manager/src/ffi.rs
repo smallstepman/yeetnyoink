@@ -60,7 +60,10 @@ pub(crate) mod test_support {
     }
 
     pub(crate) fn set_switch_space_in_snapshot_response(response: TestOperationResponse) {
-        test_state().lock().unwrap().switch_space_in_snapshot_response = Some(response);
+        test_state()
+            .lock()
+            .unwrap()
+            .switch_space_in_snapshot_response = Some(response);
     }
 
     pub(crate) fn desktop_snapshot_release_calls() -> usize {
@@ -160,23 +163,6 @@ pub(crate) unsafe fn backend_new(out_backend: *mut *mut c_void, out_status: *mut
     unsafe { mwm_backend_new(out_backend, out_status.cast()) }
 }
 
-#[cfg(not(target_os = "macos"))]
-pub(crate) unsafe fn backend_new(out_backend: *mut *mut c_void, out_status: *mut MwmStatus) -> i32 {
-    if !out_backend.is_null() {
-        unsafe {
-            *out_backend = std::ptr::null_mut();
-        }
-    }
-
-    if !out_status.is_null() {
-        unsafe {
-            *out_status = MwmStatus::unavailable();
-        }
-    }
-
-    crate::transport::MWM_STATUS_UNAVAILABLE
-}
-
 #[cfg(target_os = "macos")]
 pub(crate) unsafe fn backend_validate_environment(
     backend: *mut c_void,
@@ -185,27 +171,10 @@ pub(crate) unsafe fn backend_validate_environment(
     unsafe { mwm_backend_validate_environment(backend, out_status.cast()) }
 }
 
-#[cfg(not(target_os = "macos"))]
-pub(crate) unsafe fn backend_validate_environment(
-    _backend: *mut c_void,
-    out_status: *mut MwmStatus,
-) -> i32 {
-    if !out_status.is_null() {
-        unsafe {
-            *out_status = MwmStatus::unavailable();
-        }
-    }
-
-    crate::transport::MWM_STATUS_UNAVAILABLE
-}
-
 #[cfg(target_os = "macos")]
 pub(crate) unsafe fn backend_free(backend: *mut c_void) {
     unsafe { mwm_backend_free(backend) }
 }
-
-#[cfg(not(target_os = "macos"))]
-pub(crate) unsafe fn backend_free(_backend: *mut c_void) {}
 
 #[cfg(target_os = "macos")]
 pub(crate) unsafe fn backend_desktop_snapshot(
@@ -236,49 +205,6 @@ pub(crate) unsafe fn backend_desktop_snapshot(
     }
 
     unsafe { mwm_backend_desktop_snapshot(backend, out_snapshot.cast(), out_status.cast()) }
-}
-
-#[cfg(not(target_os = "macos"))]
-pub(crate) unsafe fn backend_desktop_snapshot(
-    _backend: *mut c_void,
-    out_snapshot: *mut MwmDesktopSnapshotAbi,
-    out_status: *mut MwmStatus,
-) -> i32 {
-    #[cfg(test)]
-    if let Some(response) = test_state()
-        .lock()
-        .unwrap()
-        .desktop_snapshot_response
-        .take()
-    {
-        if !out_snapshot.is_null() {
-            unsafe {
-                *out_snapshot = response.snapshot;
-            }
-        }
-
-        if !out_status.is_null() {
-            unsafe {
-                *out_status = response.status;
-            }
-        }
-
-        return response.code;
-    }
-
-    if !out_snapshot.is_null() {
-        unsafe {
-            *out_snapshot = MwmDesktopSnapshotAbi::empty();
-        }
-    }
-
-    if !out_status.is_null() {
-        unsafe {
-            *out_status = MwmStatus::unavailable();
-        }
-    }
-
-    crate::transport::MWM_STATUS_UNAVAILABLE
 }
 
 #[cfg(target_os = "macos")]
@@ -312,49 +238,6 @@ pub(crate) unsafe fn backend_topology_snapshot(
     unsafe { mwm_backend_topology_snapshot(backend, out_snapshot.cast(), out_status.cast()) }
 }
 
-#[cfg(not(target_os = "macos"))]
-pub(crate) unsafe fn backend_topology_snapshot(
-    _backend: *mut c_void,
-    out_snapshot: *mut MwmDesktopSnapshotAbi,
-    out_status: *mut MwmStatus,
-) -> i32 {
-    #[cfg(test)]
-    if let Some(response) = test_state()
-        .lock()
-        .unwrap()
-        .topology_snapshot_response
-        .take()
-    {
-        if !out_snapshot.is_null() {
-            unsafe {
-                *out_snapshot = response.snapshot;
-            }
-        }
-
-        if !out_status.is_null() {
-            unsafe {
-                *out_status = response.status;
-            }
-        }
-
-        return response.code;
-    }
-
-    if !out_snapshot.is_null() {
-        unsafe {
-            *out_snapshot = MwmDesktopSnapshotAbi::empty();
-        }
-    }
-
-    if !out_status.is_null() {
-        unsafe {
-            *out_status = MwmStatus::unavailable();
-        }
-    }
-
-    crate::transport::MWM_STATUS_UNAVAILABLE
-}
-
 #[cfg(target_os = "macos")]
 pub(crate) unsafe fn backend_switch_space(
     backend: *mut c_void,
@@ -362,18 +245,6 @@ pub(crate) unsafe fn backend_switch_space(
     out_status: *mut MwmStatus,
 ) -> i32 {
     unsafe { mwm_backend_switch_space(backend, space_id, out_status.cast()) }
-}
-
-#[cfg(not(target_os = "macos"))]
-pub(crate) unsafe fn backend_switch_space(
-    _backend: *mut c_void,
-    _space_id: u64,
-    out_status: *mut MwmStatus,
-) -> i32 {
-    if !out_status.is_null() {
-        unsafe { *out_status = MwmStatus::unavailable() };
-    }
-    crate::transport::MWM_STATUS_UNAVAILABLE
 }
 
 #[cfg(target_os = "macos")]
@@ -384,19 +255,6 @@ pub(crate) unsafe fn backend_switch_adjacent_space(
     out_status: *mut MwmStatus,
 ) -> i32 {
     unsafe { mwm_backend_switch_adjacent_space(backend, direction, space_id, out_status.cast()) }
-}
-
-#[cfg(not(target_os = "macos"))]
-pub(crate) unsafe fn backend_switch_adjacent_space(
-    _backend: *mut c_void,
-    _direction: i32,
-    _space_id: u64,
-    out_status: *mut MwmStatus,
-) -> i32 {
-    if !out_status.is_null() {
-        unsafe { *out_status = MwmStatus::unavailable() };
-    }
-    crate::transport::MWM_STATUS_UNAVAILABLE
 }
 
 #[cfg(target_os = "macos")]
@@ -431,33 +289,6 @@ pub(crate) unsafe fn backend_switch_space_in_snapshot(
     }
 }
 
-#[cfg(not(target_os = "macos"))]
-pub(crate) unsafe fn backend_switch_space_in_snapshot(
-    _backend: *mut c_void,
-    _snapshot: *const MwmDesktopSnapshotAbi,
-    _space_id: u64,
-    _adjacent_direction: i32,
-    out_status: *mut MwmStatus,
-) -> i32 {
-    #[cfg(test)]
-    if let Some(response) = test_state()
-        .lock()
-        .unwrap()
-        .switch_space_in_snapshot_response
-        .take()
-    {
-        if !out_status.is_null() {
-            unsafe { *out_status = response.status };
-        }
-        return response.code;
-    }
-
-    if !out_status.is_null() {
-        unsafe { *out_status = MwmStatus::unavailable() };
-    }
-    crate::transport::MWM_STATUS_UNAVAILABLE
-}
-
 #[cfg(target_os = "macos")]
 pub(crate) unsafe fn backend_focus_window(
     backend: *mut c_void,
@@ -465,18 +296,6 @@ pub(crate) unsafe fn backend_focus_window(
     out_status: *mut MwmStatus,
 ) -> i32 {
     unsafe { mwm_backend_focus_window(backend, window_id, out_status.cast()) }
-}
-
-#[cfg(not(target_os = "macos"))]
-pub(crate) unsafe fn backend_focus_window(
-    _backend: *mut c_void,
-    _window_id: u64,
-    out_status: *mut MwmStatus,
-) -> i32 {
-    if !out_status.is_null() {
-        unsafe { *out_status = MwmStatus::unavailable() };
-    }
-    crate::transport::MWM_STATUS_UNAVAILABLE
 }
 
 #[cfg(target_os = "macos")]
@@ -487,19 +306,6 @@ pub(crate) unsafe fn backend_focus_window_with_known_pid(
     out_status: *mut MwmStatus,
 ) -> i32 {
     unsafe { mwm_backend_focus_window_with_known_pid(backend, window_id, pid, out_status.cast()) }
-}
-
-#[cfg(not(target_os = "macos"))]
-pub(crate) unsafe fn backend_focus_window_with_known_pid(
-    _backend: *mut c_void,
-    _window_id: u64,
-    _pid: u32,
-    out_status: *mut MwmStatus,
-) -> i32 {
-    if !out_status.is_null() {
-        unsafe { *out_status = MwmStatus::unavailable() };
-    }
-    crate::transport::MWM_STATUS_UNAVAILABLE
 }
 
 #[cfg(target_os = "macos")]
@@ -532,26 +338,6 @@ pub(crate) unsafe fn backend_focus_window_in_active_space_with_known_pid(
     }
 }
 
-#[cfg(not(target_os = "macos"))]
-#[allow(clippy::too_many_arguments)]
-pub(crate) unsafe fn backend_focus_window_in_active_space_with_known_pid(
-    _backend: *mut c_void,
-    _window_id: u64,
-    _pid: u32,
-    _has_target_hint: u8,
-    _target_hint_space_id: u64,
-    _target_hint_x: i32,
-    _target_hint_y: i32,
-    _target_hint_width: i32,
-    _target_hint_height: i32,
-    out_status: *mut MwmStatus,
-) -> i32 {
-    if !out_status.is_null() {
-        unsafe { *out_status = MwmStatus::unavailable() };
-    }
-    crate::transport::MWM_STATUS_UNAVAILABLE
-}
-
 #[cfg(target_os = "macos")]
 pub(crate) unsafe fn backend_focus_same_space_target_in_snapshot(
     backend: *mut c_void,
@@ -571,20 +357,6 @@ pub(crate) unsafe fn backend_focus_same_space_target_in_snapshot(
     }
 }
 
-#[cfg(not(target_os = "macos"))]
-pub(crate) unsafe fn backend_focus_same_space_target_in_snapshot(
-    _backend: *mut c_void,
-    _snapshot: *const MwmDesktopSnapshotAbi,
-    _direction: i32,
-    _target_window_id: u64,
-    out_status: *mut MwmStatus,
-) -> i32 {
-    if !out_status.is_null() {
-        unsafe { *out_status = MwmStatus::unavailable() };
-    }
-    crate::transport::MWM_STATUS_UNAVAILABLE
-}
-
 #[cfg(target_os = "macos")]
 pub(crate) unsafe fn backend_move_window_to_space(
     backend: *mut c_void,
@@ -593,19 +365,6 @@ pub(crate) unsafe fn backend_move_window_to_space(
     out_status: *mut MwmStatus,
 ) -> i32 {
     unsafe { mwm_backend_move_window_to_space(backend, window_id, space_id, out_status.cast()) }
-}
-
-#[cfg(not(target_os = "macos"))]
-pub(crate) unsafe fn backend_move_window_to_space(
-    _backend: *mut c_void,
-    _window_id: u64,
-    _space_id: u64,
-    out_status: *mut MwmStatus,
-) -> i32 {
-    if !out_status.is_null() {
-        unsafe { *out_status = MwmStatus::unavailable() };
-    }
-    crate::transport::MWM_STATUS_UNAVAILABLE
 }
 
 #[cfg(target_os = "macos")]
@@ -642,40 +401,9 @@ pub(crate) unsafe fn backend_swap_window_frames(
     }
 }
 
-#[cfg(not(target_os = "macos"))]
-#[allow(clippy::too_many_arguments)]
-pub(crate) unsafe fn backend_swap_window_frames(
-    _backend: *mut c_void,
-    _source_window_id: u64,
-    _source_x: i32,
-    _source_y: i32,
-    _source_width: i32,
-    _source_height: i32,
-    _target_window_id: u64,
-    _target_x: i32,
-    _target_y: i32,
-    _target_width: i32,
-    _target_height: i32,
-    out_status: *mut MwmStatus,
-) -> i32 {
-    if !out_status.is_null() {
-        unsafe { *out_status = MwmStatus::unavailable() };
-    }
-    crate::transport::MWM_STATUS_UNAVAILABLE
-}
-
 #[cfg(target_os = "macos")]
 pub(crate) unsafe fn status_release(status: *mut MwmStatus) {
     unsafe { mwm_status_release(status.cast()) }
-}
-
-#[cfg(not(target_os = "macos"))]
-pub(crate) unsafe fn status_release(status: *mut MwmStatus) {
-    if !status.is_null() {
-        unsafe {
-            *status = MwmStatus::default();
-        }
-    }
 }
 
 #[cfg(target_os = "macos")]
@@ -686,18 +414,4 @@ pub(crate) unsafe fn desktop_snapshot_release(snapshot: *mut MwmDesktopSnapshotA
     }
 
     unsafe { mwm_desktop_snapshot_release(snapshot.cast()) }
-}
-
-#[cfg(not(target_os = "macos"))]
-pub(crate) unsafe fn desktop_snapshot_release(snapshot: *mut MwmDesktopSnapshotAbi) {
-    #[cfg(test)]
-    {
-        test_state().lock().unwrap().desktop_snapshot_release_calls += 1;
-    }
-
-    if !snapshot.is_null() {
-        unsafe {
-            *snapshot = MwmDesktopSnapshotAbi::default();
-        }
-    }
 }

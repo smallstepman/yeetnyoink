@@ -1,25 +1,25 @@
 mod api;
+#[cfg(target_os = "macos")]
+mod backend;
 mod desktop_topology_snapshot;
 mod environment;
 mod error;
 mod ffi;
 mod navigation;
-#[cfg(target_os = "macos")]
-mod backend;
-#[cfg(not(target_os = "macos"))]
-mod stub;
 mod shim;
 mod transport;
 
 use desktop_topology_snapshot::*;
 
+pub(crate) use api::MacosWindowManagerBackend as MacosNativeApi;
 pub use api::{
     ActiveSpaceFocusTargetHint, MacosWindowManagerBackend, MissionControlHotkey,
     MissionControlModifiers, NativeBackendOptions, NativeBounds, NativeDesktopSnapshot,
     NativeDiagnostics, NativeDirection, NativeSpaceId, NativeSpaceSnapshot, NativeWindowId,
     NativeWindowSnapshot,
 };
-pub(crate) use api::MacosWindowManagerBackend as MacosNativeApi;
+#[cfg(target_os = "macos")]
+pub use backend::SwiftMacosBackend;
 pub use desktop_topology_snapshot::SpaceKind;
 pub use desktop_topology_snapshot::{
     RawSpaceRecord, RawTopologySnapshot, RawWindow, WindowSnapshot,
@@ -28,24 +28,9 @@ pub use error::{
     MacosNativeBridgeError, MacosNativeConnectError, MacosNativeOperationError,
     MacosNativeProbeError,
 };
-#[cfg(target_os = "macos")]
-pub use backend::SwiftMacosBackend;
-#[cfg(not(target_os = "macos"))]
-pub use stub::SwiftMacosBackend;
 
 #[cfg(target_os = "macos")]
-use std::{
-    collections::{HashMap, HashSet},
-};
-
-#[cfg(not(target_os = "macos"))]
-const SPACE_SWITCH_SETTLE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(300);
-#[cfg(not(target_os = "macos"))]
-const SPACE_SWITCH_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(10);
-#[cfg(not(target_os = "macos"))]
-const SPACE_SWITCH_STABLE_TARGET_POLLS: usize = 3;
-#[cfg(not(target_os = "macos"))]
-const UNSUPPORTED_PLATFORM_MESSAGE: &str = "macos_window_manager requires macOS";
+use std::collections::{HashMap, HashSet};
 
 fn native_window(
     snapshot: &NativeDesktopSnapshot,

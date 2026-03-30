@@ -119,11 +119,10 @@ fn crate_source(path: &str) -> PathBuf {
 fn source_crate_root_is_a_thin_facade() {
     let lib = std::fs::read_to_string(crate_source("src/lib.rs")).unwrap();
     let macos_real_api = std::fs::read_to_string(crate_source("src/backend.rs")).unwrap();
-    let stub_real_api = std::fs::read_to_string(crate_source("src/stub.rs")).unwrap();
 
     assert!(lib.contains("mod api;"));
     assert!(lib.contains("mod backend;"));
-    assert!(lib.contains("mod stub;"));
+    assert!(!lib.contains("mod stub;"));
     assert!(!lib.contains("mod ax;"));
     assert!(!lib.contains("mod foundation;"));
     assert!(!lib.contains("mod skylight;"));
@@ -133,7 +132,30 @@ fn source_crate_root_is_a_thin_facade() {
     assert!(!lib.contains("pub struct RealNativeApi"));
     assert!(!lib.contains("pub use api::*;"));
     assert!(!macos_real_api.contains("use crate::*;"));
-    assert!(!stub_real_api.contains("use crate::*;"));
+}
+
+#[test]
+fn source_backend_crate_is_macos_only() {
+    let lib = std::fs::read_to_string(crate_source("src/lib.rs")).unwrap();
+
+    assert!(
+        !lib.contains("mod stub;"),
+        "lib.rs should not declare a non-macOS stub module"
+    );
+
+    for path in production_source_files(&crate_source("src")) {
+        let source = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !source.contains("cfg(not(target_os = \"macos\"))"),
+            "{} should not contain non-macOS cfg guards",
+            path.strip_prefix(crate_source(".")).unwrap().display()
+        );
+    }
+
+    assert!(
+        !crate_source("src/stub.rs").exists(),
+        "src/stub.rs should be removed once the crate becomes macOS-only"
+    );
 }
 
 #[test]

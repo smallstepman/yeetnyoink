@@ -16,9 +16,6 @@ const REQUIRED_PRIVATE_SYMBOLS: &[&str] = &[
     "GetProcessForPID",
 ];
 
-#[cfg(not(target_os = "macos"))]
-const REQUIRED_PRIVATE_SYMBOLS: &[&str] = &[];
-
 pub(crate) fn validate_environment_with_api<A: MacosNativeApi + ?Sized>(
     api: &A,
 ) -> Result<(), MacosNativeConnectError> {

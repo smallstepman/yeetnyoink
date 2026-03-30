@@ -11,13 +11,6 @@ const SPACE_SWITCH_POLL_INTERVAL: std::time::Duration = std::time::Duration::fro
 #[cfg(target_os = "macos")]
 const SPACE_SWITCH_STABLE_TARGET_POLLS: usize = 3;
 
-#[cfg(not(target_os = "macos"))]
-const SPACE_SWITCH_SETTLE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(300);
-#[cfg(not(target_os = "macos"))]
-const SPACE_SWITCH_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(10);
-#[cfg(not(target_os = "macos"))]
-const SPACE_SWITCH_STABLE_TARGET_POLLS: usize = 3;
-
 pub(crate) fn wait_for_space_presentation<A: MacosNativeApi + ?Sized>(
     api: &A,
     space_id: u64,
