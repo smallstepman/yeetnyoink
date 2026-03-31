@@ -1,9 +1,13 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::{
+    ActiveSpaceFocusTargetHint, MacosNativeConnectError, MacosNativeFastFocusError,
+    MacosNativeOperationError, MacosNativeProbeError, MacosWindowManagerBackend,
+    NativeBackendOptions, NativeBounds, NativeDesktopSnapshot, NativeDirection,
+    NativeFastFocusContext, NativeWindowId,
     desktop_topology_snapshot::{
-        RawSpaceRecord, RawTopologySnapshot, RawWindow, SpaceKind, DESKTOP_SPACE_TYPE,
-        FULLSCREEN_SPACE_TYPE,
+        DESKTOP_SPACE_TYPE, FULLSCREEN_SPACE_TYPE, RawSpaceRecord, RawTopologySnapshot, RawWindow,
+        SpaceKind,
     },
     shim::SwiftBackendShim,
     transport::{
@@ -11,10 +15,6 @@ use crate::{
         MWM_STATUS_CONNECT_MISSING_REQUIRED_SYMBOL,
         MWM_STATUS_CONNECT_MISSING_TOPOLOGY_PRECONDITION, MWM_STATUS_PROBE_MISSING_TOPOLOGY,
     },
-    ActiveSpaceFocusTargetHint, MacosNativeConnectError, MacosNativeFastFocusError,
-    MacosNativeOperationError, MacosNativeProbeError, MacosWindowManagerBackend,
-    NativeBackendOptions, NativeBounds, NativeDesktopSnapshot, NativeDirection,
-    NativeFastFocusContext, NativeWindowId,
 };
 
 pub struct SwiftMacosBackend {
@@ -354,13 +354,14 @@ mod tests {
 
     use super::SwiftMacosBackend;
     use crate::{
-        shim::{self, SwiftBackendShim},
-        transport::{
-            MwmFastFocusContextAbi, MwmStatus, MWM_STATUS_CONNECT_MISSING_ACCESSIBILITY_PERMISSION,
-            MWM_STATUS_CONNECT_MISSING_REQUIRED_SYMBOL, MWM_STATUS_PROBE_MISSING_TOPOLOGY,
-        },
         MacosNativeBridgeError, MacosNativeFastFocusError, MacosWindowManagerBackend,
         MissionControlHotkey, MissionControlModifiers, NativeBackendOptions,
+        shim::{self, SwiftBackendShim},
+        transport::{
+            MWM_STATUS_CONNECT_MISSING_ACCESSIBILITY_PERMISSION,
+            MWM_STATUS_CONNECT_MISSING_REQUIRED_SYMBOL, MWM_STATUS_PROBE_MISSING_TOPOLOGY,
+            MwmFastFocusContextAbi, MwmStatus,
+        },
     };
 
     fn test_backend_with_bridge_error(error: MacosNativeBridgeError) -> SwiftMacosBackend {

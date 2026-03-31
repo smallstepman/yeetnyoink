@@ -875,23 +875,65 @@ where
     fn focus_direction_inner(&self, direction: Direction) -> anyhow::Result<()> {
         let strategy = config::macos_native_floating_focus_strategy()
             .expect("macos_native floating focus strategy should be validated at config load");
-        let snapshot = self.ctx.api.desktop_snapshot().map_err(map_probe_error)?;
-        let topology = outer_topology_from_native_snapshot(&snapshot)?;
+        let snapshot = {
+            let _span =
+                tracing::debug_span!("macos_native.focus_direction.desktop_snapshot").entered();
+            self.ctx.api.desktop_snapshot().map_err(map_probe_error)?
+        };
+        let topology = {
+            let _span = tracing::debug_span!("macos_native.focus_direction.topology_from_snapshot")
+                .entered();
+            outer_topology_from_native_snapshot(&snapshot)?
+        };
         let native_direction = native_direction_from_outer(direction);
 
-        match select_focus_target_from_outer_topology(&topology, direction, strategy)? {
-            FocusTarget::SameSpace { window_id } => self
-                .ctx
-                .api
-                .focus_same_space_target_in_snapshot(&snapshot, native_direction, window_id)
-                .map_err(anyhow::Error::new),
-            FocusTarget::CrossSpace { target_space_id } => {
-                let switched_snapshot = self
-                    .ctx
+        let target = {
+            let _span = tracing::debug_span!(
+                "macos_native.focus_direction.select_target",
+                ?direction,
+                ?strategy
+            )
+            .entered();
+            select_focus_target_from_outer_topology(&topology, direction, strategy)?
+        };
+
+        match target {
+            FocusTarget::SameSpace { window_id } => {
+                let _span = tracing::debug_span!(
+                    "macos_native.focus_direction.same_space.focus",
+                    target_window_id = window_id,
+                    ?native_direction
+                )
+                .entered();
+                self.ctx
                     .api
-                    .switch_space_and_refresh(&snapshot, target_space_id, Some(native_direction))
-                    .map_err(anyhow::Error::new)?;
-                let switched_topology = outer_topology_from_native_snapshot(&switched_snapshot)?;
+                    .focus_same_space_target_in_snapshot(&snapshot, native_direction, window_id)
+                    .map_err(anyhow::Error::new)
+            }
+            FocusTarget::CrossSpace { target_space_id } => {
+                let switched_snapshot = {
+                    let _span = tracing::debug_span!(
+                        "macos_native.focus_direction.cross_space.switch_refresh",
+                        target_space_id,
+                        ?native_direction
+                    )
+                    .entered();
+                    self.ctx
+                        .api
+                        .switch_space_and_refresh(
+                            &snapshot,
+                            target_space_id,
+                            Some(native_direction),
+                        )
+                        .map_err(anyhow::Error::new)?
+                };
+                let switched_topology = {
+                    let _span = tracing::debug_span!(
+                        "macos_native.focus_direction.cross_space.topology_from_snapshot"
+                    )
+                    .entered();
+                    outer_topology_from_native_snapshot(&switched_snapshot)?
+                };
                 let Some(target) = outer_best_window_in_space(
                     &switched_topology,
                     target_space_id,
@@ -908,11 +950,24 @@ where
                         space_id: target.space_id,
                         bounds: native_bounds_from_outer(bounds),
                     });
+                    let _span = tracing::debug_span!(
+                        "macos_native.focus_direction.cross_space.focus_known_pid",
+                        target_window_id = target.id,
+                        pid,
+                        target_space_id = target.space_id
+                    )
+                    .entered();
                     self.ctx
                         .api
                         .focus_window_in_active_space_with_known_pid(target.id, pid, target_hint)
                         .map_err(anyhow::Error::new)
                 } else {
+                    let _span = tracing::debug_span!(
+                        "macos_native.focus_direction.cross_space.focus_window",
+                        target_window_id = target.id,
+                        target_space_id = target.space_id
+                    )
+                    .entered();
                     self.ctx
                         .api
                         .focus_window(target.id)

@@ -110,6 +110,18 @@ public struct SystemWindowDescription: Equatable {
     }
 }
 
+public struct FocusedWindowDetails: Equatable {
+    public let pid: UInt32
+    public let appID: String?
+    public let title: String?
+
+    public init(pid: UInt32, appID: String?, title: String?) {
+        self.pid = pid
+        self.appID = appID
+        self.title = title
+    }
+}
+
 public protocol BackendSystem {
     func hasSymbol(_ symbol: String) -> Bool
     func isAccessibilityTrusted() -> Bool
@@ -120,6 +132,24 @@ public protocol BackendSystem {
     func onscreenWindowOrder() throws -> [UInt64]
     func focusedWindowID() throws -> UInt64?
     func stableAppID(for pid: UInt32) -> String?
+    func focusedWindowDetails() throws -> FocusedWindowDetails?
+}
+
+public extension BackendSystem {
+    func focusedWindowDetails() throws -> FocusedWindowDetails? {
+        guard let focusedWindowID = try focusedWindowID(),
+              let focusedWindow = try windowDescriptions(for: [focusedWindowID]).first,
+              let pid = focusedWindow.pid
+        else {
+            return nil
+        }
+
+        return FocusedWindowDetails(
+            pid: pid,
+            appID: focusedWindow.appID ?? stableAppID(for: pid),
+            title: focusedWindow.title
+        )
+    }
 }
 
 public struct FakeSystem: BackendSystem {
@@ -202,8 +232,72 @@ private struct RawSpaceRecord {
 }
 
 enum DesktopSnapshotBuilder {
+    private static let syntheticFastFocusWindowID: UInt64 = 1
+
     static func build(system: any BackendSystem) throws -> DesktopSnapshot {
         try build(system: system, allowsMissingFocus: false)
+    }
+
+    static func buildFastFocus(system: any BackendSystem) throws -> DesktopSnapshot {
+        let focusedWindow: FocusedWindowDetails?
+        do {
+            focusedWindow = try focusedWindowDetailsForFastFocus(system: system)
+        } catch {
+            return try build(system: system, allowsMissingFocus: true)
+        }
+        guard let focusedWindow else {
+            return DesktopSnapshot(
+                spaces: [],
+                windows: [],
+                focusedWindowID: nil
+            )
+        }
+
+        return syntheticFastFocusSnapshot(focusedWindow: focusedWindow)
+    }
+
+    private static func focusedWindowDetailsForFastFocus(
+        system: any BackendSystem
+    ) throws -> FocusedWindowDetails? {
+        do {
+            return try system.focusedWindowDetails()
+        } catch {
+            guard let focusedWindowID = try system.focusedWindowID(),
+                  let focusedWindow = try system.windowDescriptions(for: [focusedWindowID]).first,
+                  let pid = focusedWindow.pid
+            else {
+                throw error
+            }
+
+            return FocusedWindowDetails(
+                pid: pid,
+                appID: focusedWindow.appID ?? system.stableAppID(for: pid),
+                title: focusedWindow.title
+            )
+        }
+    }
+
+    private static func syntheticFastFocusSnapshot(
+        focusedWindow: FocusedWindowDetails
+    ) -> DesktopSnapshot {
+        // Fast-focus only needs app identity. Use a sentinel window id so the outer
+        // Rust path can reuse focused-window extraction without reconstructing topology.
+        return DesktopSnapshot(
+            spaces: [],
+            windows: [
+                DesktopWindowSnapshot(
+                    id: syntheticFastFocusWindowID,
+                    pid: focusedWindow.pid,
+                    appID: focusedWindow.appID,
+                    title: focusedWindow.title,
+                    bounds: nil,
+                    level: 0,
+                    spaceID: 0,
+                    orderIndex: 0
+                ),
+            ],
+            focusedWindowID: syntheticFastFocusWindowID
+        )
     }
 
     static func buildTopology(system: any BackendSystem) throws -> DesktopSnapshot {

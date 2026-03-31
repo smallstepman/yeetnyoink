@@ -7,6 +7,7 @@ use yeetnyoink::commands::browser_host::BrowserHostArgs;
 use yeetnyoink::commands::focus_or_cycle::FocusOrCycleArgs;
 use yeetnyoink::commands::resize::ResizeMode;
 use yeetnyoink::commands::setup::SetupArgs;
+use yeetnyoink::commands::warm_helper::WarmHelperArgs;
 use yeetnyoink::config;
 use yeetnyoink::engine::topology::Direction;
 use yeetnyoink::logging;
@@ -66,6 +67,8 @@ enum Cmd {
     },
     #[command(hide = true)]
     BrowserHost(BrowserHostArgs),
+    #[command(hide = true)]
+    WarmHelper(WarmHelperArgs),
     /// Install helper integrations like browser native hosts.
     Setup(SetupArgs),
 }
@@ -79,6 +82,7 @@ impl Cmd {
             #[cfg(target_os = "linux")]
             Self::FocusOrCycle { .. } => "focus-or-cycle",
             Self::BrowserHost(_) => "browser-host",
+            Self::WarmHelper(_) => "warm-helper",
             Self::Setup(_) => "setup",
         }
     }
@@ -113,6 +117,7 @@ fn run_logged_command(command: Cmd) -> Result<()> {
         #[cfg(target_os = "linux")]
         Cmd::FocusOrCycle { args } => commands::focus_or_cycle::run(args),
         Cmd::BrowserHost(_) => unreachable!("browser host mode returns before logging init"),
+        Cmd::WarmHelper(args) => commands::warm_helper::run(args, None),
         Cmd::Setup(_) => unreachable!("setup mode returns before logging init"),
     }
 }
@@ -156,8 +161,8 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::Cli;
-    use clap::CommandFactory;
+    use super::{run_early_command, Cli, Cmd};
+    use clap::{CommandFactory, Parser};
 
     #[test]
     fn cli_help_describes_configured_wm_selection() {
@@ -167,5 +172,39 @@ mod tests {
         assert!(help.contains("that table must set `enabled = true`"));
         assert!(help.contains("wm.macos_native"));
         assert!(help.contains("TilingOnly") || help.contains("tiling-only"));
+    }
+
+    #[test]
+    fn hidden_subcommands_do_not_render_in_help() {
+        let help = Cli::command().render_long_help().to_string();
+
+        assert!(!help.contains("browser-host"));
+        assert!(!help.contains("warm-helper"));
+    }
+
+    #[test]
+    fn hidden_browser_host_subcommand_still_parses() {
+        assert!(Cli::try_parse_from(["yny", "browser-host", "firefox"]).is_ok());
+    }
+
+    #[test]
+    fn hidden_warm_helper_subcommand_still_parses() {
+        assert!(
+            Cli::try_parse_from(["yny", "warm-helper", "serve", "--socket", "/tmp/yny.sock",])
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn warm_helper_stays_in_logged_command_path() {
+        let cli = Cli::try_parse_from(["yny", "warm-helper", "serve", "--socket", "/tmp/yny.sock"])
+            .expect("warm helper command should parse");
+
+        let remaining = run_early_command(cli.command, None)
+            .expect("warm helper command should stay in the main execution path");
+        assert!(
+            matches!(remaining, Some(Cmd::WarmHelper(_))),
+            "warm helper should no longer exit through the early-command path"
+        );
     }
 }

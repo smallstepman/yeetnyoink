@@ -217,7 +217,9 @@ impl SwiftBackendShim {
             .validate()
             .map_err(|_| MacosNativeOperationError::CallFailed("swift macOS backend transport"))?;
         unsafe { ffi::status_release(&mut status) };
-        refreshed.into_native_snapshot().map_err(MacosNativeOperationError::from)
+        refreshed
+            .into_native_snapshot()
+            .map_err(MacosNativeOperationError::from)
     }
 
     pub(crate) fn focus_window(&self, window_id: u64) -> Result<(), MacosNativeOperationError> {
@@ -281,16 +283,25 @@ impl SwiftBackendShim {
         direction: NativeDirection,
         target_window_id: u64,
     ) -> Result<(), MacosNativeOperationError> {
-        let snapshot = OwnedDesktopSnapshotInput::from_native(snapshot);
+        let snapshot = {
+            let _span =
+                tracing::debug_span!("macos_window_manager.focus_same_space.serialize_snapshot")
+                    .entered();
+            OwnedDesktopSnapshotInput::from_native(snapshot)
+        };
         let mut status = MwmStatus::ok();
-        let code = unsafe {
-            ffi::backend_focus_same_space_target_in_snapshot(
-                self.raw.as_ptr(),
-                snapshot.as_ref(),
-                direction_to_ffi(Some(direction)),
-                target_window_id,
-                &mut status,
-            )
+        let code = {
+            let _span =
+                tracing::debug_span!("macos_window_manager.focus_same_space.ffi_call").entered();
+            unsafe {
+                ffi::backend_focus_same_space_target_in_snapshot(
+                    self.raw.as_ptr(),
+                    snapshot.as_ref(),
+                    direction_to_ffi(Some(direction)),
+                    target_window_id,
+                    &mut status,
+                )
+            }
         };
         status.code = code;
         status_result(&mut status)

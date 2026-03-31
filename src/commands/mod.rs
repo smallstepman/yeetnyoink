@@ -5,6 +5,7 @@ pub mod focus_or_cycle;
 pub mod move_win;
 pub mod resize;
 pub mod setup;
+pub mod warm_helper;
 
 use anyhow::Result;
 

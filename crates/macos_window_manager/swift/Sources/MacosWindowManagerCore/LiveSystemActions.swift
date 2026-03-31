@@ -249,30 +249,6 @@ private extension LiveSystem {
         }
     }
 
-    func adjacentSpaceHotkey(_ direction: NativeDirection) throws -> CGKeyCode {
-        switch direction {
-        case .west:
-            westAdjacentSpaceKeyCode
-        case .east:
-            eastAdjacentSpaceKeyCode
-        case .north, .south:
-            throw BackendOperationError.callFailed("adjacent_space_hotkey_direction")
-        }
-    }
-
-    func postKeyboardEvent(keyCode: CGKeyCode, keyDown: Bool, flags: CGEventFlags) throws {
-        guard let event = CGEvent(
-            keyboardEventSource: nil,
-            virtualKey: keyCode,
-            keyDown: keyDown
-        ) else {
-            throw BackendOperationError.callFailed("CGEventCreateKeyboardEvent")
-        }
-
-        event.flags = flags
-        event.post(tap: .cghidEventTap)
-    }
-
     func raiseWindowWithRetry(_ windowID: UInt64, pid: UInt32) throws {
         let deadline = Date().addingTimeInterval(axRaiseSettleTimeout)
 
@@ -306,6 +282,30 @@ private extension LiveSystem {
 
             usleep(axRaiseRetryInterval)
         }
+    }
+
+    func adjacentSpaceHotkey(_ direction: NativeDirection) throws -> CGKeyCode {
+        switch direction {
+        case .west:
+            westAdjacentSpaceKeyCode
+        case .east:
+            eastAdjacentSpaceKeyCode
+        case .north, .south:
+            throw BackendOperationError.callFailed("adjacent_space_hotkey_direction")
+        }
+    }
+
+    func postKeyboardEvent(keyCode: CGKeyCode, keyDown: Bool, flags: CGEventFlags) throws {
+        guard let event = CGEvent(
+            keyboardEventSource: nil,
+            virtualKey: keyCode,
+            keyDown: keyDown
+        ) else {
+            throw BackendOperationError.callFailed("CGEventCreateKeyboardEvent")
+        }
+
+        event.flags = flags
+        event.post(tap: .cghidEventTap)
     }
 
     func raiseWindowViaAX(_ windowID: UInt64, pid: UInt32) throws {

@@ -9,7 +9,27 @@ public enum BackendError: Error, Equatable {
 
 enum Environment {
     static func validate(system: any BackendSystem) throws {
-        for symbol in PrivateSymbols.requiredSymbols where !system.hasSymbol(symbol){
+        try validate(
+            system: system,
+            requiredSymbols: PrivateSymbols.requiredSymbols,
+            requiresMainConnection: true
+        )
+    }
+
+    static func validateFastFocus(system: any BackendSystem) throws {
+        try validate(
+            system: system,
+            requiredSymbols: PrivateSymbols.fastFocusRequiredSymbols,
+            requiresMainConnection: false
+        )
+    }
+
+    private static func validate(
+        system: any BackendSystem,
+        requiredSymbols: [String],
+        requiresMainConnection: Bool
+    ) throws {
+        for symbol in requiredSymbols where !system.hasSymbol(symbol) {
             throw BackendError.missingRequiredSymbol(symbol)
         }
 
@@ -17,8 +37,10 @@ enum Environment {
             throw BackendError.missingAccessibilityPermission
         }
 
-        guard system.mainConnectionID() != nil else {
-            throw BackendError.missingTopologyPrecondition("main SkyLight connection")
+        if requiresMainConnection {
+            guard system.mainConnectionID() != nil else {
+                throw BackendError.missingTopologyPrecondition("main SkyLight connection")
+            }
         }
     }
 }

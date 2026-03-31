@@ -45,10 +45,10 @@ public struct Backend {
     }
 
     public func prepareFastFocusContext() throws -> FastFocusContext {
-        try validateEnvironment()
+        try Environment.validateFastFocus(system: system)
         return FastFocusContext(
             environment: .validated,
-            desktopSnapshot: try desktopSnapshot()
+            desktopSnapshot: try DesktopSnapshotBuilder.buildFastFocus(system: system)
         )
     }
 }
@@ -167,6 +167,36 @@ final class LiveSystem: BackendSystem {
         return UInt64(windowID)
     }
 
+    func focusedWindowDetails() throws -> FocusedWindowDetails? {
+        let systemWide = AXUIElementCreateSystemWide()
+        guard let application = try copyAXElementAttribute(
+            from: systemWide,
+            attribute: kAXFocusedApplicationAttribute as CFString
+        ) else {
+            return nil
+        }
+
+        var pid: pid_t = 0
+        guard AXUIElementGetPid(application, &pid) == .success, pid > 0 else {
+            return nil
+        }
+
+        let window = try copyAXElementAttribute(
+            from: application,
+            attribute: kAXFocusedWindowAttribute as CFString
+        )
+        let title = try window.flatMap {
+            try copyStringAttribute(from: $0, attribute: kAXTitleAttribute as CFString)
+        }
+        let appPID = UInt32(pid)
+
+        return FocusedWindowDetails(
+            pid: appPID,
+            appID: stableAppID(for: appPID),
+            title: title
+        )
+    }
+
     func stableAppID(for pid: UInt32) -> String? {
         NSRunningApplication(processIdentifier: pid_t(pid))?.bundleIdentifier
     }
@@ -215,6 +245,19 @@ final class LiveSystem: BackendSystem {
         switch error {
         case .success:
             return value.map { unsafeBitCast($0, to: AXUIElement.self) }
+        case .attributeUnsupported, .noValue:
+            return nil
+        default:
+            throw BackendError.missingTopology("AXUIElementCopyAttributeValue")
+        }
+    }
+
+    private func copyStringAttribute(from element: AXUIElement, attribute: CFString) throws -> String? {
+        var value: CFTypeRef?
+        let error = AXUIElementCopyAttributeValue(element, attribute, &value)
+        switch error {
+        case .success:
+            return value as? String
         case .attributeUnsupported, .noValue:
             return nil
         default:

@@ -4,10 +4,10 @@ use std::{
 };
 
 use crate::desktop_topology_snapshot::{
-    self, active_space_focus_target_hint_from_topology, active_window_pid_from_topology,
+    self, RawSpaceRecord, RawTopologySnapshot, RawWindow, WindowSnapshot,
+    active_space_focus_target_hint_from_topology, active_window_pid_from_topology,
     ensure_supported_target_space, focused_window_from_active_space_windows,
     native_desktop_snapshot_from_topology, space_id_for_window, space_transition_window_ids,
-    RawSpaceRecord, RawTopologySnapshot, RawWindow, WindowSnapshot,
 };
 use crate::error::{
     MacosNativeConnectError, MacosNativeFastFocusError, MacosNativeOperationError,

@@ -16,6 +16,10 @@ public enum PrivateSymbols {
         "GetProcessForPID",
     ]
 
+    public static let fastFocusRequiredSymbols = [
+        "AXIsProcessTrusted",
+    ]
+
     static let frameworkPaths = [
         "/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight",
         "/System/Library/Frameworks/ApplicationServices.framework/Frameworks/HIServices.framework/HIServices",
