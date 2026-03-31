@@ -5,3 +5,5 @@ site-dist/
 site/remotion/node_modules/
 site/assets/generated/**/*.mp4
 /.agent-shell/
+
+crates/macos_window_manager/swift/.build/

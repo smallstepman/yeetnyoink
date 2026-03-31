@@ -229,16 +229,4 @@ mod tests {
         assert!(capabilities.primitives.move_column);
         assert!(capabilities.primitives.consume_into_column_and_move);
     }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn macos_native_space_kind_symbols_are_exposed() {
-        use crate::adapters::window_managers::macos_native::SpaceKind;
-
-        assert_eq!(SpaceKind::Desktop.as_str(), "desktop");
-        assert_eq!(
-            SpaceKind::StageManagerOpaque.as_str(),
-            "stage_manager_opaque"
-        );
-    }
 }

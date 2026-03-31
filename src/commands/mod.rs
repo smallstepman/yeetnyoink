@@ -5,6 +5,7 @@ pub mod focus_or_cycle;
 pub mod move_win;
 pub mod resize;
 pub mod setup;
+pub mod warm_helper;
 
 use anyhow::Result;
 
@@ -13,8 +14,8 @@ use crate::config::selected_wm_backend;
 use crate::engine::actions::focus::attempt_focused_app_focus_from_record;
 use crate::engine::actions::orchestrator::{ActionKind, ActionRequest, Orchestrator};
 use crate::engine::topology::Direction;
-use crate::engine::transfer::ErasedDomain;
 use crate::engine::transfer::bridge::runtime_domains_for_window_manager;
+use crate::engine::transfer::ErasedDomain;
 use crate::engine::wm::connect_selected;
 use crate::logging;
 
@@ -134,7 +135,7 @@ mod tests {
 
     use anyhow::Result;
 
-    use super::{FastFocusPath, execute_focus_with_fast_path, load_runtime_domains_for_action};
+    use super::{execute_focus_with_fast_path, load_runtime_domains_for_action, FastFocusPath};
     use crate::engine::actions::context::is_no_focused_window_error;
     use crate::engine::actions::orchestrator::ActionKind;
     use crate::engine::topology::Direction;

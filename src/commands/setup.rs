@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
-use etcetera::base_strategy::{BaseStrategy, choose_base_strategy};
+use etcetera::base_strategy::{choose_base_strategy, BaseStrategy};
 use std::fs::{self, OpenOptions};
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -386,11 +386,11 @@ fn indent_block(value: &str, prefix: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{KittyIncludeStatus, MANAGED_SNIPPET, MANAGED_SNIPPET_NAME};
     use super::{
-        SetupArgs, SetupInstaller, append_kitty_include, kitty_explanation, kitty_include_present,
-        kitty_setup_plan, write_managed_snippet,
+        append_kitty_include, kitty_explanation, kitty_include_present, kitty_setup_plan,
+        write_managed_snippet, SetupArgs, SetupInstaller,
     };
+    use super::{KittyIncludeStatus, MANAGED_SNIPPET, MANAGED_SNIPPET_NAME};
     use clap::{CommandFactory, Parser, Subcommand};
     use std::fs;
     use std::path::PathBuf;

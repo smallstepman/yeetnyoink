@@ -1,7 +1,7 @@
-use anyhow::{Result, bail};
+use anyhow::{bail, Result};
 use clap::Args;
 
-use crate::engine::wm::{ConfiguredWindowManager, WindowCycleRequest, connect_selected};
+use crate::engine::wm::{connect_selected, ConfiguredWindowManager, WindowCycleRequest};
 
 #[derive(Debug, Clone, Args)]
 pub struct FocusOrCycleArgs {
@@ -61,7 +61,7 @@ fn run_with_window_manager(
 
 #[cfg(test)]
 mod tests {
-    use super::{FocusOrCycleArgs, run_with_window_manager};
+    use super::{run_with_window_manager, FocusOrCycleArgs};
     use crate::engine::topology::Direction;
     use crate::engine::{
         ConfiguredWindowManager, FocusedWindowRecord, ResizeIntent, WindowCycleProvider,
